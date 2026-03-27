@@ -233,7 +233,7 @@ MIT License
 ## 📬 联系方式
 
 - **GitHub Issues**: [提交问题](https://github.com/stephen-coding/workreport/issues)
-- **Email**: stephen@example.com
+- **Email**: stephenliuforlife@gmail.com
 
 ---
 
