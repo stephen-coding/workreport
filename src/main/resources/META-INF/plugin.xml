@@ -1,0 +1,46 @@
+<idea-plugin>
+    <id>com.workreport.ai-assistant</id>
+    <name>Work Report AI Assistant</name>
+    <version>1.0.0</version>
+    <vendor>WeeklyReport</vendor>
+    <description><![CDATA[
+        AI-powered work report generator that collects Git commit history
+        and polishes it into professional daily/weekly/quarterly/yearly reports
+        using local (Ollama) or cloud LLM APIs. Privacy-first design with encrypted API key storage.
+        <br/>
+        AI 驱动的工作报告生成器，支持日报、周报、季报、年报。自动采集 Git 提交历史并通过本地（Ollama）或云端 LLM API
+        润色为专业报告。隐私优先设计，API Key 加密存储。
+    ]]></description>
+
+    <!-- IntelliJ 2025.3.x (build 253.*) -->
+    <!-- 兼容 IntelliJ 2025.3.x（构建号 253.*） -->
+    <idea-version since-build="253" until-build="253.*"/>
+
+    <!-- Platform dependency -->
+    <!-- 平台核心依赖 -->
+    <depends>com.intellij.modules.platform</depends>
+    <!-- Git4Idea plugin dependency for git log collection -->
+    <!-- Git4Idea 插件依赖，用于采集 Git 提交日志 -->
+    <depends>Git4Idea</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Tool Window: appears in the bottom bar -->
+        <!-- 工具窗口：显示在 IDE 底部工具栏 -->
+        <toolWindow id="WorkReport"
+                    anchor="bottom"
+                    factoryClass="com.workreport.plugin.ui.ReportToolWindowFactory"/>
+
+        <!-- Settings page: Tools -> Work Report AI Assistant -->
+        <!-- 设置页面：位于 Tools -> Work Report AI Assistant -->
+        <applicationConfigurable
+                instance="com.workreport.plugin.settings.ReportSettingsConfigurable"
+                id="com.workreport.settings"
+                displayName="Work Report AI Assistant"
+                parentId="tools"/>
+
+        <!-- Persistent state for plugin settings -->
+        <!-- 插件设置的持久化状态服务 -->
+        <applicationService
+                serviceImplementation="com.workreport.plugin.settings.ReportSettingsState"/>
+    </extensions>
+</idea-plugin>

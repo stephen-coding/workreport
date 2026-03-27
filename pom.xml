@@ -1,0 +1,245 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.workreport</groupId>
+    <artifactId>workreport-intellij-plugin</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>Work Report AI Assistant</name>
+    <description>IntelliJ IDEA plugin for generating AI-polished daily/weekly/quarterly/yearly reports from Git history</description>
+    <!-- IntelliJ IDEA 插件：基于 Git 历史记录生成 AI 润色的日报/周报/季报/年报 -->
+
+    <properties>
+        <!-- JDK 21 -->
+        <!-- JDK 21 编译版本 -->
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- IntelliJ IDEA SDK path -->
+        <!-- IntelliJ IDEA SDK 本地安装路径 -->
+        <idea.home>D:/IntelliJ IDEA 2025.2.5</idea.home>
+
+        <!-- Dependency versions -->
+        <!-- 依赖版本号 -->
+        <okhttp.version>4.12.0</okhttp.version>
+    </properties>
+
+    <dependencies>
+        <!-- ==================== IntelliJ Platform JARs (system scope) ==================== -->
+        <!-- ==================== IntelliJ 平台 JAR 包（system 作用域，由 IDE 运行时提供） ==================== -->
+
+        <!-- Core platform: Project, ApplicationManager, Service, ProgressManager, VirtualFile, Disposable -->
+        <!-- 核心平台类：Project、ApplicationManager、Service、ProgressManager、VirtualFile、Disposable -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>util-8</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/util-8.jar</systemPath>
+        </dependency>
+
+        <!-- UI components, Configurable, PasswordSafe, CredentialStore, Messages, FileChooser, Notifications -->
+        <!-- UI 组件、设置页面接口、密码安全存储、凭据管理、消息弹窗、文件选择器、通知管理 -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>app</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/app.jar</systemPath>
+        </dependency>
+
+        <!-- Utility classes: com.intellij.openapi.util.*, com.intellij.util.* -->
+        <!-- 工具类：com.intellij.openapi.util.*、com.intellij.util.* -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>util</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/util.jar</systemPath>
+        </dependency>
+
+        <!-- Additional platform APIs -->
+        <!-- 额外平台 API -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>lib</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/lib.jar</systemPath>
+        </dependency>
+
+        <!-- Platform loader services -->
+        <!-- 平台加载器服务 -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>platform-loader</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/platform-loader.jar</systemPath>
+        </dependency>
+
+        <!-- Product-specific APIs -->
+        <!-- 产品特定 API -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>product</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/product.jar</systemPath>
+        </dependency>
+
+        <!-- JetBrains annotations (@NotNull, @Nullable) -->
+        <!-- JetBrains 注解（@NotNull、@Nullable） -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>annotations</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/annotations.jar</systemPath>
+        </dependency>
+
+        <!-- IntelliJ Forms runtime -->
+        <!-- IntelliJ 表单运行时 -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>forms-rt</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/forms_rt.jar</systemPath>
+        </dependency>
+
+        <!-- VCS core interfaces -->
+        <!-- 版本控制核心接口 -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>vcs-core</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/module-intellij.platform.vcs.core.jar</systemPath>
+        </dependency>
+
+        <!-- VCS API -->
+        <!-- 版本控制 API -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>vcs</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/module-intellij.platform.vcs.jar</systemPath>
+        </dependency>
+
+        <!-- DVCS interfaces (required by GitRepositoryManager) -->
+        <!-- 分布式版本控制接口（GitRepositoryManager 依赖） -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>vcs-dvcs</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/modules/intellij.platform.vcs.dvcs.jar</systemPath>
+        </dependency>
+
+        <!-- DVCS impl: AbstractRepositoryManager -->
+        <!-- 分布式版本控制实现：AbstractRepositoryManager -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>vcs-dvcs-impl</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/modules/intellij.platform.vcs.dvcs.impl.jar</systemPath>
+        </dependency>
+
+        <!-- Bundled Gson (provided by IntelliJ at runtime) -->
+        <!-- 内置 Gson（由 IntelliJ 运行时提供，无需额外打包） -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>gson</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/lib/module-intellij.libraries.gson.jar</systemPath>
+        </dependency>
+
+        <!-- git4idea plugin: GitLineHandler, GitRepositoryManager, GitCommand -->
+        <!-- git4idea 插件：Git 命令执行器、Git 仓库管理器、Git 命令定义 -->
+        <dependency>
+            <groupId>com.jetbrains.intellij</groupId>
+            <artifactId>vcs-git</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${idea.home}/plugins/vcs-git/lib/vcs-git.jar</systemPath>
+        </dependency>
+
+        <!-- ==================== Bundled dependencies (shipped with plugin) ==================== -->
+        <!-- ==================== 打包依赖（随插件一起分发） ==================== -->
+
+        <!-- OkHttp3 for HTTP calls to LLM APIs -->
+        <!-- OkHttp3 用于调用 LLM API 的 HTTP 请求 -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp</artifactId>
+            <version>${okhttp.version}</version>
+            <scope>compile</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Java 21 compiler -->
+            <!-- Java 21 编译器插件 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <source>21</source>
+                    <target>21</target>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+
+            <!-- Package plugin JAR -->
+            <!-- 打包插件 JAR -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+            </plugin>
+
+            <!-- Assemble plugin ZIP for distribution -->
+            <!-- 组装插件 ZIP 用于分发安装 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.7.1</version>
+                <configuration>
+                    <descriptors>
+                        <descriptor>assembly/plugin-assembly.xml</descriptor>
+                    </descriptors>
+                    <appendAssemblyId>false</appendAssemblyId>
+                    <finalName>workreport-ai-assistant-${project.version}</finalName>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>make-plugin-zip</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+
+        <!-- Include resources (plugin.xml) -->
+        <!-- 包含资源文件（plugin.xml） -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+        </resources>
+    </build>
+</project>

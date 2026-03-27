@@ -1,0 +1,66 @@
+package com.workreport.plugin.settings;
+
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.components.PersistentStateComponent;
+import com.intellij.openapi.components.Service;
+import com.intellij.openapi.components.State;
+import com.intellij.openapi.components.Storage;
+import org.jetbrains.annotations.NotNull;
+
+// Persistent settings state — API Key is NOT stored here (encrypted via PasswordSafe)
+// 持久化配置状态 — API Key 不在此存储（通过 PasswordSafe 加密存储）
+@State(name = "WorkReportSettings", storages = @Storage("workReportSettings.xml"))
+@Service(Service.Level.APP)
+public final class ReportSettingsState implements PersistentStateComponent<ReportSettingsState> {
+
+    // Report type: daily, weekly, quarterly, yearly
+    // 报告类型：日报、周报、季报、年报
+    public String reportType = "weekly";
+
+    // Default to Ollama local mode
+    // 默认使用 Ollama 本地模式
+    public String apiEndpoint = "http://localhost:11434/api/chat";
+    public String modelName = "qwen2.5:7b";
+    public boolean useOllamaMode = true;
+
+    // Privacy confirmation state — must confirm before first polish use
+    // 隐私确认状态 — 首次使用润色必须确认
+    public boolean privacyAccepted = false;
+
+    // Git log author filter (empty = all authors)
+    // Git 日志作者过滤（留空表示所有作者）
+    public String authorFilter = "";
+
+    public static ReportSettingsState getInstance() {
+        return ApplicationManager.getApplication().getService(ReportSettingsState.class);
+    }
+
+    @Override
+    public ReportSettingsState getState() {
+        return this;
+    }
+
+    @Override
+    public void loadState(@NotNull ReportSettingsState state) {
+        this.reportType = state.reportType != null ? state.reportType : "weekly";
+        this.apiEndpoint = state.apiEndpoint;
+        this.modelName = state.modelName;
+        this.useOllamaMode = state.useOllamaMode;
+        this.privacyAccepted = state.privacyAccepted;
+        this.authorFilter = state.authorFilter;
+    }
+
+    // Reset privacy confirmation when API endpoint changes (require re-confirmation)
+    // 当 API 端点变更时，重置隐私确认（要求用户重新确认）
+    public void resetPrivacyIfEndpointChanged(String newEndpoint) {
+        if (!apiEndpoint.equals(newEndpoint)) {
+            privacyAccepted = false;
+        }
+    }
+
+    // Check if API is configured (non-empty endpoint)
+    // 检查 API 是否已配置（非空端点即可）
+    public boolean isApiConfigured() {
+        return apiEndpoint != null && !apiEndpoint.isBlank();
+    }
+}
