@@ -1,6 +1,6 @@
 # Work Report AI Assistant
 
-<div align="center">
+<div style="text-align: center;">
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
@@ -248,7 +248,7 @@ MIT License
 
 ---
 
-<div align="center">
+<div style="text-align: center;">
 
 **如果这个项目对你有帮助，请给一个 ⭐️ Star 支持！**
 
