@@ -1,6 +1,6 @@
-# Work Report AI Assistant
-
 <div align="center">
+
+# Work Report AI Assistant
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
