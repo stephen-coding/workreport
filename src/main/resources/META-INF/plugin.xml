@@ -12,9 +12,9 @@
         润色为专业报告。隐私优先设计，API Key 加密存储。
     ]]></description>
 
-    <!-- IntelliJ 2025.3.x (build 253.*) -->
-    <!-- 兼容 IntelliJ 2025.3.x（构建号 253.*） -->
-    <idea-version since-build="253" until-build="253.*"/>
+    <!-- IntelliJ IDEA 2023.3.x - 2025.3.x (build 233.* - 253.*) -->
+    <!-- 兼容 IntelliJ IDEA 2023.3.x 到 2025.3.x（构建号 233.* 到 253.*） -->
+    <idea-version since-build="233" until-build="253.*"/>
 
     <!-- Platform dependency -->
     <!-- 平台核心依赖 -->
