@@ -253,11 +253,13 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
         copyButton = new JButton("复制报告");
         copyButton.setFont(copyButton.getFont().deriveFont(Font.PLAIN, 13f));
         copyButton.setFocusPainted(false);
+        copyButton.addActionListener(e -> onCopy());
 
         // 导出按钮
         exportButton = new JButton("导出为文件");
         exportButton.setFont(exportButton.getFont().deriveFont(Font.PLAIN, 13f));
         exportButton.setFocusPainted(false);
+        exportButton.addActionListener(e -> onExport());
 
         buttonPanel.add(polishButton);
         buttonPanel.add(Box.createHorizontalStrut(10));
