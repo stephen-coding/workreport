@@ -17,6 +17,8 @@ import org.jetbrains.annotations.NotNull;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
 // AI polish service — async LLM API call (supports Ollama local / OpenAI-compatible cloud)
@@ -32,6 +34,18 @@ public final class ReportPolishService {
             .readTimeout(Duration.ofSeconds(60))
             .writeTimeout(Duration.ofSeconds(10))
             .build();
+
+    // Conversation history entry
+    // 对话历史条目
+    public static class ConversationEntry {
+        public String role; // "user" or "assistant"
+        public String content;
+
+        public ConversationEntry(String role, String content) {
+            this.role = role;
+            this.content = content;
+        }
+    }
 
     // Get system prompt based on report type
     private String getSystemPrompt(String reportType) {
@@ -114,6 +128,25 @@ public final class ReportPolishService {
     public void polishAsyncStreaming(Project project, String text, String reportType,
                                      Consumer<String> onToken,
                                      Consumer<String> onSuccess, Consumer<Exception> onError) {
+        polishAsyncStreamingWithHistory(project, text, reportType, null, onToken, onSuccess, onError);
+    }
+
+    /**
+     * Async polish with conversation history and streaming output.
+     * 异步润色，支持对话历史和流式输出。
+     *
+     * @param project    current project / 当前项目
+     * @param text       text to polish / 待润色文本
+     * @param reportType report type / 报告类型
+     * @param history    conversation history (can be null) / 对话历史
+     * @param onToken    token callback for streaming (null = non-streaming) / 流式 token 回调
+     * @param onSuccess  success callback with full result / 成功回调（完整结果）
+     * @param onError    error callback / 失败回调
+     */
+    public void polishAsyncStreamingWithHistory(Project project, String text, String reportType,
+                                                 List<ConversationEntry> history,
+                                                 Consumer<String> onToken,
+                                                 Consumer<String> onSuccess, Consumer<Exception> onError) {
         String taskTitle = getTaskTitle(reportType);
         ProgressManager.getInstance().run(new Task.Backgroundable(project, taskTitle, true) {
             @Override
@@ -124,7 +157,7 @@ public final class ReportPolishService {
                     if (onToken != null) {
                         // 流式模式
                         StringBuilder fullResult = new StringBuilder();
-                        polishSyncStreaming(text, reportType, token -> {
+                        polishSyncStreaming(text, reportType, history, token -> {
                             fullResult.append(token);
                             // 关键逻辑：回到 EDT 更新 UI，实现打字机效果
                             ApplicationManager.getApplication().invokeLater(() -> onToken.accept(token));
@@ -154,6 +187,13 @@ public final class ReportPolishService {
     // Key logic: Synchronous polish (called on background thread), build different request formats by mode
     // 关键逻辑：同步润色（在后台线程调用），根据模式构造不同请求格式
     private String polishSync(String reportText, String reportType) throws IOException {
+        return polishSyncWithHistory(reportText, reportType, null);
+    }
+
+    // Key logic: Synchronous polish with conversation history
+    // 关键逻辑：带对话历史的同步润色
+    private String polishSyncWithHistory(String reportText, String reportType, 
+                                         List<ConversationEntry> history) throws IOException {
         ReportSettingsState settings = ReportSettingsState.getInstance();
         String endpoint = settings.apiEndpoint;
         String model = settings.modelName;
@@ -161,6 +201,24 @@ public final class ReportPolishService {
 
         String escapedContent = escapeJson(reportText);
         String escapedSystemPrompt = escapeJson(getSystemPrompt(reportType));
+
+        // Build messages with history
+        // 构建带历史的消息列表
+        StringBuilder messagesBuilder = new StringBuilder();
+        
+        // Add system prompt
+        messagesBuilder.append("{\"role\": \"system\", \"content\": \"").append(escapedSystemPrompt).append("\"}");
+        
+        // Add history if exists
+        if (history != null && !history.isEmpty()) {
+            for (ConversationEntry entry : history) {
+                messagesBuilder.append(", {\"role\": \"").append(entry.role)
+                    .append("\", \"content\": \"").append(escapeJson(entry.content)).append("\"}");
+            }
+        }
+        
+        // Add current user message
+        messagesBuilder.append(", {\"role\": \"user\", \"content\": \"").append(escapedContent).append("\"}");
 
         // Key logic: Text Blocks format JSON request body
         // 关键逻辑：Text Blocks 格式化 JSON 请求体
@@ -171,26 +229,20 @@ public final class ReportPolishService {
             jsonBody = """
                     {
                       "model": "%s",
-                      "messages": [
-                        {"role": "system", "content": "%s"},
-                        {"role": "user", "content": "%s"}
-                      ],
+                      "messages": [%s],
                       "stream": false
                     }
-                    """.formatted(escapeJson(model), escapedSystemPrompt, escapedContent);
+                    """.formatted(escapeJson(model), messagesBuilder.toString());
         } else {
             // OpenAI-compatible cloud API request format
             // OpenAI 兼容云端 API 请求格式
             jsonBody = """
                     {
                       "model": "%s",
-                      "messages": [
-                        {"role": "system", "content": "%s"},
-                        {"role": "user", "content": "%s"}
-                      ],
+                      "messages": [%s],
                       "temperature": 0.7
                     }
-                    """.formatted(escapeJson(model), escapedSystemPrompt, escapedContent);
+                    """.formatted(escapeJson(model), messagesBuilder.toString());
         }
 
         RequestBody body = RequestBody.create(jsonBody, JSON_MEDIA_TYPE);
@@ -225,7 +277,7 @@ public final class ReportPolishService {
     private String parseResponse(String responseBody, boolean isOllama) {
         try {
             JsonObject root = JsonParser.parseString(responseBody).getAsJsonObject();
-
+    
             if (isOllama) {
                 // Ollama format: { "message": { "content": "..." } }
                 // Ollama 格式：{ "message": { "content": "..." } }
@@ -242,16 +294,17 @@ public final class ReportPolishService {
                            .getAsString();
             }
         } catch (Exception e) {
-            throw new RuntimeException("解析 AI 响应失败: " + e.getMessage()
-                    + "\n原始响应: " + responseBody, e);
+            throw new RuntimeException("解析 AI 响应失败：" + e.getMessage()
+                    + "\n原始响应：" + responseBody, e);
         }
     }
-
+    
     /**
-     * Streaming polish - SSE (Server-Sent Events) format.
-     * 流式润色 - SSE 格式。
+     * Streaming polish with conversation history - SSE (Server-Sent Events) format.
+     * 流式润色（带对话历史）- SSE 格式。
      */
     private void polishSyncStreaming(String reportText, String reportType,
+                                     List<ConversationEntry> history,
                                      Consumer<String> onToken) throws IOException {
         ReportSettingsState settings = ReportSettingsState.getInstance();
         String endpoint = settings.apiEndpoint;
@@ -261,31 +314,43 @@ public final class ReportPolishService {
         String escapedContent = escapeJson(reportText);
         String escapedSystemPrompt = escapeJson(getSystemPrompt(reportType));
 
+        // Build messages with history for streaming
+        // 构建带历史的消息列表（流式）
+        StringBuilder messagesBuilder = new StringBuilder();
+        
+        // Add system prompt
+        messagesBuilder.append("{\"role\": \"system\", \"content\": \"").append(escapedSystemPrompt).append("\"}");
+        
+        // Add history if exists
+        if (history != null && !history.isEmpty()) {
+            for (ConversationEntry entry : history) {
+                messagesBuilder.append(", {\"role\": \"").append(entry.role)
+                    .append("\", \"content\": \"").append(escapeJson(entry.content)).append("\"}");
+            }
+        }
+        
+        // Add current user message
+        messagesBuilder.append(", {\"role\": \"user\", \"content\": \"").append(escapedContent).append("\"}");
+
         // 流式请求体
         String jsonBody;
         if (isOllama) {
             jsonBody = """
                     {
                       "model": "%s",
-                      "messages": [
-                        {"role": "system", "content": "%s"},
-                        {"role": "user", "content": "%s"}
-                      ],
+                      "messages": [%s],
                       "stream": true
                     }
-                    """.formatted(escapeJson(model), escapedSystemPrompt, escapedContent);
+                    """.formatted(escapeJson(model), messagesBuilder.toString());
         } else {
             jsonBody = """
                     {
                       "model": "%s",
-                      "messages": [
-                        {"role": "system", "content": "%s"},
-                        {"role": "user", "content": "%s"}
-                      ],
+                      "messages": [%s],
                       "temperature": 0.7,
                       "stream": true
                     }
-                    """.formatted(escapeJson(model), escapedSystemPrompt, escapedContent);
+                    """.formatted(escapeJson(model), messagesBuilder.toString());
         }
 
         RequestBody body = RequestBody.create(jsonBody, JSON_MEDIA_TYPE);
