@@ -661,10 +661,30 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
      * 刷新 UI 以显示/隐藏对话面板
      */
     private void refreshUIForConversation() {
-        // 简化处理：只更新状态标签，对话面板会在下次 createBottomPanel 时自动显示
-        // 用户可以看到新的输入框已经出现
-        statusLabel.setText("对话已开启，您可以继续提出优化要求");
-        statusLabel.setForeground(JBColor.BLUE);
+        // 关键修复：必须重新创建底部面板才能显示/隐藏对话输入区
+        // 获取主面板并重新设置内容
+        ApplicationManager.getApplication().invokeLater(() -> {
+            // 获取当前内容面板
+            Component content = getContent();
+            if (content instanceof JPanel mainPanel) {
+                // 移除旧的面板
+                for (Component comp : mainPanel.getComponents()) {
+                    if (comp instanceof JPanel bottomPanel && 
+                        bottomPanel.getLayout() instanceof BorderLayout) {
+                        mainPanel.remove(bottomPanel);
+                        break;
+                    }
+                }
+                
+                // 重新创建底部面板（会检查 isConversationStarted 状态）
+                JPanel newBottomPanel = createBottomPanel();
+                mainPanel.add(newBottomPanel, BorderLayout.SOUTH);
+                
+                // 刷新界面
+                mainPanel.revalidate();
+                mainPanel.repaint();
+            }
+        });
     }
 
     /**
