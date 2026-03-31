@@ -437,7 +437,7 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
         // Key logic: Execute Git operations on pooled thread
         // 关键逻辑：在后台线程执行 Git 操作
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            List<GitCommitEntry> entries = gitLogService.collect(project, startDate, endDate);
+            List<GitCommitEntry> entries = gitLogService.collect(project, startDate, endDate, reportType);
             String formatted = gitLogService.formatEntries(entries);
             String draft = gitLogService.generateDraftReport(entries, reportType);
 
