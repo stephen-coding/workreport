@@ -65,6 +65,7 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
     private List<ConversationEntry> conversationHistory = new java.util.ArrayList<>();
     private String originalDraftText = ""; // Store original draft for context
     private boolean isConversationStarted = false;
+    private boolean conversationPanelShown = false; // Track if conversation panel is displayed
 
     // Report type mapping
     private static final Map<String, String> REPORT_TYPE_MAP = Map.of(
@@ -108,9 +109,9 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
         JSplitPane centerSplitPane = createCenterSplitPane();
         mainPanel.add(centerSplitPane, BorderLayout.CENTER);
 
-        // ==================== 底部状态栏 ====================
-        JPanel bottomPanel = createBottomPanel();
-        mainPanel.add(bottomPanel, BorderLayout.SOUTH);
+        // ==================== 底部操作区（包含按钮 + 对话输入） ====================
+        JPanel bottomAreaPanel = createBottomAreaPanel();
+        mainPanel.add(bottomAreaPanel, BorderLayout.SOUTH);
 
         setContent(mainPanel);
 
@@ -253,13 +254,11 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
         copyButton = new JButton("复制报告");
         copyButton.setFont(copyButton.getFont().deriveFont(Font.PLAIN, 13f));
         copyButton.setFocusPainted(false);
-        copyButton.addActionListener(e -> onCopy());
 
         // 导出按钮
         exportButton = new JButton("导出为文件");
         exportButton.setFont(exportButton.getFont().deriveFont(Font.PLAIN, 13f));
         exportButton.setFocusPainted(false);
-        exportButton.addActionListener(e -> onExport());
 
         buttonPanel.add(polishButton);
         buttonPanel.add(Box.createHorizontalStrut(10));
@@ -273,14 +272,22 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
 
         panel.add(buttonPanel, BorderLayout.CENTER);
         panel.add(statusLabel, BorderLayout.SOUTH);
-        
-        // 如果对话已开始，显示对话输入区
-        if (isConversationStarted) {
-            JPanel conversationPanel = createConversationPanel();
-            panel.add(conversationPanel, BorderLayout.NORTH);
-        }
 
         return panel;
+    }
+
+    /**
+     * 创建底部操作区域面板（包含按钮 + 对话输入）
+     */
+    private JPanel createBottomAreaPanel() {
+        JPanel areaPanel = new JPanel(new BorderLayout(0, 4));
+        areaPanel.setBackground(UIUtil.getPanelBackground());
+        
+        // 添加底部按钮面板
+        JPanel bottomPanel = createBottomPanel();
+        areaPanel.add(bottomPanel, BorderLayout.NORTH);
+        
+        return areaPanel;
     }
 
     /**
@@ -468,6 +475,7 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
         }
     
         polishButton.setEnabled(false);
+        collectButton.setEnabled(false);
         statusLabel.setText("正在 AI 润色中...");
         statusLabel.setForeground(JBColor.BLUE);
     
@@ -482,9 +490,6 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
                 
             // 添加系统提示到历史
             conversationHistory.add(new ConversationEntry("system", getSystemPromptForHistory(reportType)));
-                
-            // 刷新 UI 显示对话输入区
-            refreshUIForConversation();
         }
     
         // Key logic: Async AI polish with streaming (typewriter effect)
@@ -498,13 +503,25 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
                 token -> reportArea.append(token),
                 // Success callback / 成功回调
                 polishedText -> {
+                    System.out.println("[DEBUG] Polish success callback called");
+                    System.out.println("[DEBUG] conversationPanelShown=" + conversationPanelShown);
+                    System.out.println("[DEBUG] isConversationStarted=" + isConversationStarted);
+                    
                     // 将用户输入和 AI 回复添加到历史
                     conversationHistory.add(new ConversationEntry("user", reportText));
                     conversationHistory.add(new ConversationEntry("assistant", polishedText));
                         
                     polishButton.setEnabled(true);
-                    // 只有在对话面板已初始化时才启用相关按钮
-                    if (sendButton != null && userInputField != null) {
+                    collectButton.setEnabled(true);
+                    
+                    // 润色完成后显示对话输入区
+                    // 关键修复：使用 isConversationStarted 判断，而不是检查按钮是否为 null
+                    if (!conversationPanelShown) {
+                        System.out.println("[DEBUG] Calling refreshUIForConversation()");
+                        refreshUIForConversation();
+                        conversationPanelShown = true;
+                        System.out.println("[DEBUG] Set conversationPanelShown=true");
+                    } else {
                         sendButton.setEnabled(true);
                         userInputField.setEnabled(true);
                     }
@@ -514,11 +531,12 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
                 // Error callback / 失败回调
                 error -> {
                     polishButton.setEnabled(true);
-                    // 只有在对话面板已初始化时才启用相关按钮
-                    if (sendButton != null && userInputField != null) {
-                        sendButton.setEnabled(true);
-                        userInputField.setEnabled(true);
-                    }
+                    collectButton.setEnabled(true);
+                    
+                    // 润色失败时恢复原始报告内容
+                    reportArea.setText(reportText);
+                    
+                    // 润色失败时不显示对话输入区
                     statusLabel.setText("润色失败：" + error.getMessage());
                     statusLabel.setForeground(JBColor.RED);
                     ReportPolishService.notifyError(project, "润色失败：" + error.getMessage());
@@ -650,6 +668,11 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
             originalDraftText = "";
             isConversationStarted = false;
             
+            // 重置按钮引用
+            sendButton = null;
+            userInputField = null;
+            clearHistoryButton = null;
+            
             // 隐藏对话输入区
             refreshUIForConversation();
             
@@ -660,31 +683,31 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
 
     /**
      * Refresh UI to show/hide conversation panel
-     * 刷新 UI 以显示/隐藏对话面板
+     * 刷新 UI 以显示/隐藏对话面板（放在底部按钮下方）
      */
     private void refreshUIForConversation() {
-        // 关键修复：必须重新创建底部面板才能显示/隐藏对话输入区
-        // 获取主面板并重新设置内容
         ApplicationManager.getApplication().invokeLater(() -> {
             // 获取当前内容面板
             Component content = getContent();
             if (content instanceof JPanel mainPanel) {
-                // 移除旧的面板
-                for (Component comp : mainPanel.getComponents()) {
-                    if (comp instanceof JPanel bottomPanel && 
-                        bottomPanel.getLayout() instanceof BorderLayout) {
-                        mainPanel.remove(bottomPanel);
-                        break;
+                // 找到底部区域面板
+                Component bottomArea = mainPanel.getComponent(mainPanel.getComponentCount() - 1);
+                if (bottomArea instanceof JPanel areaPanel) {
+                    // 先移除旧的对话面板（如果存在）
+                    if (areaPanel.getComponentCount() > 1) {
+                        areaPanel.remove(1); // 移除索引 1 的组件（对话面板）
                     }
+                    
+                    // 重新创建对话输入区并添加到最底部
+                    if (isConversationStarted) {
+                        JPanel conversationPanel = createConversationPanel();
+                        areaPanel.add(conversationPanel, BorderLayout.SOUTH);
+                    }
+                    
+                    // 刷新界面
+                    areaPanel.revalidate();
+                    areaPanel.repaint();
                 }
-                
-                // 重新创建底部面板（会检查 isConversationStarted 状态）
-                JPanel newBottomPanel = createBottomPanel();
-                mainPanel.add(newBottomPanel, BorderLayout.SOUTH);
-                
-                // 刷新界面
-                mainPanel.revalidate();
-                mainPanel.repaint();
             }
         });
     }
