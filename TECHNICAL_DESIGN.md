@@ -99,9 +99,9 @@ git log
 
 ### 3. ReportPolishService（AI 润色服务）
 
-**职责**：将报告草稿通过 HTTP 发送至 LLM API，支持普通请求和流式 SSE 请求两种模式。
+**职责**：将报告草稿通过 HTTP 发送至 LLM API，支持普通请求、流式 SSE 请求和带对话历史的多轮请求三种模式。
 
-#### 3.1 双模式支持
+#### 3.1 三模式支持
 
 **非流式模式（Fallback）**
 
@@ -115,10 +115,24 @@ git log
 请求（stream: true）→ 逐行读取 SSE → 每个 token 立即回调 → 实时追加到 UI
 ```
 
-#### 3.2 OkHttpClient 配置
+**对话历史模式（新增）**
+
+```
+携带历史对话记录 → AI 理解上下文 → 基于前序结果继续优化 → 流式/非流式输出
+```
+
+#### 3.2 ConversationEntry 数据结构
 
 ```java
-OkHttpClient HTTP_CLIENT = new OkHttpClient.Builder()
+public static class ConversationEntry {
+    public String role;    // "system", "user", 或 "assistant"
+    public String content; // 对话内容
+}
+```
+
+用于存储单轮对话记录，系统提示、用户输入、AI 回复都以此格式保存。
+
+#### 3.3 OkHttpClient 配置
     .connectTimeout(Duration.ofSeconds(10))   // 连接超时
     .readTimeout(Duration.ofSeconds(60))      // 读取超时（流式需要较长时间）
     .writeTimeout(Duration.ofSeconds(10))     // 写入超时
@@ -127,47 +141,53 @@ OkHttpClient HTTP_CLIENT = new OkHttpClient.Builder()
 
 静态单例，整个服务生命周期内复用，避免重复创建连接池。
 
-#### 3.3 请求体格式差异
+#### 3.5 对话历史拼接逻辑（新增）
 
-| 模式 | Ollama 本地 | OpenAI 兼容云端 |
-|------|------------|----------------|
-| 非流式 | `"stream": false` | 无 stream 字段 |
-| 流式 | `"stream": true` | `"stream": true` |
-| 温度参数 | 无 | `"temperature": 0.7` |
-| 认证 | 无需认证头 | `Authorization: Bearer <key>` |
+**首次润色（无历史）**
 
-#### 3.4 SSE 响应解析
-
-流式响应的每一行格式为：`data: <JSON>`
-
-| API 类型 | token 字段路径 |
-|---------|--------------|
-| Ollama | `message.content` |
-| OpenAI 兼容 | `choices[0].delta.content` |
-| 流结束标记 | `data: [DONE]` |
-
-解析失败时静默跳过该行（`catch` 后返回空字符串），确保网络抖动或格式异常不会中断整个流。
-
-#### 3.5 System Prompt 设计
-
-按报告类型使用不同的 System Prompt，明确限制 AI 行为：
-- 保持所有事实信息准确，不捏造内容
-- 使用专业工作汇报语言
-- 按固定板块结构组织（如周报：本周工作/下周计划/需要协调的问题）
-- 保持原文技术术语不变
-
-#### 3.6 异步执行策略
-
-```
-polishAsyncStreaming()
-    └── Task.Backgroundable（后台线程）
-            └── polishSyncStreaming()
-                    └── OkHttp 逐行读取 SSE
-                            └── 每个 token → ApplicationManager.invokeLater()
-                                    └── EDT 线程 → reportArea.append(token)
+```json
+{
+  "messages": [
+    {"role": "system", "content": "你是专业的日报润色助手..."},
+    {"role": "user", "content": "今日完成工作..."}
+  ]
+}
 ```
 
-全程不阻塞 EDT（Event Dispatch Thread），符合 Swing 线程模型规范。
+**第二轮优化（携带 1 轮历史）**
+
+```json
+{
+  "messages": [
+    {"role": "system", "content": "你是专业的日报润色助手..."},
+    {"role": "user", "content": "今日完成工作..."},           // 第一轮用户输入
+    {"role": "assistant", "content": "润色后的文本..."},     // 第一轮 AI 回复
+    {"role": "user", "content": "再精简一些"}                 // 第二轮用户指令
+  ]
+}
+```
+
+**动态构建消息列表**
+
+```java
+StringBuilder messagesBuilder = new StringBuilder();
+
+// 1. 添加 System Prompt
+messagesBuilder.append("{\"role\": \"system\", \"content\": \"...");
+
+// 2. 遍历历史对话
+if (history != null && !history.isEmpty()) {
+    for (ConversationEntry entry : history) {
+        messagesBuilder.append(", {\"role\": \"").append(entry.role)
+            .append("\", \"content\": \"").append(entry.content).append("\"}");
+    }
+}
+
+// 3. 添加当前用户输入
+messagesBuilder.append(", {\"role\": \"user\", \"content\": \"...");
+```
+
+优势：AI 能理解完整的对话上下文，无需用户重复说明背景信息。
 
 ---
 
@@ -289,7 +309,7 @@ GitRepositoryManager.getRepositories()
         statusLabel.setText(...)         更新状态栏
 ```
 
-### 流程二：AI 润色（流式）
+### 流程二：AI 润色（流式 + 对话模式）
 
 ```
 用户点击「AI 润色」
@@ -303,17 +323,30 @@ PrivacyNoticeUtil.ensurePrivacyAccepted()
                 └── 用户确认 → privacyAccepted = true，继续
         │
         ▼
+检查 isConversationStarted 状态
+        │
+        ├── false（首次润色）
+        │   ├─ originalDraftText = reportText
+        │   ├─ conversationHistory.clear()
+        │   ├─ 添加 system prompt 到 history
+        │   ├─ isConversationStarted = true
+        │   └─ refreshUIForConversation() 显示对话输入区
+        │
+        └── true（继续对话）
+            └─ 直接使用现有 history
+        │
+        ▼
 reportArea.setText("")   清空编辑区，准备流式追加
         │
         ▼
-polishAsyncStreaming(onToken, onSuccess, onError)
+polishAsyncStreamingWithHistory(history, onToken, onSuccess, onError)
         │
         ▼
 Task.Backgroundable  [后台线程，IDEA 进度条]
         │
         ▼
-polishSyncStreaming()
-  构建 JSON 请求体（含 System Prompt + 报告草稿，stream: true）
+polishSyncStreamingWithHistory()
+  构建 JSON 请求体（含 System Prompt + 历史对话 + 当前输入，stream: true）
   OkHttp POST 请求 → LLM API 端点
         │
         ▼
@@ -342,9 +375,44 @@ polishSyncStreaming()
                 ▼
         onSuccess.accept(fullResult)  [EDT]
                 │
-                ▼
-        polishButton.setEnabled(true)
-        statusLabel.setText("润色完成！")
+                ├─ conversationHistory.add(new ConversationEntry("user", currentText))
+                ├─ conversationHistory.add(new ConversationEntry("assistant", fullResult))
+                ├─ polishButton.setEnabled(true)
+                ├─ sendButton.setEnabled(true)
+                ├─ userInputField.setEnabled(true)
+                └─ statusLabel.setText("润色完成！您可以继续提出优化要求")
+
+───────────────────────────────────────
+
+用户输入优化指令 → 点击「发送」
+        │
+        ▼
+onSendUserInstruction()
+        │
+        ▼
+禁用 userInputField 和 sendButton（防止重复提交）
+        │
+        ▼
+reportArea.setText("")   清空编辑区
+        │
+        ▼
+polishAsyncStreamingWithHistory(
+    currentReportText + "\n\n用户优化要求：" + instruction,
+    conversationHistory,  // 携带完整历史
+    ...
+)
+        │
+        ▼
+同上流式流程 → AI 基于上下文理解后进行优化
+        │
+        ▼
+收到完整响应后
+        │
+        ├─ conversationHistory.add(user_entry_with_instruction)
+        ├─ conversationHistory.add(assistant_entry)
+        ├─ 启用 userInputField 和 sendButton
+        ├─ 清空输入框
+        └─ statusLabel.setText("优化完成！继续提出更多要求...")
 ```
 
 ---

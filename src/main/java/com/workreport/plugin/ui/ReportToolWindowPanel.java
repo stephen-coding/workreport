@@ -18,6 +18,7 @@ import com.workreport.plugin.model.GitCommitEntry;
 import com.workreport.plugin.privacy.PrivacyNoticeUtil;
 import com.workreport.plugin.service.GitLogCollectorService;
 import com.workreport.plugin.service.ReportPolishService;
+import com.workreport.plugin.service.ReportPolishService.ConversationEntry;
 import com.workreport.plugin.settings.ReportSettingsState;
 
 import javax.swing.*;
@@ -55,6 +56,16 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
     private JButton copyButton;
     private JButton exportButton;
     private JBLabel statusLabel;
+    private JTextField userInputField;
+    private JButton sendButton;
+    private JButton clearHistoryButton;
+
+    // Conversation history management
+    // 对话历史管理
+    private List<ConversationEntry> conversationHistory = new java.util.ArrayList<>();
+    private String originalDraftText = ""; // Store original draft for context
+    private boolean isConversationStarted = false;
+    private boolean conversationPanelShown = false; // Track if conversation panel is displayed
 
     // Report type mapping
     private static final Map<String, String> REPORT_TYPE_MAP = Map.of(
@@ -98,9 +109,9 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
         JSplitPane centerSplitPane = createCenterSplitPane();
         mainPanel.add(centerSplitPane, BorderLayout.CENTER);
 
-        // ==================== 底部操作栏 ====================
-        JPanel bottomPanel = createBottomPanel();
-        mainPanel.add(bottomPanel, BorderLayout.SOUTH);
+        // ==================== 底部操作区（包含按钮 + 对话输入） ====================
+        JPanel bottomAreaPanel = createBottomAreaPanel();
+        mainPanel.add(bottomAreaPanel, BorderLayout.SOUTH);
 
         setContent(mainPanel);
 
@@ -265,6 +276,75 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
         return panel;
     }
 
+    /**
+     * 创建底部操作区域面板（包含按钮 + 对话输入）
+     */
+    private JPanel createBottomAreaPanel() {
+        JPanel areaPanel = new JPanel(new BorderLayout(0, 4));
+        areaPanel.setBackground(UIUtil.getPanelBackground());
+        
+        // 添加底部按钮面板
+        JPanel bottomPanel = createBottomPanel();
+        areaPanel.add(bottomPanel, BorderLayout.NORTH);
+        
+        return areaPanel;
+    }
+
+    /**
+     * 创建对话输入面板
+     */
+    private JPanel createConversationPanel() {
+        JPanel panel = new JPanel(new BorderLayout(8, 0));
+        panel.setBackground(UIUtil.getPanelBackground());
+        panel.setBorder(new EmptyBorder(6, 0, 6, 0));
+        
+        // 左侧：用户输入框
+        userInputField = new JBTextField("请输入优化指令（例如：精简一点、换个更正式的说法、强调技术难点）...");
+        userInputField.setForeground(JBColor.GRAY);
+        userInputField.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override
+            public void focusGained(java.awt.event.FocusEvent e) {
+                if (userInputField.getText().contains("请输入优化指令")) {
+                    userInputField.setText("");
+                    userInputField.setForeground(JBColor.BLACK);
+                }
+            }
+            
+            @Override
+            public void focusLost(java.awt.event.FocusEvent e) {
+                if (userInputField.getText().isEmpty()) {
+                    userInputField.setText("请输入优化指令（例如：精简一点、换个更正式的说法、强调技术难点）...");
+                    userInputField.setForeground(JBColor.GRAY);
+                }
+            }
+        });
+        
+        // 发送按钮
+        sendButton = new JButton("发送");
+        sendButton.setFont(sendButton.getFont().deriveFont(Font.BOLD, 13f));
+        sendButton.setFocusPainted(false);
+        sendButton.setBackground(new Color(79, 121, 255));
+        sendButton.setForeground(Color.WHITE);
+        sendButton.addActionListener(e -> onSendUserInstruction());
+        
+        // 清空历史按钮
+        clearHistoryButton = new JButton("新对话");
+        clearHistoryButton.setFont(clearHistoryButton.getFont().deriveFont(Font.PLAIN, 13f));
+        clearHistoryButton.setFocusPainted(false);
+        clearHistoryButton.addActionListener(e -> onClearConversation());
+        
+        panel.add(userInputField, BorderLayout.CENTER);
+        panel.add(sendButton, BorderLayout.EAST);
+        
+        // 右侧添加清空按钮
+        JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        rightPanel.setOpaque(false);
+        rightPanel.add(clearHistoryButton);
+        panel.add(rightPanel, BorderLayout.WEST);
+        
+        return panel;
+    }
+
     // Get current report type from combo box
     private String getCurrentReportType() {
         String selected = (String) reportTypeCombo.getSelectedItem();
@@ -357,7 +437,7 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
         // Key logic: Execute Git operations on pooled thread
         // 关键逻辑：在后台线程执行 Git 操作
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            List<GitCommitEntry> entries = gitLogService.collect(project, startDate, endDate);
+            List<GitCommitEntry> entries = gitLogService.collect(project, startDate, endDate, reportType);
             String formatted = gitLogService.formatEntries(entries);
             String draft = gitLogService.generateDraftReport(entries, reportType);
 
@@ -385,7 +465,7 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
             return;
         }
         String reportType = getCurrentReportType();
-
+    
         // Key logic: Must show privacy confirmation dialog on first use
         // 关键逻辑：首次使用必弹隐私确认框
         if (!PrivacyNoticeUtil.ensurePrivacyAccepted()) {
@@ -393,31 +473,73 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
             statusLabel.setForeground(JBColor.ORANGE);
             return;
         }
-
+    
         polishButton.setEnabled(false);
+        collectButton.setEnabled(false);
         statusLabel.setText("正在 AI 润色中...");
         statusLabel.setForeground(JBColor.BLUE);
-
+    
         // 清空编辑区，准备流式输出
         reportArea.setText("");
-
+    
+        // 如果是第一次润色，保存原始草稿作为上下文
+        if (!isConversationStarted) {
+            originalDraftText = reportText;
+            conversationHistory.clear();
+            isConversationStarted = true;
+                
+            // 添加系统提示到历史
+            conversationHistory.add(new ConversationEntry("system", getSystemPromptForHistory(reportType)));
+        }
+    
         // Key logic: Async AI polish with streaming (typewriter effect)
         // 关键逻辑：异步 AI 润色，流式输出实现打字机效果
-        polishService.polishAsyncStreaming(project, reportText, reportType,
+        polishService.polishAsyncStreamingWithHistory(
+                project, 
+                reportText, 
+                reportType,
+                conversationHistory,
                 // Token callback - 每收到一个 token 立即追加到文本区
                 token -> reportArea.append(token),
                 // Success callback / 成功回调
                 polishedText -> {
+                    System.out.println("[DEBUG] Polish success callback called");
+                    System.out.println("[DEBUG] conversationPanelShown=" + conversationPanelShown);
+                    System.out.println("[DEBUG] isConversationStarted=" + isConversationStarted);
+                    
+                    // 将用户输入和 AI 回复添加到历史
+                    conversationHistory.add(new ConversationEntry("user", reportText));
+                    conversationHistory.add(new ConversationEntry("assistant", polishedText));
+                        
                     polishButton.setEnabled(true);
-                    statusLabel.setText("润色完成！");
+                    collectButton.setEnabled(true);
+                    
+                    // 润色完成后显示对话输入区
+                    // 关键修复：使用 isConversationStarted 判断，而不是检查按钮是否为 null
+                    if (!conversationPanelShown) {
+                        System.out.println("[DEBUG] Calling refreshUIForConversation()");
+                        refreshUIForConversation();
+                        conversationPanelShown = true;
+                        System.out.println("[DEBUG] Set conversationPanelShown=true");
+                    } else {
+                        sendButton.setEnabled(true);
+                        userInputField.setEnabled(true);
+                    }
+                    statusLabel.setText("润色完成！您可以继续提出优化要求");
                     statusLabel.setForeground(new JBColor(new Color(0, 120, 0), new Color(80, 200, 80)));
                 },
                 // Error callback / 失败回调
                 error -> {
                     polishButton.setEnabled(true);
-                    statusLabel.setText("润色失败: " + error.getMessage());
+                    collectButton.setEnabled(true);
+                    
+                    // 润色失败时恢复原始报告内容
+                    reportArea.setText(reportText);
+                    
+                    // 润色失败时不显示对话输入区
+                    statusLabel.setText("润色失败：" + error.getMessage());
                     statusLabel.setForeground(JBColor.RED);
-                    ReportPolishService.notifyError(project, "润色失败: " + error.getMessage());
+                    ReportPolishService.notifyError(project, "润色失败：" + error.getMessage());
                 }
         );
     }
@@ -452,12 +574,156 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
         if (wrapper != null) {
             try {
                 Files.writeString(wrapper.getFile().toPath(), text, StandardCharsets.UTF_8);
-                statusLabel.setText("已导出至: " + wrapper.getFile().getAbsolutePath());
+                statusLabel.setText("已导出至：" + wrapper.getFile().getAbsolutePath());
                 statusLabel.setForeground(new JBColor(new Color(0, 120, 0), new Color(80, 200, 80)));
             } catch (IOException e) {
-                statusLabel.setText("导出失败: " + e.getMessage());
+                statusLabel.setText("导出失败：" + e.getMessage());
                 statusLabel.setForeground(JBColor.RED);
             }
         }
+    }
+
+    /**
+     * Handle user instruction input for continuous optimization
+     * 处理用户输入的优化指令
+     */
+    private void onSendUserInstruction() {
+        String instruction = userInputField.getText().trim();
+        if (instruction.isEmpty() || instruction.contains("请输入优化指令")) {
+            statusLabel.setText("请输入有效的优化指令");
+            statusLabel.setForeground(JBColor.ORANGE);
+            return;
+        }
+
+        String currentReportText = reportArea.getText();
+        if (currentReportText == null || currentReportText.isBlank()) {
+            statusLabel.setText("当前没有可优化的内容");
+            statusLabel.setForeground(JBColor.RED);
+            return;
+        }
+
+        String reportType = getCurrentReportType();
+        
+        // 禁用输入框和发送按钮，防止重复提交
+        userInputField.setEnabled(false);
+        sendButton.setEnabled(false);
+        polishButton.setEnabled(false);
+        
+        statusLabel.setText("正在根据您的需求优化...");
+        statusLabel.setForeground(JBColor.BLUE);
+
+        // 清空编辑区，准备流式输出
+        reportArea.setText("");
+
+        // 构建包含上下文的请求：使用上一轮 AI 的输出作为当前输入
+        polishService.polishAsyncStreamingWithHistory(
+                project, 
+                currentReportText + "\n\n用户优化要求：" + instruction, 
+                reportType,
+                conversationHistory,
+                // Token callback
+                token -> reportArea.append(token),
+                // Success callback
+                optimizedText -> {
+                    // 添加用户指令和 AI 回复到历史
+                    conversationHistory.add(new ConversationEntry("user", 
+                            currentReportText + "\n\n优化要求：" + instruction));
+                    conversationHistory.add(new ConversationEntry("assistant", optimizedText));
+                    
+                    userInputField.setEnabled(true);
+                    sendButton.setEnabled(true);
+                    polishButton.setEnabled(true);
+                    userInputField.setText("");
+                    userInputField.setForeground(JBColor.BLACK);
+                    statusLabel.setText("优化完成！继续提出更多要求...");
+                    statusLabel.setForeground(new JBColor(new Color(0, 120, 0), new Color(80, 200, 80)));
+                },
+                // Error callback
+                error -> {
+                    userInputField.setEnabled(true);
+                    sendButton.setEnabled(true);
+                    polishButton.setEnabled(true);
+                    statusLabel.setText("优化失败：" + error.getMessage());
+                    statusLabel.setForeground(JBColor.RED);
+                    ReportPolishService.notifyError(project, "优化失败：" + error.getMessage());
+                }
+        );
+    }
+
+    /**
+     * Clear conversation history and start fresh
+     * 清空对话历史，开始新对话
+     */
+    private void onClearConversation() {
+        int result = javax.swing.JOptionPane.showConfirmDialog(
+                this,
+                "确定要清空对话历史并开始新对话吗？\n当前的润色结果将保留在编辑器中。",
+                "确认新对话",
+                javax.swing.JOptionPane.YES_NO_OPTION,
+                javax.swing.JOptionPane.QUESTION_MESSAGE
+        );
+        
+        if (result == javax.swing.JOptionPane.YES_OPTION) {
+            conversationHistory.clear();
+            originalDraftText = "";
+            isConversationStarted = false;
+            
+            // 重置按钮引用
+            sendButton = null;
+            userInputField = null;
+            clearHistoryButton = null;
+            
+            // 隐藏对话输入区
+            refreshUIForConversation();
+            
+            statusLabel.setText("已清空对话历史，可以重新开始润色");
+            statusLabel.setForeground(JBColor.BLUE);
+        }
+    }
+
+    /**
+     * Refresh UI to show/hide conversation panel
+     * 刷新 UI 以显示/隐藏对话面板（放在底部按钮下方）
+     */
+    private void refreshUIForConversation() {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            // 获取当前内容面板
+            Component content = getContent();
+            if (content instanceof JPanel mainPanel) {
+                // 找到底部区域面板
+                Component bottomArea = mainPanel.getComponent(mainPanel.getComponentCount() - 1);
+                if (bottomArea instanceof JPanel areaPanel) {
+                    // 先移除旧的对话面板（如果存在）
+                    if (areaPanel.getComponentCount() > 1) {
+                        areaPanel.remove(1); // 移除索引 1 的组件（对话面板）
+                    }
+                    
+                    // 重新创建对话输入区并添加到最底部
+                    if (isConversationStarted) {
+                        JPanel conversationPanel = createConversationPanel();
+                        areaPanel.add(conversationPanel, BorderLayout.SOUTH);
+                    }
+                    
+                    // 刷新界面
+                    areaPanel.revalidate();
+                    areaPanel.repaint();
+                }
+            }
+        });
+    }
+
+    /**
+     * Get system prompt for conversation history
+     * 获取用于对话历史的系统提示
+     */
+    private String getSystemPromptForHistory(String reportType) {
+        ReportPolishService service = new ReportPolishService();
+        // 使用反射或其他方式获取私有方法，这里简化处理
+        return switch (reportType) {
+            case "daily" -> "你是一个专业的日报润色助手。请将用户提供的工作内容改写为一份结构清晰、语言专业的中文日报。";
+            case "quarterly" -> "你是一个专业的季度报告润色助手。请将用户提供的工作内容改写为一份结构清晰、语言专业的中文季度报告。";
+            case "yearly" -> "你是一个专业的年度报告润色助手。请将用户提供的工作内容改写为一份结构清晰、语言专业的中文年度报告。";
+            default -> "你是一个专业的周报润色助手。请将用户提供的工作内容改写为一份结构清晰、语言专业的中文周报。";
+        };
     }
 }

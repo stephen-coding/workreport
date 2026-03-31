@@ -31,14 +31,14 @@ public final class GitLogCollectorService {
      * Collect git commits (called on background thread).
      * 采集 Git 提交记录（在后台线程调用）。
      */
-    public String collectFormatted(Project project, LocalDate startDate, LocalDate endDate) {
-        List<GitCommitEntry> entries = collect(project, startDate, endDate);
+    public String collectFormatted(Project project, LocalDate startDate, LocalDate endDate, String reportType) {
+        List<GitCommitEntry> entries = collect(project, startDate, endDate, reportType);
         return formatEntries(entries);
     }
 
     // Key logic: Execute git log command via GitLineHandler
     // 关键逻辑：通过 GitLineHandler 执行 git log 命令
-    public List<GitCommitEntry> collect(Project project, LocalDate startDate, LocalDate endDate) {
+    public List<GitCommitEntry> collect(Project project, LocalDate startDate, LocalDate endDate, String reportType) {
         List<GitCommitEntry> allEntries = new ArrayList<>();
         GitRepositoryManager manager = GitRepositoryManager.getInstance(project);
         List<GitRepository> repos = manager.getRepositories();
@@ -51,11 +51,28 @@ public final class GitLogCollectorService {
                 // Key logic: Build git log command
                 // 关键逻辑：构建 git log 命令
                 GitLineHandler handler = new GitLineHandler(project, repo.getRoot(), GitCommand.LOG);
+                
+                // 日报：精确查询当天（since/until 是左闭右开区间）
+                // 其他类型：扩展 1 天以包含边界日期
+                boolean isDaily = "daily".equals(reportType);
+                
+                LocalDate queryStart;
+                LocalDate queryEnd;
+                if (isDaily) {
+                    // 日报：精确日期，添加时间确保包含当天整天
+                    queryStart = startDate;
+                    queryEnd = endDate.plusDays(1); // 不包含 endDate+1 当天
+                } else {
+                    // 周报/季报/年报：扩展 1 天包含边界
+                    queryStart = startDate.minusDays(1);
+                    queryEnd = endDate.plusDays(1);
+                }
+                
                 handler.addParameters(
                         "--pretty=format:" + LOG_FORMAT,
                         "--date=short",
-                        "--after=" + startDate.minusDays(1),
-                        "--before=" + endDate.plusDays(1),
+                        "--after=" + queryStart + " 00:00:00",
+                        "--before=" + queryEnd + " 00:00:00",
                         "--no-merges"
                 );
                 if (authorFilter != null && !authorFilter.isBlank()) {
