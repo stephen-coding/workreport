@@ -522,8 +522,13 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
                         conversationPanelShown = true;
                         System.out.println("[DEBUG] Set conversationPanelShown=true");
                     } else {
-                        sendButton.setEnabled(true);
-                        userInputField.setEnabled(true);
+                        // 防御性编程：增加空值检查，避免 NPE
+                        if (sendButton != null) {
+                            sendButton.setEnabled(true);
+                        }
+                        if (userInputField != null) {
+                            userInputField.setEnabled(true);
+                        }
                     }
                     statusLabel.setText("润色完成！您可以继续提出优化要求");
                     statusLabel.setForeground(new JBColor(new Color(0, 120, 0), new Color(80, 200, 80)));
@@ -535,6 +540,14 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
                     
                     // 润色失败时恢复原始报告内容
                     reportArea.setText(reportText);
+                    
+                    // 防御性编程：增加空值检查
+                    if (sendButton != null) {
+                        sendButton.setEnabled(true);
+                    }
+                    if (userInputField != null) {
+                        userInputField.setEnabled(true);
+                    }
                     
                     // 润色失败时不显示对话输入区
                     statusLabel.setText("润色失败：" + error.getMessage());
@@ -630,18 +643,30 @@ public final class ReportToolWindowPanel extends SimpleToolWindowPanel {
                             currentReportText + "\n\n优化要求：" + instruction));
                     conversationHistory.add(new ConversationEntry("assistant", optimizedText));
                     
-                    userInputField.setEnabled(true);
-                    sendButton.setEnabled(true);
+                    // 防御性编程：增加空值检查
+                    if (userInputField != null) {
+                        userInputField.setEnabled(true);
+                    }
+                    if (sendButton != null) {
+                        sendButton.setEnabled(true);
+                    }
                     polishButton.setEnabled(true);
-                    userInputField.setText("");
-                    userInputField.setForeground(JBColor.BLACK);
+                    if (userInputField != null) {
+                        userInputField.setText("");
+                        userInputField.setForeground(JBColor.BLACK);
+                    }
                     statusLabel.setText("优化完成！继续提出更多要求...");
                     statusLabel.setForeground(new JBColor(new Color(0, 120, 0), new Color(80, 200, 80)));
                 },
                 // Error callback
                 error -> {
-                    userInputField.setEnabled(true);
-                    sendButton.setEnabled(true);
+                    // 防御性编程：增加空值检查
+                    if (userInputField != null) {
+                        userInputField.setEnabled(true);
+                    }
+                    if (sendButton != null) {
+                        sendButton.setEnabled(true);
+                    }
                     polishButton.setEnabled(true);
                     statusLabel.setText("优化失败：" + error.getMessage());
                     statusLabel.setForeground(JBColor.RED);

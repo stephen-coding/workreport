@@ -13,7 +13,7 @@
     <fileSets>
         <fileSet>
             <directory>${project.build.directory}</directory>
-            <outputDirectory>workreport-ai-assistant/lib</outputDirectory>
+            <outputDirectory>com.workreport.ai-assistant/lib</outputDirectory>
             <includes>
                 <include>${project.artifactId}-${project.version}.jar</include>
             </includes>
@@ -24,13 +24,15 @@
     <!-- 打包的运行时依赖（OkHttp3 及其传递依赖） -->
     <dependencySets>
         <dependencySet>
-            <outputDirectory>workreport-ai-assistant/lib</outputDirectory>
+            <outputDirectory>com.workreport.ai-assistant/lib</outputDirectory>
             <useProjectArtifact>false</useProjectArtifact>
             <scope>runtime</scope>
-            <!-- Exclude IntelliJ platform JARs (system scope, provided by IDE) -->
-            <!-- 排除 IntelliJ 平台 JAR（system 作用域，由 IDE 运行时提供） -->
+            <!-- Exclude IntelliJ platform JARs (provided scope, bundled by IDE) -->
+            <!-- 排除 IntelliJ 平台 JAR（provided 作用域，由 IDE 运行时提供） -->
             <excludes>
-                <exclude>com.jetbrains.intellij:*</exclude>
+                <exclude>com.jetbrains.intellij.platform:*</exclude>
+                <exclude>com.jetbrains.intellij.vcs:*</exclude>
+                <exclude>org.jetbrains:annotations</exclude>
             </excludes>
         </dependencySet>
     </dependencySets>

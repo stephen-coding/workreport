@@ -20,157 +20,134 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <!-- IntelliJ IDEA SDK path -->
-        <!-- IntelliJ IDEA SDK 本地安装路径 -->
-        <idea.home>D:/IntelliJ IDEA 2025.2.5</idea.home>
+        <!-- IntelliJ Platform SDK version (build number) -->
+        <!-- IntelliJ 平台 SDK 版本（构建号） -->
+        <intellij.version>261.25134.95</intellij.version>
 
         <!-- Dependency versions -->
         <!-- 依赖版本号 -->
         <okhttp.version>4.12.0</okhttp.version>
     </properties>
 
+    <!-- JetBrains IntelliJ Platform artifact repositories -->
+    <!-- JetBrains IntelliJ 平台制品仓库 -->
+    <repositories>
+        <repository>
+            <id>intellij-releases</id>
+            <name>IntelliJ Platform Releases</name>
+            <url>https://www.jetbrains.com/intellij-repository/releases</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+        <repository>
+            <id>intellij-dependencies</id>
+            <name>IntelliJ Platform Dependencies</name>
+            <url>https://cache-redirector.jetbrains.com/intellij-dependencies</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
     <dependencies>
-        <!-- ==================== IntelliJ Platform JARs (system scope) ==================== -->
-        <!-- ==================== IntelliJ 平台 JAR 包（system 作用域，由 IDE 运行时提供） ==================== -->
+        <!-- ==================== IntelliJ Platform (provided by IDE at runtime) ==================== -->
+        <!-- ==================== IntelliJ 平台 API（运行时由 IDE 提供） ==================== -->
 
-        <!-- Core platform: Project, ApplicationManager, Service, ProgressManager, VirtualFile, Disposable -->
-        <!-- 核心平台类：Project、ApplicationManager、Service、ProgressManager、VirtualFile、Disposable -->
+        <!-- Core platform: Project, ApplicationManager, Service, ProgressManager, VirtualFile -->
+        <!-- 核心平台：Project、ApplicationManager、Service、ProgressManager、VirtualFile -->
         <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
-            <artifactId>util-8</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/util-8.jar</systemPath>
+            <groupId>com.jetbrains.intellij.platform</groupId>
+            <artifactId>core</artifactId>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
         </dependency>
 
-        <!-- UI components, Configurable, PasswordSafe, CredentialStore, Messages, FileChooser, Notifications -->
-        <!-- UI 组件、设置页面接口、密码安全存储、凭据管理、消息弹窗、文件选择器、通知管理 -->
+        <!-- Core UI: tool windows, settings, notifications, file chooser -->
+        <!-- 核心 UI：工具窗口、设置页面、通知、文件选择器 -->
         <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
-            <artifactId>app</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/app.jar</systemPath>
+            <groupId>com.jetbrains.intellij.platform</groupId>
+            <artifactId>core-ui</artifactId>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
         </dependency>
 
-        <!-- Utility classes: com.intellij.openapi.util.*, com.intellij.util.* -->
-        <!-- 工具类：com.intellij.openapi.util.*、com.intellij.util.* -->
+        <!-- IDE Implementation: Configurable, PasswordSafe, CredentialStore, Messages -->
+        <!-- IDE 实现：Configurable、PasswordSafe、CredentialStore、Messages -->
         <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
-            <artifactId>util</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/util.jar</systemPath>
+            <groupId>com.jetbrains.intellij.platform</groupId>
+            <artifactId>ide-impl</artifactId>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
         </dependency>
 
-        <!-- Additional platform APIs -->
-        <!-- 额外平台 API -->
-        <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
-            <artifactId>lib</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/lib.jar</systemPath>
-        </dependency>
-
-        <!-- Platform loader services -->
-        <!-- 平台加载器服务 -->
-        <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
-            <artifactId>platform-loader</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/platform-loader.jar</systemPath>
-        </dependency>
-
-        <!-- Product-specific APIs -->
-        <!-- 产品特定 API -->
-        <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
-            <artifactId>product</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/product.jar</systemPath>
-        </dependency>
-
-        <!-- JetBrains annotations (@NotNull, @Nullable) -->
-        <!-- JetBrains 注解（@NotNull、@Nullable） -->
-        <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
-            <artifactId>annotations</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/annotations.jar</systemPath>
-        </dependency>
-
-        <!-- IntelliJ Forms runtime -->
-        <!-- IntelliJ 表单运行时 -->
-        <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
-            <artifactId>forms-rt</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/forms_rt.jar</systemPath>
-        </dependency>
-
-        <!-- VCS core interfaces -->
+        <!-- VCS Core: version control interfaces -->
         <!-- 版本控制核心接口 -->
         <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
+            <groupId>com.jetbrains.intellij.platform</groupId>
             <artifactId>vcs-core</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/module-intellij.platform.vcs.core.jar</systemPath>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
         </dependency>
 
         <!-- VCS API -->
         <!-- 版本控制 API -->
         <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
+            <groupId>com.jetbrains.intellij.platform</groupId>
             <artifactId>vcs</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/module-intellij.platform.vcs.jar</systemPath>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
         </dependency>
 
         <!-- DVCS interfaces (required by GitRepositoryManager) -->
         <!-- 分布式版本控制接口（GitRepositoryManager 依赖） -->
         <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
+            <groupId>com.jetbrains.intellij.platform</groupId>
             <artifactId>vcs-dvcs</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/modules/intellij.platform.vcs.dvcs.jar</systemPath>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
         </dependency>
 
         <!-- DVCS impl: AbstractRepositoryManager -->
         <!-- 分布式版本控制实现：AbstractRepositoryManager -->
         <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
+            <groupId>com.jetbrains.intellij.platform</groupId>
             <artifactId>vcs-dvcs-impl</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/modules/intellij.platform.vcs.dvcs.impl.jar</systemPath>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
         </dependency>
 
-        <!-- Bundled Gson (provided by IntelliJ at runtime) -->
-        <!-- 内置 Gson（由 IntelliJ 运行时提供，无需额外打包） -->
+        <!-- git4idea: GitLineHandler, GitRepositoryManager, GitCommand -->
+        <!-- git4idea：Git 命令执行器、Git 仓库管理器、Git 命令定义 -->
         <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
+            <groupId>com.jetbrains.intellij.vcs</groupId>
+            <artifactId>git</artifactId>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- JetBrains annotations (@NotNull, @Nullable) -->
+        <!-- JetBrains 注解（@NotNull、@Nullable） -->
+        <dependency>
+            <groupId>org.jetbrains</groupId>
+            <artifactId>annotations</artifactId>
+            <version>24.1.0</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Gson (provided by IntelliJ at runtime) -->
+        <!-- Gson（由 IntelliJ 运行时提供） -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/lib/module-intellij.libraries.gson.jar</systemPath>
-        </dependency>
-
-        <!-- git4idea plugin: GitLineHandler, GitRepositoryManager, GitCommand -->
-        <!-- git4idea 插件：Git 命令执行器、Git 仓库管理器、Git 命令定义 -->
-        <dependency>
-            <groupId>com.jetbrains.intellij</groupId>
-            <artifactId>vcs-git</artifactId>
-            <version>1.0</version>
-            <scope>system</scope>
-            <systemPath>${idea.home}/plugins/vcs-git/lib/vcs-git.jar</systemPath>
+            <version>2.10.1</version>
+            <scope>provided</scope>
         </dependency>
 
         <!-- ==================== Bundled dependencies (shipped with plugin) ==================== -->
