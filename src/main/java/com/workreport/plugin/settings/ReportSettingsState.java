@@ -41,6 +41,15 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
     public String coreHomePath = "";
     public String pythonPath = "";
 
+    // Switchable model list: [{"name","provider","baseUrl","model"}] + the active one
+    // 可切换的模型列表 + 当前选中的模型
+    public String modelProfilesJson = "";
+    public String activeProfile = "";
+
+    // Auto mode: apply file edits without the diff confirmation prompt
+    // 自动执行：写文件不再弹 diff 确认
+    public boolean autoAcceptEdits = false;
+
     public static ReportSettingsState getInstance() {
         return ApplicationManager.getApplication().getService(ReportSettingsState.class);
     }
@@ -62,6 +71,9 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
         this.coreExePath = state.coreExePath != null ? state.coreExePath : "";
         this.coreHomePath = state.coreHomePath != null ? state.coreHomePath : "";
         this.pythonPath = state.pythonPath != null ? state.pythonPath : "";
+        this.modelProfilesJson = state.modelProfilesJson != null ? state.modelProfilesJson : "";
+        this.activeProfile = state.activeProfile != null ? state.activeProfile : "";
+        this.autoAcceptEdits = state.autoAcceptEdits;
     }
 
     // Reset privacy confirmation when API endpoint changes (require re-confirmation)

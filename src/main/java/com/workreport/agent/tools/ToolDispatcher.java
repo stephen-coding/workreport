@@ -5,6 +5,7 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.workreport.agent.rpc.JsonRpcConnection;
+import com.workreport.plugin.settings.ReportSettingsState;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -38,7 +39,10 @@ public final class ToolDispatcher {
 
         // Tool execution is blocking -> run on the pooled thread, never on EDT.
         // 工具执行是阻塞操作 -> 放到后台线程池，绝不在 EDT 上执行。
-        boolean needsApproval = !"auto".equals(permission);
+        // Auto mode (panel checkbox) skips the diff confirmation for file mutations.
+        // 面板勾选「自动执行」时，文件写操作不再弹 diff 确认。
+        boolean autoAccept = ReportSettingsState.getInstance().autoAcceptEdits;
+        boolean needsApproval = !"auto".equals(permission) && !autoAccept;
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             ToolResult result;
             try {

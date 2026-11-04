@@ -17,21 +17,17 @@ import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
 import com.intellij.ui.components.JBTextField;
 import com.intellij.util.ui.UIUtil;
-import com.workreport.agent.rpc.CoreProcess;
+import com.workreport.agent.rpc.AgentCoreService;
 import com.workreport.agent.rpc.JsonRpcConnection;
-import com.workreport.agent.rpc.PythonLocator;
 import com.workreport.agent.tools.ToolDispatcher;
-import com.workreport.plugin.settings.ReportSettingsConfigurable;
+import com.workreport.plugin.settings.ModelProfile;
+import com.workreport.plugin.settings.ModelProfiles;
 import com.workreport.plugin.settings.ReportSettingsState;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonParser;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
 import java.io.IOException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -50,19 +46,21 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     private final JButton sendButton = new JButton("发送");
     private final JButton stopButton = new JButton("停止");
     private final JButton settingsButton = new JButton("设置");
+    private final JComboBox<String> modelCombo = new JComboBox<>();
+    private final JCheckBox autoCheckBox = new JCheckBox("自动执行");
     private final JBLabel statusLabel = new JBLabel("正在启动 Agent Core...");
+    private boolean updatingModelCombo;
 
-    private final Object coreLock = new Object();
-    private CoreProcess coreProcess;
-    private JsonRpcConnection connection;
+    private final AgentCoreService coreService;
     private volatile String currentTaskId;
-    private volatile boolean disposed;
 
     public AgentChatPanel(Project project) {
         super(true, true);
         this.project = project;
         this.sessionId = project.getLocationHash();
         this.toolDispatcher = new ToolDispatcher(project);
+        this.coreService = AgentCoreService.getInstance(project);
+        coreService.setMessageHandler(this::onCoreMessage);
         initUI();
         startCoreAsync();
     }
@@ -86,6 +84,16 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         statusPanel.setOpaque(false);
         statusLabel.setBorder(new EmptyBorder(0, 2, 0, 0));
         statusPanel.add(statusLabel, BorderLayout.WEST);
+        // Quick model switcher + auto-apply toggle (Qoder-style).
+        // 快速模型切换 + 自动执行开关（类 Qoder 体验）。
+        JPanel quickPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        quickPanel.setOpaque(false);
+        modelCombo.setToolTipText("切换模型（在设置页维护列表）");
+        autoCheckBox.setToolTipText("勾选后写文件不再弹 diff 确认，直接落盘（可用 revert_file 回退）");
+        quickPanel.add(new JBLabel("模型:"));
+        quickPanel.add(modelCombo);
+        quickPanel.add(autoCheckBox);
+        statusPanel.add(quickPanel, BorderLayout.EAST);
         mainPanel.add(statusPanel, BorderLayout.NORTH);
 
         mainPanel.add(new JBScrollPane(chatArea), BorderLayout.CENTER);
@@ -109,24 +117,64 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         sendButton.addActionListener(e -> onSend());
         stopButton.addActionListener(e -> onStop());
         settingsButton.addActionListener(e -> openSettings());
+        modelCombo.addActionListener(e -> onModelSelected());
+        autoCheckBox.addActionListener(e -> onAutoAcceptToggled());
         inputField.addActionListener(e -> onSend());
+
+        refreshModelCombo();
+        autoCheckBox.setSelected(ReportSettingsState.getInstance().autoAcceptEdits);
+    }
+
+    // Fill the combo with the configured profiles, keeping the active one selected.
+    // 用已配置的模型填充下拉框，并选中当前生效的那个。
+    private void refreshModelCombo() {
+        ReportSettingsState state = ReportSettingsState.getInstance();
+        updatingModelCombo = true;
+        try {
+            modelCombo.removeAllItems();
+            for (ModelProfile profile : ModelProfiles.resolve(state)) {
+                modelCombo.addItem(profile.name);
+            }
+            modelCombo.setSelectedItem(ModelProfiles.activeName(state));
+        } finally {
+            updatingModelCombo = false;
+        }
+    }
+
+    private void onModelSelected() {
+        if (updatingModelCombo) {
+            return;
+        }
+        Object selected = modelCombo.getSelectedItem();
+        if (selected == null) {
+            return;
+        }
+        ReportSettingsState state = ReportSettingsState.getInstance();
+        state.activeProfile = selected.toString();
+        ModelProfile profile = ModelProfiles.active(state);
+        setStatus("已切换模型：" + profile.name + "（" + profile.model + "）");
+        coreService.pushSettings();
+    }
+
+    private void onAutoAcceptToggled() {
+        ReportSettingsState state = ReportSettingsState.getInstance();
+        state.autoAcceptEdits = autoCheckBox.isSelected();
+        setStatus(state.autoAcceptEdits ? "自动执行已开启：写文件不再确认" : "自动执行已关闭：写文件需确认");
     }
 
     // Open the plugin settings page; drop the Core afterwards so path/model edits take effect.
     // 打开插件设置页；关闭后重启 Core，使路径/模型修改立即生效。
     private void openSettings() {
         ShowSettingsUtil.getInstance().showSettingsDialog(project, "com.workreport.settings");
+        // Model list may have changed while the dialog was open.
+        // 设置页可能改过模型列表，刷新下拉框。
+        refreshModelCombo();
+        autoCheckBox.setSelected(ReportSettingsState.getInstance().autoAcceptEdits);
         if (currentTaskId != null) {
             return;
         }
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            synchronized (coreLock) {
-                if (connection != null) {
-                    connection.dispose();
-                    connection = null;
-                }
-                coreProcess = null;
-            }
+            coreService.restart();
             setStatus("配置已更新，下条消息重建 Core");
         });
     }
@@ -146,85 +194,7 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     }
 
     private void ensureStarted() throws IOException {
-        synchronized (coreLock) {
-            if (disposed) {
-                return;
-            }
-            if (connection != null && connection.isAlive()) {
-                return;
-            }
-            Path dataDir = Paths.get(System.getProperty("user.home"), ".agent", "data", sessionId);
-            ReportSettingsState state = ReportSettingsState.getInstance();
-            Path coreExe = PythonLocator.locateCoreExe(state.coreExePath);
-            coreProcess = new CoreProcess();
-            // Prefer the packaged Core executable (bundled in the plugin zip or core/dist).
-            // Only fall back to `python -m agent_core` when no executable is available.
-            // 优先使用打包好的 Core 可执行文件（插件内置或 core/dist）；
-            // 仅在没有可执行文件时才回退到 python -m agent_core。
-            if (coreExe != null) {
-                coreProcess.startExecutable(coreExe, sessionId, dataDir);
-            } else {
-                String python = PythonLocator.locatePython(state.pythonPath);
-                if (python == null) {
-                    throw new IOException("未找到 Agent Core：插件未内置可执行文件，且未找到 Python 3.9+。"
-                            + "请在设置页填写 Core 可执行文件，或设置 AGENT_CORE_EXE / AGENT_PYTHON 环境变量");
-                }
-                Path coreHome = PythonLocator.locateCoreHome(state.coreHomePath);
-                if (coreHome == null) {
-                    throw new IOException("未找到 core 目录。请设置 AGENT_CORE_EXE 或 AGENT_CORE_HOME 环境变量");
-                }
-                coreProcess.start(python, coreHome, sessionId, dataDir);
-            }
-            connection = new JsonRpcConnection(coreProcess);
-            connection.addNotificationHandler(this::onCoreMessage);
-            connection.start();
-            sendIdeHello(connection);
-            sendSettings(connection);
-        }
-    }
-
-    private void sendIdeHello(JsonRpcConnection conn) {
-        Map<String, Object> hello = new HashMap<>();
-        hello.put("protocolVersion", "1.0");
-        hello.put("ide", "intellij");
-        conn.notify("ide/hello", hello);
-    }
-
-    // Push current plugin settings to the Core (provider/model/endpoint).
-    // 将插件当前设置下发给 Core（提供商/模型/端点）。
-    private void sendSettings(JsonRpcConnection conn) {
-        ReportSettingsState state = ReportSettingsState.getInstance();
-        Map<String, Object> settings = new HashMap<>();
-        boolean ollama = state.useOllamaMode;
-        settings.put("provider", ollama ? "ollama" : "openai_compat");
-        settings.put("base_url", state.apiEndpoint);
-        settings.put("model", state.modelName);
-        String apiKey = ReportSettingsConfigurable.retrieveApiKey();
-        if (!ollama && apiKey != null && !apiKey.isEmpty()) {
-            settings.put("api_key", apiKey);
-        }
-        Object mcpServers = parseMcpServers(state.mcpServersJson);
-        if (mcpServers != null) {
-            settings.put("mcp_servers", mcpServers);
-        }
-        conn.notify("settings/update", settings);
-    }
-
-    // Parse the MCP server JSON typed in the settings page (array or name map).
-    // 解析设置页填写的 MCP 服务 JSON（数组或 name 映射两种形态）。
-    private static Object parseMcpServers(String json) {
-        if (json == null || json.isBlank()) {
-            return null;
-        }
-        try {
-            JsonElement element = JsonParser.parseString(json);
-            if (element.isJsonArray() || element.isJsonObject()) {
-                return element;
-            }
-        } catch (RuntimeException e) {
-            LOG.warn("ignored invalid MCP config JSON", e);
-        }
-        return null;
+        coreService.connection();
     }
 
     // ------------------------------------------------------------- messaging
@@ -270,13 +240,13 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             try {
                 ensureStarted();
-                JsonRpcConnection conn = connection;
+                JsonRpcConnection conn = coreService.connectionOrNull();
                 if (conn == null) {
                     throw new IOException("Agent Core 未就绪");
                 }
                 // Re-push settings so model/MCP edits apply without restarting the Core.
                 // 重新下发设置，使模型/MCP 修改无需重启 Core 即可生效。
-                sendSettings(conn);
+                coreService.pushSettings(conn);
                 Map<String, Object> params = new HashMap<>();
                 params.put("sessionId", sessionId);
                 params.put("message", text);
@@ -302,7 +272,7 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     }
 
     private void onStop() {
-        JsonRpcConnection conn = connection;
+        JsonRpcConnection conn = coreService.connectionOrNull();
         if (conn == null) {
             return;
         }
@@ -351,7 +321,7 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
                 break;
             }
             case "tool/invoke": {
-                JsonRpcConnection conn = connection;
+                JsonRpcConnection conn = coreService.connectionOrNull();
                 if (conn != null) {
                     toolDispatcher.onToolInvoke(params, conn);
                 }
@@ -438,7 +408,7 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
             Map<String, Object> result = new HashMap<>();
             result.put("confirmId", confirmId);
             result.put("approved", answer == Messages.YES);
-            JsonRpcConnection conn = connection;
+            JsonRpcConnection conn = coreService.connectionOrNull();
             if (conn != null) {
                 conn.request("agent/confirmResult", result).exceptionally(ex -> {
                     LOG.warn("failed to send confirm result", ex);
@@ -485,13 +455,6 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
 
     @Override
     public void dispose() {
-        disposed = true;
-        synchronized (coreLock) {
-            if (connection != null) {
-                connection.dispose();
-                connection = null;
-            }
-            coreProcess = null;
-        }
+        coreService.setMessageHandler(null);
     }
 }
