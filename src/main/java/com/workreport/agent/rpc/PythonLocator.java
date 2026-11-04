@@ -1,7 +1,11 @@
 package com.workreport.agent.rpc;
 
+import com.intellij.ide.plugins.IdeaPluginDescriptor;
+import com.intellij.ide.plugins.PluginManagerCore;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.extensions.PluginId;
 
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -12,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 public final class PythonLocator {
 
     private static final Logger LOG = Logger.getInstance(PythonLocator.class);
+    private static final String PLUGIN_ID = "com.workreport.ai-assistant";
 
     private PythonLocator() {
     }
@@ -64,8 +69,8 @@ public final class PythonLocator {
         return path != null && Files.isDirectory(path.resolve("src").resolve("agent_core"));
     }
 
-    // Resolution order: AGENT_CORE_EXE env -> core/dist, dist next to cwd or parents
-    // 解析顺序：AGENT_CORE_EXE 环境变量 -> core/dist 或工作目录向上查找 dist
+    // Resolution order: AGENT_CORE_EXE env -> plugin bundle -> core/dist next to cwd or parents
+    // 解析顺序：AGENT_CORE_EXE 环境变量 -> 插件内置产物 -> core/dist 或工作目录向上查找
     public static Path locateCoreExe() {
         String env = System.getenv("AGENT_CORE_EXE");
         if (env != null && !env.isBlank()) {
@@ -74,7 +79,11 @@ public final class PythonLocator {
                 return path;
             }
         }
-        String name = isWindows() ? "agent-core.exe" : "agent-core";
+        Path bundled = bundledCoreExe();
+        if (bundled != null) {
+            return bundled;
+        }
+        String name = coreExecutableName();
         Path cwd = Paths.get(System.getProperty("user.dir", ".")).toAbsolutePath();
         for (Path dir = cwd; dir != null; dir = dir.getParent()) {
             Path candidate = dir.resolve("core").resolve("dist").resolve(name);
@@ -87,6 +96,39 @@ public final class PythonLocator {
             }
         }
         return null;
+    }
+
+    // Packaged Core shipped inside the plugin zip: <plugin>/agent-core/agent-core[.exe]
+    // 插件 zip 内置的 Core 可执行文件：<plugin>/agent-core/agent-core[.exe]
+    private static Path bundledCoreExe() {
+        try {
+            IdeaPluginDescriptor descriptor =
+                    PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID));
+            if (descriptor == null) {
+                return null;
+            }
+            Path base = descriptor.getPluginPath();
+            if (base == null) {
+                return null;
+            }
+            Path candidate = base.resolve("agent-core").resolve(coreExecutableName());
+            if (Files.isRegularFile(candidate)) {
+                File file = candidate.toFile();
+                if (!file.canExecute()) {
+                    // zip extraction drops the exec bit on unix
+                    // zip 解压会丢失 unix 可执行位
+                    file.setExecutable(true);
+                }
+                return candidate;
+            }
+        } catch (Throwable t) {
+            LOG.debug("bundled core lookup failed", t);
+        }
+        return null;
+    }
+
+    public static String coreExecutableName() {
+        return isWindows() ? "agent-core.exe" : "agent-core";
     }
 
     private static boolean isWindows() {

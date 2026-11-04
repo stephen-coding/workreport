@@ -129,22 +129,25 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
             if (connection != null && connection.isAlive()) {
                 return;
             }
-            String python = PythonLocator.locatePython(null);
-            if (python == null) {
-                throw new IOException("未找到 Python（需 3.9+）。请安装 Python，或设置 AGENT_PYTHON 环境变量");
-            }
-            Path coreHome = PythonLocator.locateCoreHome(null);
-            if (coreHome == null) {
-                throw new IOException("未找到 core 目录。请设置 AGENT_CORE_HOME 环境变量指向仓库的 core 目录");
-            }
             Path dataDir = Paths.get(System.getProperty("user.home"), ".agent", "data", sessionId);
-            coreProcess = new CoreProcess();
-            // Prefer the packaged Core executable; fall back to python -m agent_core.
-            // 优先使用打包好的 Core 可执行文件，否则回退到 python -m agent_core。
             Path coreExe = PythonLocator.locateCoreExe();
+            coreProcess = new CoreProcess();
+            // Prefer the packaged Core executable (bundled in the plugin zip or core/dist).
+            // Only fall back to `python -m agent_core` when no executable is available.
+            // 优先使用打包好的 Core 可执行文件（插件内置或 core/dist）；
+            // 仅在没有可执行文件时才回退到 python -m agent_core。
             if (coreExe != null) {
                 coreProcess.startExecutable(coreExe, sessionId, dataDir);
             } else {
+                String python = PythonLocator.locatePython(null);
+                if (python == null) {
+                    throw new IOException("未找到 Agent Core：插件未内置可执行文件，且未找到 Python 3.9+。"
+                            + "请设置 AGENT_CORE_EXE / AGENT_PYTHON 环境变量");
+                }
+                Path coreHome = PythonLocator.locateCoreHome(null);
+                if (coreHome == null) {
+                    throw new IOException("未找到 core 目录。请设置 AGENT_CORE_EXE 或 AGENT_CORE_HOME 环境变量");
+                }
                 coreProcess.start(python, coreHome, sessionId, dataDir);
             }
             connection = new JsonRpcConnection(coreProcess);

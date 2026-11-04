@@ -18,6 +18,17 @@
                 <include>${project.artifactId}-${project.version}.jar</include>
             </includes>
         </fileSet>
+
+        <!-- Packaged Agent Core (scripts/build_core.ps1 output) -->
+        <!-- 内置 Agent Core 可执行文件（scripts/build_core.ps1 产物），免 Python 运行 -->
+        <fileSet>
+            <directory>${project.basedir}/core/dist</directory>
+            <outputDirectory>com.workreport.ai-assistant/agent-core</outputDirectory>
+            <includes>
+                <include>agent-core</include>
+                <include>agent-core.exe</include>
+            </includes>
+        </fileSet>
     </fileSets>
 
     <!-- Bundled dependencies (OkHttp3 + transitive) -->
