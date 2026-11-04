@@ -9,6 +9,7 @@ import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.components.JBLabel;
@@ -48,6 +49,7 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     private final JBTextField inputField = new JBTextField();
     private final JButton sendButton = new JButton("发送");
     private final JButton stopButton = new JButton("停止");
+    private final JButton settingsButton = new JButton("设置");
     private final JBLabel statusLabel = new JBLabel("正在启动 Agent Core...");
 
     private final Object coreLock = new Object();
@@ -73,7 +75,8 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         if (defaultFont != null) {
             chatArea.setFont(defaultFont.deriveFont(13f));
         }
-        chatArea.setText("Agent 编码助手（M1）。输入问题开始对话。\n");
+        chatArea.setText("Agent 编码助手已就绪。\n"
+                + "首次使用请点右下角「设置」配置模型（Ollama 或 OpenAI 兼容），然后直接描述任务。\n");
 
         JPanel mainPanel = new JPanel(new BorderLayout(8, 8));
         mainPanel.setBorder(new EmptyBorder(8, 8, 8, 8));
@@ -95,6 +98,7 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
         buttonPanel.setOpaque(false);
         stopButton.setEnabled(false);
+        buttonPanel.add(settingsButton);
         buttonPanel.add(stopButton);
         buttonPanel.add(sendButton);
         inputPanel.add(buttonPanel, BorderLayout.EAST);
@@ -104,7 +108,27 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
 
         sendButton.addActionListener(e -> onSend());
         stopButton.addActionListener(e -> onStop());
+        settingsButton.addActionListener(e -> openSettings());
         inputField.addActionListener(e -> onSend());
+    }
+
+    // Open the plugin settings page; drop the Core afterwards so path/model edits take effect.
+    // 打开插件设置页；关闭后重启 Core，使路径/模型修改立即生效。
+    private void openSettings() {
+        ShowSettingsUtil.getInstance().showSettingsDialog(project, "com.workreport.settings");
+        if (currentTaskId != null) {
+            return;
+        }
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            synchronized (coreLock) {
+                if (connection != null) {
+                    connection.dispose();
+                    connection = null;
+                }
+                coreProcess = null;
+            }
+            setStatus("配置已更新，下条消息重建 Core");
+        });
     }
 
     // ------------------------------------------------------------- lifecycle
@@ -130,7 +154,8 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
                 return;
             }
             Path dataDir = Paths.get(System.getProperty("user.home"), ".agent", "data", sessionId);
-            Path coreExe = PythonLocator.locateCoreExe();
+            ReportSettingsState state = ReportSettingsState.getInstance();
+            Path coreExe = PythonLocator.locateCoreExe(state.coreExePath);
             coreProcess = new CoreProcess();
             // Prefer the packaged Core executable (bundled in the plugin zip or core/dist).
             // Only fall back to `python -m agent_core` when no executable is available.
@@ -139,12 +164,12 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
             if (coreExe != null) {
                 coreProcess.startExecutable(coreExe, sessionId, dataDir);
             } else {
-                String python = PythonLocator.locatePython(null);
+                String python = PythonLocator.locatePython(state.pythonPath);
                 if (python == null) {
                     throw new IOException("未找到 Agent Core：插件未内置可执行文件，且未找到 Python 3.9+。"
-                            + "请设置 AGENT_CORE_EXE / AGENT_PYTHON 环境变量");
+                            + "请在设置页填写 Core 可执行文件，或设置 AGENT_CORE_EXE / AGENT_PYTHON 环境变量");
                 }
-                Path coreHome = PythonLocator.locateCoreHome(null);
+                Path coreHome = PythonLocator.locateCoreHome(state.coreHomePath);
                 if (coreHome == null) {
                     throw new IOException("未找到 core 目录。请设置 AGENT_CORE_EXE 或 AGENT_CORE_HOME 环境变量");
                 }
@@ -249,6 +274,9 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
                 if (conn == null) {
                     throw new IOException("Agent Core 未就绪");
                 }
+                // Re-push settings so model/MCP edits apply without restarting the Core.
+                // 重新下发设置，使模型/MCP 修改无需重启 Core 即可生效。
+                sendSettings(conn);
                 Map<String, Object> params = new HashMap<>();
                 params.put("sessionId", sessionId);
                 params.put("message", text);

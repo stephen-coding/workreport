@@ -18,8 +18,8 @@ import org.jetbrains.annotations.Nullable;
 import javax.swing.*;
 import java.awt.*;
 
-// Settings page — Tools -> Work Report AI Assistant, with PasswordSafe encrypted API Key storage
-// 设置页面 — Tools -> Work Report AI Assistant，含 PasswordSafe 加密存储 API Key
+// Settings page — Tools -> Agent Coding Assistant, with PasswordSafe encrypted API Key storage
+// 设置页面 — Tools -> Agent Coding Assistant，含 PasswordSafe 加密存储 API Key（面板右下角「设置」可直接打开）
 public final class ReportSettingsConfigurable implements Configurable {
 
     private static final String CREDENTIAL_SERVICE_NAME = "WorkReportPlugin";
@@ -33,12 +33,15 @@ public final class ReportSettingsConfigurable implements Configurable {
     private JBPasswordField apiKeyField;
     private JBTextField authorFilterField;
     private JBTextArea mcpConfigField;
+    private JBTextField coreExeField;
+    private JBTextField coreHomeField;
+    private JBTextField pythonField;
     private JPanel cloudSettingsPanel;
 
     @Nls(capitalization = Nls.Capitalization.Title)
     @Override
     public String getDisplayName() {
-        return "Work Report AI Assistant";
+        return "Agent Coding Assistant";
     }
 
     @Override
@@ -59,6 +62,12 @@ public final class ReportSettingsConfigurable implements Configurable {
         modelNameField = new JBTextField(40);
         apiKeyField = new JBPasswordField();
         authorFilterField = new JBTextField(40);
+        coreExeField = new JBTextField(40);
+        coreHomeField = new JBTextField(40);
+        pythonField = new JBTextField(40);
+        coreExeField.getEmptyText().setText("留空自动探测：插件内置 agent-core → AGENT_CORE_EXE → core/dist");
+        coreHomeField.getEmptyText().setText("回退到 Python 模式时的 core 目录，例如 D:/learn/workreport-intellij-plugin/core");
+        pythonField.getEmptyText().setText("回退到 Python 模式时的解释器，例如 python；留空用 AGENT_PYTHON / PATH");
         mcpConfigField = new JBTextArea(6, 60);
         mcpConfigField.setLineWrap(true);
         mcpConfigField.getEmptyText().setText(
@@ -96,6 +105,12 @@ public final class ReportSettingsConfigurable implements Configurable {
                 .addComponent(new JBLabel("MCP 服务（JSON）:"))
                 .addComponent(new JBScrollPane(mcpConfigField))
                 .addComponent(new JBLabel("（支持数组或 name 映射；项目内 .agent/mcp.json 优先）"))
+                .addSeparator()
+                .addComponent(new JBLabel("Agent Core 运行环境（一般不需要改）:"))
+                .addLabeledComponent(new JBLabel("Core 可执行文件:"), coreExeField, 1, false)
+                .addLabeledComponent(new JBLabel("Core 目录:"), coreHomeField, 1, false)
+                .addLabeledComponent(new JBLabel("Python 解释器:"), pythonField, 1, false)
+                .addComponent(new JBLabel("（插件 zip 已内置 Core，只有开发调试才需要填这三项）"))
                 .addComponentFillVertically(new JPanel(), 0)
                 .getPanel();
 
@@ -130,6 +145,9 @@ public final class ReportSettingsConfigurable implements Configurable {
                 || ollamaModeRadio.isSelected() != state.useOllamaMode
                 || !authorFilterField.getText().equals(state.authorFilter)
                 || !mcpConfigField.getText().equals(state.mcpServersJson)
+                || !coreExeField.getText().trim().equals(state.coreExePath)
+                || !coreHomeField.getText().trim().equals(state.coreHomePath)
+                || !pythonField.getText().trim().equals(state.pythonPath)
                 || apiKeyField.getPassword().length > 0;
     }
 
@@ -146,6 +164,9 @@ public final class ReportSettingsConfigurable implements Configurable {
         state.useOllamaMode = ollamaModeRadio.isSelected();
         state.authorFilter = authorFilterField.getText().trim();
         state.mcpServersJson = mcpConfigField.getText().trim();
+        state.coreExePath = coreExeField.getText().trim();
+        state.coreHomePath = coreHomeField.getText().trim();
+        state.pythonPath = pythonField.getText().trim();
 
         // Key logic: API Key encrypted via PasswordSafe (no plaintext)
         // 关键逻辑：API Key 通过 PasswordSafe 加密存储（无明文）
@@ -163,6 +184,9 @@ public final class ReportSettingsConfigurable implements Configurable {
         modelNameField.setText(state.modelName);
         authorFilterField.setText(state.authorFilter);
         mcpConfigField.setText(state.mcpServersJson);
+        coreExeField.setText(state.coreExePath);
+        coreHomeField.setText(state.coreHomePath);
+        pythonField.setText(state.pythonPath);
 
         if (state.useOllamaMode) {
             ollamaModeRadio.setSelected(true);

@@ -69,9 +69,17 @@ public final class PythonLocator {
         return path != null && Files.isDirectory(path.resolve("src").resolve("agent_core"));
     }
 
-    // Resolution order: AGENT_CORE_EXE env -> plugin bundle -> core/dist next to cwd or parents
-    // 解析顺序：AGENT_CORE_EXE 环境变量 -> 插件内置产物 -> core/dist 或工作目录向上查找
+    // Resolution order: explicit setting -> AGENT_CORE_EXE env -> plugin bundle -> core/dist next to cwd or parents
+    // 解析顺序：显式配置 -> AGENT_CORE_EXE 环境变量 -> 插件内置产物 -> core/dist 或工作目录向上查找
     public static Path locateCoreExe() {
+        return locateCoreExe(null);
+    }
+
+    public static Path locateCoreExe(String configured) {
+        Path explicit = configuredPath(configured);
+        if (explicit != null) {
+            return explicit;
+        }
         String env = System.getenv("AGENT_CORE_EXE");
         if (env != null && !env.isBlank()) {
             Path path = Paths.get(env).toAbsolutePath();
@@ -93,6 +101,25 @@ public final class PythonLocator {
             Path direct = dir.resolve("dist").resolve(name);
             if (Files.isRegularFile(direct)) {
                 return direct;
+            }
+        }
+        return null;
+    }
+
+    // Accept either the executable itself or the directory that contains it.
+    // 允许配置可执行文件本身，或它所在目录（如 <plugin>/agent-core）。
+    private static Path configuredPath(String configured) {
+        if (configured == null || configured.isBlank()) {
+            return null;
+        }
+        Path path = Paths.get(configured.trim()).toAbsolutePath();
+        if (Files.isRegularFile(path)) {
+            return path;
+        }
+        if (Files.isDirectory(path)) {
+            Path candidate = path.resolve(coreExecutableName());
+            if (Files.isRegularFile(candidate)) {
+                return candidate;
             }
         }
         return null;

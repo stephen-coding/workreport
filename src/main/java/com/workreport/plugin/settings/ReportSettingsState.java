@@ -35,6 +35,12 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
     // MCP 服务 JSON（数组或 name 映射）；项目内 .agent/mcp.json 优先
     public String mcpServersJson = "";
 
+    // Optional Core overrides; blank = auto-detect (bundled -> AGENT_CORE_EXE -> core/dist)
+    // 可选的 Core 路径覆盖；留空表示自动探测（插件内置 -> 环境变量 -> core/dist）
+    public String coreExePath = "";
+    public String coreHomePath = "";
+    public String pythonPath = "";
+
     public static ReportSettingsState getInstance() {
         return ApplicationManager.getApplication().getService(ReportSettingsState.class);
     }
@@ -53,6 +59,9 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
         this.privacyAccepted = state.privacyAccepted;
         this.authorFilter = state.authorFilter;
         this.mcpServersJson = state.mcpServersJson != null ? state.mcpServersJson : "";
+        this.coreExePath = state.coreExePath != null ? state.coreExePath : "";
+        this.coreHomePath = state.coreHomePath != null ? state.coreHomePath : "";
+        this.pythonPath = state.pythonPath != null ? state.pythonPath : "";
     }
 
     // Reset privacy confirmation when API endpoint changes (require re-confirmation)
