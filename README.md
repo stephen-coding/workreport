@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.3.x-green.svg)](https://www.jetbrains.com/idea/)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
 
@@ -137,7 +137,7 @@ powershell -File scripts/build_plugin.ps1
 
 首次使用需配置 AI 模型参数：
 
-1. 打开 `Settings` → `Tools` → `Work Report AI Assistant`
+1. 打开 Agent 面板右下角的 **设置** 按钮（或 `Settings` → `Tools` → `Agent Coding Assistant`）
 2. 填写以下配置：
 
    - **LLM Provider**: 选择服务商（Ollama / DeepSeek / Qwen 等）
@@ -233,8 +233,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-1.0.0.jar` - 插件 JAR
-- `workreport-ai-assistant-1.0.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 17 MB）
+- `workreport-intellij-plugin-2.0.0.jar` - 插件 JAR
+- `workreport-ai-assistant-2.0.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 17 MB）
 
 ### 运行调试
 
