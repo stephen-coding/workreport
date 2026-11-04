@@ -1,0 +1,123 @@
+name: ci
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+
+jobs:
+  core:
+    name: core (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip "pydantic>=2.5" "httpx>=0.27"
+      - name: Unit tests
+        working-directory: core
+        run: python -m unittest discover -s tests
+      - name: Protocol smokes
+        working-directory: core
+        run: |
+          python scripts/smoke_tools.py
+          python scripts/smoke_memory.py
+          python scripts/smoke_mcp.py
+          python scripts/smoke_subagent.py
+        shell: bash
+
+  intellij:
+    name: intellij compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Compile plugin
+        run: mvn -q -DskipTests compile
+
+  vscode:
+    name: vscode extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip "pydantic>=2.5" "httpx>=0.27"
+      - name: Build extension
+        working-directory: vscode
+        run: |
+          npm install --no-audit --no-fund
+          npm run compile
+      - name: RPC smoke
+        working-directory: vscode
+        run: npm run smoke
+
+  native:
+    name: rust accelerator (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            build: cargo build --release --features abi3,tokenizer,codesoup
+            artifact: libagent_core_native.so
+            staged: agent_core_native.so
+          - os: windows-latest
+            build: cargo build --release --no-default-features --features tokenizer,codesoup
+            artifact: agent_core_native.dll
+            staged: agent_core_native.pyd
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip "pydantic>=2.5" "httpx>=0.27"
+      - name: Build extension
+        working-directory: core/native
+        run: ${{ matrix.build }}
+      - name: Stage module
+        shell: bash
+        run: cp core/native/target/release/${{ matrix.artifact }} core/src/${{ matrix.staged }}
+      - name: Unit tests (Rust backend)
+        working-directory: core
+        env:
+          AGENT_CORE_EXPECT_RUST: "1"
+        run: python -m unittest discover -s tests
+
+  core-exe:
+    name: packaged core
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip "pydantic>=2.5" "httpx>=0.27" "pyinstaller>=6.3"
+      - name: Build executable
+        working-directory: core
+        run: python -m PyInstaller --clean --noconfirm packaging/agent-core.spec
+      - name: Launch check
+        working-directory: core
+        run: ./dist/agent-core.exe --help
+      - name: Accelerator status
+        working-directory: core
+        run: ./dist/agent-core.exe --native-info

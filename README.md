@@ -27,13 +27,76 @@
 
 ---
 
+## 🧠 Agent 架构（当前主干）
+
+插件已从“日报生成器”重构为类 Qoder 的编码 Agent：
+
+```
+IntelliJ 插件 (Java)  ─┐
+                       ├─ JSON Lines RPC (stdio) ─→  Agent Core (Python)
+VS Code 扩展 (TS)     ─┘                              ├─ LLM: OpenAI 兼容 / Ollama
+                                                       ├─ 工具：并行调度 + 权限（auto/preview/confirm）
+                                                       ├─ 编辑：diff 确认 + 快照回退
+                                                       ├─ 记忆：SQLite FTS5 + Markdown 镜像
+                                                       ├─ Skill：SKILL.md（日报/周报/季报/年报已迁移）
+                                                       ├─ MCP：stdio / HTTP 客户端 + 工具桥接
+                                                       └─ Subagent：并行池 + 内置 code-reviewer 等
+```
+
+- Core 只负责思考与调度，**不直接写用户文件**；文件/终端/Git 由 Shell 执行。
+- 同一个 Core 同时服务 IntelliJ 全家桶与 VS Code，协议对等。
+- 详设见 [docs/AGENT_REFACTOR_DETAILED_DESIGN.md](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
+
+### 快速启动
+
+```bash
+# 1) Core 依赖
+pip install "pydantic>=2.5" "httpx>=0.27"
+
+# 2) IntelliJ 插件
+mvn -q -DskipTests compile
+
+# 3) VS Code 扩展
+cd vscode && npm install && npm run compile
+```
+
+环境变量（可选）：`AGENT_PYTHON`、`AGENT_CORE_HOME`、`AGENT_CORE_EXE`。
+打包 Core（免 Python 运行）：`powershell -File scripts/build_core.ps1`。
+编译 Rust 加速（可选，自动降级）：`powershell -File scripts/build_native.ps1`。
+
+### 一键验证
+
+```powershell
+powershell -File scripts/verify_all.ps1            # 单测 + 4 个协议冒烟 + Java 编译 + TS 编译/冒烟
+powershell -File scripts/verify_all.ps1 -SkipJava  # 仅 Core 与 VS Code
+powershell -File scripts/verify_all.ps1 -Native    # 先编译 Rust 加速，再强制断言后端为 rust
+```
+
+### 里程碑状态（M1–M8 全部完成）
+
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| M1 | Core 骨架 + JSON Lines RPC + LLM Provider + Agent 循环 + IntelliJ 聊天面板 | 完成 |
+| M2 | 工具系统 + 并行调度 + Shell 端 9 个工具 | 完成 |
+| M3 | Rust 加速扩展（tokenizer / codesoup）+ 纯 Python 降级 | 完成（已实际编译验证） |
+| M4 | 编辑 diff 确认 + 快照回退 + 记忆系统 | 完成 |
+| M5 | Skill 系统 + 日报/周报/月报/季报/年报迁移 | 完成 |
+| M6 | MCP 集成（stdio / HTTP）+ 设置页配置 + confirm 通道 | 完成 |
+| M7 | Subagent 并行池 + 3 个内置子代理 | 完成 |
+| M8 | VS Code Shell + PyInstaller 分发 + CI + 一键验证 | 完成 |
+
+验收基线：Core 单测 78 用例全绿、4 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过，
+产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
+
+---
+
 ## 🛠️ 技术栈
 
-- **开发语言**: Java 21
-- **开发框架**: IntelliJ Platform Plugin SDK
-- **构建工具**: Maven 3.6+
-- **HTTP 客户端**: OkHttp 4.12.0
-- **兼容版本**: IntelliJ IDEA 2025.3.x (build 253.*)
+- **Agent Core**: Python 3.9+（pydantic v2、httpx；可选 Rust 加速扩展）
+- **IntelliJ Shell**: Java 21 + IntelliJ Platform SDK + Maven
+- **VS Code Shell**: TypeScript + Node 18
+- **通信协议**: JSON-RPC 2.0 over stdio（JSON Lines）
+- **兼容版本**: IntelliJ IDEA 2023.3.x - 2026.2.x；VS Code 1.85+
 
 ---
 
@@ -99,26 +162,29 @@
 
 ```
 workreport-intellij-plugin/
-├── src/main/java/com/workreport/plugin/
-│   ├── model/                  # 数据模型
-│   │   └── GitCommitEntry.java    Git 提交记录实体
-│   ├── service/                # 业务服务层
-│   │   ├── GitLogCollectorService.java    Git 日志采集器
-│   │   └── ReportPolishService.java       AI 润色服务
-│   ├── ui/                     # 用户界面
-│   │   ├── ReportToolWindowFactory.java   工具窗口工厂
-│   │   └── ReportToolWindowPanel.java     主面板组件
-│   ├── settings/               # 设置管理
-│   │   ├── ReportSettingsConfigurable.java  设置页面
-│   │   └── ReportSettingsState.java         持久化状态
-│   └── privacy/                # 隐私安全
-│       └── PrivacyNoticeUtil.java           隐私提示工具
-├── src/main/resources/
-│   └── META-INF/
-│       └── plugin.xml          # 插件描述符
-├── assembly/                   # Maven 打包配置
+├── core/                       # Agent Core（Python，IDE 无关）
+│   ├── src/agent_core/
+│   │   ├── agent/              # 主循环、调度器、权限、Subagent
+│   │   ├── llm/                # OpenAI 兼容 + Ollama Provider
+│   │   ├── mcp/                # MCP 客户端 / 管理器
+│   │   ├── memory/             # SQLite FTS5 + Markdown 记忆
+│   │   ├── skills/             # SKILL.md 加载器 + 4 个内置报告 Skill
+│   │   ├── tools/              # 工具注册表 + 远程代理
+│   │   ├── rpc/                # JSON Lines 服务端
+│   │   └── native/             # Rust 扩展门面 + 纯 Python 降级
+│   ├── native/                 # Rust 扩展源码（pyo3 + tiktoken/tree-sitter）
+│   ├── tests/                  # unittest 套件 + 假 MCP 服务
+│   ├── scripts/                # 协议冒烟脚本
+│   └── packaging/              # PyInstaller spec
+├── src/main/java/com/workreport/
+│   ├── agent/                  # rpc / tools / ui / actions
+│   └── plugin/                 # settings（含 MCP 配置）
+├── vscode/                     # VS Code Shell（TypeScript）
+├── scripts/                    # build_core.ps1 / verify_all.ps1
+├── docs/                       # 详细设计
+├── .github/workflows/ci.yml    # Core / IntelliJ / VS Code / 打包 CI
 ├── pom.xml                     # Maven 项目配置
-└── README.md                   # 项目文档
+└── README.md
 ```
 
 ---
@@ -129,6 +195,8 @@ workreport-intellij-plugin/
 
 - JDK 21
 - Maven 3.6+
+- Python 3.9+（运行 Agent Core；仅依赖 pydantic v2 与 httpx）
+- Node.js 18+（构建 VS Code 扩展）
 - IntelliJ IDEA 2025.3.x
 - Git
 

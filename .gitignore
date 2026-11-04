@@ -49,3 +49,23 @@ out/
 
 # Windows
 Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+core/.smoke-data/
+core/build/
+core/dist/
+
+# Rust accelerator
+core/native/target/
+core/native/cargo-build.log
+core/src/agent_core_native.pyd
+core/src/agent_core_native.so
+
+# Node / VS Code extension
+node_modules/
+*.vsix
