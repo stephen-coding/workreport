@@ -1,0 +1,29 @@
+[project]
+name = "agent-core"
+version = "0.1.0"
+description = "Agent Core for the coding assistant plugin (Python, IDE-agnostic)"
+requires-python = ">=3.9"
+dependencies = [
+    "pydantic>=2.5",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-asyncio>=0.23",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agent_core = [
+    "py.typed",
+    "skills/builtin/*/SKILL.md",
+    "agent/subagents_builtin/*/SUBAGENT.md",
+]

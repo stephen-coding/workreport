@@ -1,0 +1,68 @@
+[package]
+name = "agent-core-native"
+version = "0.1.0"
+edition = "2021"
+description = "PyO3 accelerators for the agent core: tiktoken counting and tree-sitter code outlines"
+license = "Apache-2.0"
+
+[lib]
+name = "agent_core_native"
+crate-type = ["cdylib"]
+
+[features]
+# `abi3` links python3.dll (the stable ABI forwarder) on Windows. That forwarder
+# does not export `PyCMethod_New`, so the extension is built per interpreter by
+# default and shipped together with the Core runtime.
+default = ["tokenizer"]
+abi3 = ["pyo3/abi3-py39"]
+tokenizer = ["tiktoken-rs"]
+# tree-sitter grammars are optional so a base build stays small and always compiles.
+codesoup = [
+    "tree-sitter",
+    "tree-sitter-python",
+    "tree-sitter-rust",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-java",
+    "tree-sitter-go",
+]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+
+[dependencies.tiktoken-rs]
+version = "0.6"
+optional = true
+
+[dependencies.tree-sitter]
+version = "0.25"
+optional = true
+
+[dependencies.tree-sitter-python]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-rust]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-javascript]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-typescript]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-java]
+version = "0.23"
+optional = true
+
+[dependencies.tree-sitter-go]
+version = "0.23"
+optional = true
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
