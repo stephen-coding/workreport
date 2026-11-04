@@ -31,6 +31,10 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
     // Git 日志作者过滤（留空表示所有作者）
     public String authorFilter = "";
 
+    // MCP servers as JSON (array or name map); project .agent/mcp.json wins
+    // MCP 服务 JSON（数组或 name 映射）；项目内 .agent/mcp.json 优先
+    public String mcpServersJson = "";
+
     public static ReportSettingsState getInstance() {
         return ApplicationManager.getApplication().getService(ReportSettingsState.class);
     }
@@ -48,6 +52,7 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
         this.useOllamaMode = state.useOllamaMode;
         this.privacyAccepted = state.privacyAccepted;
         this.authorFilter = state.authorFilter;
+        this.mcpServersJson = state.mcpServersJson != null ? state.mcpServersJson : "";
     }
 
     // Reset privacy confirmation when API endpoint changes (require re-confirmation)

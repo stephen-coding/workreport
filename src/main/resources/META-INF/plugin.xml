@@ -1,15 +1,15 @@
 <idea-plugin>
     <id>com.workreport.ai-assistant</id>
-    <name>Work Report AI Assistant</name>
+    <name>Agent Coding Assistant</name>
     <version>1.0.0</version>
     <vendor>WeeklyReport</vendor>
     <description><![CDATA[
-        AI-powered work report generator that collects Git commit history
-        and polishes it into professional daily/weekly/quarterly/yearly reports
-        using local (Ollama) or cloud LLM APIs. Privacy-first design with encrypted API key storage.
+        AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
+        (Python) over a local RPC channel: streaming answers, tool execution, memory, skills.
+        The classic work-report generator is being migrated into a built-in skill.
         <br/>
-        AI 驱动的工作报告生成器，支持日报、周报、季报、年报。自动采集 Git 提交历史并通过本地（Ollama）或云端 LLM API
-        润色为专业报告。隐私优先设计，API Key 加密存储。
+        AI 编码助手：通过本地 RPC 通道与语言无关的 Agent Core（Python）对话，支持流式输出、工具执行、
+        记忆与 Skill。经典的工作报告生成器将迁移为内置 Skill。
     ]]></description>
 
     <!-- IntelliJ IDEA 2023.3.x - 2026.2.x (build 233.* - 262.*) -->
@@ -24,11 +24,11 @@
     <depends>Git4Idea</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <!-- Tool Window: appears in the bottom bar -->
-        <!-- 工具窗口：显示在 IDE 底部工具栏 -->
-        <toolWindow id="WorkReport"
+        <!-- Tool Window: agent chat panel in the bottom bar -->
+        <!-- 工具窗口：底部 Agent 聊天面板 -->
+        <toolWindow id="AgentCoder"
                     anchor="bottom"
-                    factoryClass="com.workreport.plugin.ui.ReportToolWindowFactory"/>
+                    factoryClass="com.workreport.agent.ui.AgentToolWindowFactory"/>
 
         <!-- Settings page: Tools -> Work Report AI Assistant -->
         <!-- 设置页面：位于 Tools -> Work Report AI Assistant -->
@@ -43,4 +43,15 @@
         <applicationService
                 serviceImplementation="com.workreport.plugin.settings.ReportSettingsState"/>
     </extensions>
+
+    <!-- Legacy report entry: sends "生成今天的日报" to the agent panel -->
+    <!-- 旧报告入口：向 Agent 面板发送“生成今天的日报”指令 -->
+    <actions>
+        <action id="AgentCoder.GenerateReport"
+                class="com.workreport.agent.actions.GenerateReportAction"
+                text="生成今日日报"
+                description="通过 Agent 的内置日报 Skill 生成今天的日报">
+            <add-to-group group-id="ToolsMenu" anchor="first"/>
+        </action>
+    </actions>
 </idea-plugin>

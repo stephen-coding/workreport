@@ -8,6 +8,8 @@ import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.options.ConfigurationException;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPasswordField;
+import com.intellij.ui.components.JBScrollPane;
+import com.intellij.ui.components.JBTextArea;
 import com.intellij.ui.components.JBTextField;
 import com.intellij.util.ui.FormBuilder;
 import org.jetbrains.annotations.Nls;
@@ -30,6 +32,7 @@ public final class ReportSettingsConfigurable implements Configurable {
     private JBTextField modelNameField;
     private JBPasswordField apiKeyField;
     private JBTextField authorFilterField;
+    private JBTextArea mcpConfigField;
     private JPanel cloudSettingsPanel;
 
     @Nls(capitalization = Nls.Capitalization.Title)
@@ -56,6 +59,10 @@ public final class ReportSettingsConfigurable implements Configurable {
         modelNameField = new JBTextField(40);
         apiKeyField = new JBPasswordField();
         authorFilterField = new JBTextField(40);
+        mcpConfigField = new JBTextArea(6, 60);
+        mcpConfigField.setLineWrap(true);
+        mcpConfigField.getEmptyText().setText(
+                "[{\"name\": \"filesystem\", \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\"]}]");
 
         // Key logic: Cloud settings area (only enabled in cloud mode)
         // 关键逻辑：云端设置区域（仅云端模式启用）
@@ -85,6 +92,10 @@ public final class ReportSettingsConfigurable implements Configurable {
                 .addSeparator()
                 .addLabeledComponent(new JBLabel("Git 作者过滤:"), authorFilterField, 1, false)
                 .addComponent(new JBLabel("（留空表示包含所有作者的提交记录）"))
+                .addSeparator()
+                .addComponent(new JBLabel("MCP 服务（JSON）:"))
+                .addComponent(new JBScrollPane(mcpConfigField))
+                .addComponent(new JBLabel("（支持数组或 name 映射；项目内 .agent/mcp.json 优先）"))
                 .addComponentFillVertically(new JPanel(), 0)
                 .getPanel();
 
@@ -118,6 +129,7 @@ public final class ReportSettingsConfigurable implements Configurable {
                 || !modelNameField.getText().equals(state.modelName)
                 || ollamaModeRadio.isSelected() != state.useOllamaMode
                 || !authorFilterField.getText().equals(state.authorFilter)
+                || !mcpConfigField.getText().equals(state.mcpServersJson)
                 || apiKeyField.getPassword().length > 0;
     }
 
@@ -133,6 +145,7 @@ public final class ReportSettingsConfigurable implements Configurable {
         state.modelName = modelNameField.getText().trim();
         state.useOllamaMode = ollamaModeRadio.isSelected();
         state.authorFilter = authorFilterField.getText().trim();
+        state.mcpServersJson = mcpConfigField.getText().trim();
 
         // Key logic: API Key encrypted via PasswordSafe (no plaintext)
         // 关键逻辑：API Key 通过 PasswordSafe 加密存储（无明文）
@@ -149,6 +162,7 @@ public final class ReportSettingsConfigurable implements Configurable {
         endpointField.setText(state.apiEndpoint);
         modelNameField.setText(state.modelName);
         authorFilterField.setText(state.authorFilter);
+        mcpConfigField.setText(state.mcpServersJson);
 
         if (state.useOllamaMode) {
             ollamaModeRadio.setSelected(true);
