@@ -18,7 +18,9 @@ from typing import Any, Dict, Optional
 from agent_core.agent.loop import run_chat
 from agent_core.agent.session import Session, SessionManager
 from agent_core.agent.subagent import SubagentLoader, SubagentService
+from agent_core.codeindex import CodeIndexService
 from agent_core.llm import build_provider
+from agent_core.llm.completion import complete as complete_inline
 from agent_core.mcp import MCPManager, parse_servers
 from agent_core.memory import MemoryService
 from agent_core.native import native_info
@@ -61,6 +63,7 @@ class RpcServer:
         self.sessions = SessionManager()
         self.tools = ToolRegistry()
         self.memory = MemoryService(self.project_root, data_dir)
+        self.index = CodeIndexService(self.project_root, data_dir, lambda: self.config)
         self.skills = SkillService(SkillLoader(self.project_root))
         self.mcp = MCPManager(self.project_root)
         self.mcp.set_confirm(self._confirm_via_shell)
@@ -74,6 +77,7 @@ class RpcServer:
         self._closing = False
         self._register_shell_tools()
         self.memory.register_tools(self.tools)
+        self.index.register_tools(self.tools)
         self.skills.register_tools(self.tools)
         self.subagents = SubagentService(
             SubagentLoader(self.project_root), self.tools,
@@ -127,7 +131,8 @@ class RpcServer:
             "coreVersion": CORE_VERSION,
             "projectId": self.project_id,
             "capabilities": ["chat", "parallel-tools", "tokenizer", "codesoup",
-                             "memory", "skill", "mcp", "subagent"],
+                             "memory", "skill", "mcp", "subagent", "inline",
+                             "code-index"],
             "native": native_info(),
         })
         LOGGER.info("agent core %s started (project=%s)", CORE_VERSION, self.project_id)
@@ -174,6 +179,16 @@ class RpcServer:
             await self._handle_notification(method, params)
             return
 
+        # Long-running requests run as tasks so the stdin loop keeps serving
+        # chat/cancel, tool/result and other inline completion calls.
+        # 长耗时请求放到后台任务，避免阻塞 stdin 循环（否则编辑器补全会卡住聊天）。
+        if method == "inline/complete":
+            asyncio.create_task(self._run_inline(req_id, params))
+            return
+        if method == "index/build":
+            asyncio.create_task(self._run_index_build(req_id, params))
+            return
+
         try:
             result = await self._handle_request(method, params)
             self._send(make_response(req_id, result))
@@ -192,6 +207,8 @@ class RpcServer:
             return self._tool_result(params)
         if method == "agent/confirmResult":
             return self._confirm_result(params)
+        if method == "index/status":
+            return self.index.status()
         raise RpcError(ErrorCode.PROTOCOL_ERROR, "unknown method: %s" % method)
 
     def _tool_result(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -214,6 +231,40 @@ class RpcServer:
             future.set_result(bool(params.get("approved")))
         return {"received": True}
 
+    async def _run_inline(self, req_id: Any, params: Dict[str, Any]) -> None:
+        """Answer one ghost-text request; never raises into the dispatch loop."""
+        try:
+            text = await asyncio.wait_for(
+                complete_inline(
+                    self.config,
+                    str(params.get("prefix") or ""),
+                    str(params.get("suffix") or ""),
+                    str(params.get("language") or ""),
+                    int(params.get("maxTokens") or 128),
+                ),
+                timeout=12.0,
+            )
+            self._send(make_response(req_id, {"text": text}))
+        except asyncio.TimeoutError:
+            self._send(make_response(req_id, {"text": ""}))
+        except Exception:  # pragma: no cover - defensive
+            LOGGER.exception("inline completion failed")
+            self._send(make_response(req_id, {"text": ""}))
+
+    async def _run_index_build(self, req_id: Any, params: Dict[str, Any]) -> None:
+        def on_progress(done: int, total: int, path: str) -> None:
+            self._send_notification("index/progress", {
+                "done": done, "total": total, "path": path})
+
+        try:
+            stats = await self.index.build(full=bool(params.get("full")), progress=on_progress)
+            self._send(make_response(req_id, stats))
+        except RpcError as exc:
+            self._send(make_error(req_id, exc.code, str(exc)))
+        except Exception as exc:  # pragma: no cover - defensive
+            LOGGER.exception("index build failed")
+            self._send(make_error(req_id, ErrorCode.INTERNAL_ERROR, str(exc)))
+
     async def _handle_notification(self, method: str, params: Dict[str, Any]) -> None:
         if method == "settings/update":
             self._apply_settings(params)
@@ -228,7 +279,11 @@ class RpcServer:
 
     def _apply_settings(self, params: Dict[str, Any]) -> None:
         allowed = set(ChatConfig.model_fields.keys())
-        data = {k: v for k, v in params.items() if k in allowed}
+        # Merge onto the current config so partial payloads (e.g. switching only the model)
+        # keep max_iterations / mcp_servers / temperature instead of resetting to defaults.
+        # 合并到现有配置：只切换模型等字段时，不清空 max_iterations / mcp_servers 等已有值。
+        data = self.config.model_dump()
+        data.update({k: v for k, v in params.items() if k in allowed})
         try:
             self.config = ChatConfig(**data)
             LOGGER.info("settings updated: provider=%s model=%s",
@@ -285,6 +340,7 @@ class RpcServer:
         self.project_root = project_root
         self.memory = MemoryService(project_root, self.data_dir)
         self.memory.register_tools(self.tools)
+        self.index.set_project_root(project_root)
         self.skills = SkillService(SkillLoader(project_root))
         self.skills.register_tools(self.tools)
         self.mcp.set_project_root(project_root)

@@ -50,6 +50,14 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
     // 自动执行：写文件不再弹 diff 确认
     public boolean autoAcceptEdits = false;
 
+    // Editor ghost text (fill-in-the-middle) completion
+    // 编辑器内幽灵补全（FIM）
+    public boolean inlineCompletionEnabled = true;
+
+    // Embedding model used by the semantic code index
+    // 语义索引使用的 Embedding 模型
+    public String embeddingModel = "nomic-embed-text";
+
     public static ReportSettingsState getInstance() {
         return ApplicationManager.getApplication().getService(ReportSettingsState.class);
     }
@@ -74,6 +82,8 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
         this.modelProfilesJson = state.modelProfilesJson != null ? state.modelProfilesJson : "";
         this.activeProfile = state.activeProfile != null ? state.activeProfile : "";
         this.autoAcceptEdits = state.autoAcceptEdits;
+        this.inlineCompletionEnabled = state.inlineCompletionEnabled;
+        this.embeddingModel = state.embeddingModel != null ? state.embeddingModel : "nomic-embed-text";
     }
 
     // Reset privacy confirmation when API endpoint changes (require re-confirmation)

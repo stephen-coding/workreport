@@ -4,8 +4,8 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/stephen-coding/workreport)
-[![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.3.x-green.svg)](https://www.jetbrains.com/idea/)
+[![Version](https://img.shields.io/badge/version-2.2.0-blue.svg)](https://github.com/stephen-coding/workreport)
+[![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2.x%2B-green.svg)](https://www.jetbrains.com/idea/)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
 
 </div>
@@ -24,6 +24,8 @@
 - 🔒 **隐私优先**：API Key 加密存储，数据完全可控
 - 📊 **Git 历史分析**：智能提取 Commit 记录，结构化展示
 - 🎨 **友好界面**：集成到 IDEA 工具窗口，操作简便
+- ✨ **编辑器 Ghost text**：光标处 FIM 补全，Tab 接受 / Esc 取消
+- 🔎 **语义索引**：Embedding + SQLite 本地向量检索，Agent 可跨文件找代码
 
 ---
 
@@ -85,7 +87,7 @@ powershell -File scripts/verify_all.ps1 -Native    # 先编译 Rust 加速，再
 | M7 | Subagent 并行池 + 3 个内置子代理 | 完成 |
 | M8 | VS Code Shell + PyInstaller 分发 + CI + 一键验证 | 完成 |
 
-验收基线：Core 单测 82 用例全绿、4 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过，
+验收基线：Core 单测 98 用例全绿、4 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过，
 产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
 
 ---
@@ -93,10 +95,10 @@ powershell -File scripts/verify_all.ps1 -Native    # 先编译 Rust 加速，再
 ## 🛠️ 技术栈
 
 - **Agent Core**: Python 3.9+（pydantic v2、httpx；可选 Rust 加速扩展）
-- **IntelliJ Shell**: Java 21 + IntelliJ Platform SDK + Maven
+- **IntelliJ Shell**: Java 21 + Kotlin（inline completion）+ IntelliJ Platform SDK + Maven
 - **VS Code Shell**: TypeScript + Node 18
 - **通信协议**: JSON-RPC 2.0 over stdio（JSON Lines）
-- **兼容版本**: IntelliJ IDEA 2023.3.x - 2026.2.x；VS Code 1.85+
+- **兼容版本**: IntelliJ IDEA 2025.2.x - 2026.2.x（`since-build=252`，ghost text 依赖平台的 inline completion API）；VS Code 1.85+
 
 ---
 
@@ -146,6 +148,8 @@ powershell -File scripts/build_plugin.ps1
      - 云端 API: 服务商提供的地址
    - **Model Name**: 模型名称（如 `qwen2.5:7b`, `deepseek-chat`）
    - **API Key**: 云服务 API 密钥（本地 Ollama 可为空）
+   - **Embedding 模型**: 语义索引用的向量模型（默认 `nomic-embed-text`；OpenAI 兼容端点为 `text-embedding-3-small`）
+   - **编辑器内幽灵补全**: 勾选后启用 ghost text（默认开启）
 
 3. 点击 `Apply` 保存配置
 
@@ -156,8 +160,7 @@ powershell -File scripts/build_plugin.ps1
    - 「看下 `AgentChatPanel` 里 confirm 消息是怎么回传给 Core 的」
    - 「修复 `subagent.py` 里工具白名单漏掉 `git_log` 的问题，改完跑下测试」
    - 「生成今天的日报」（也可用 `Tools` → `生成今日日报` 菜单）
-3. 写文件/删除先弹 diff 卡片，默认需要确认（由 Core 的 permission 级别控制）；
-   拒绝后不落盘，也可让 Agent 调 `revert_file` 撤回上一次修改
+3. 写文件/删除先弹 diff 卡片，需要确认；面板右上角勾选 **自动执行** 后不再弹窗（可直接改代码）
 4. MCP 工具调用会弹 Yes/No 确认；连续拒绝 3 次 Core 会自动终止当前任务
 5. 工具与子代理进度以状态行插入对话流，例如 `[工具] read_file 执行中...`、`[子代理] code-reviewer 完成`
 
@@ -170,7 +173,8 @@ workreport-intellij-plugin/
 ├── core/                       # Agent Core（Python，IDE 无关）
 │   ├── src/agent_core/
 │   │   ├── agent/              # 主循环、调度器、权限、Subagent
-│   │   ├── llm/                # OpenAI 兼容 + Ollama Provider
+│   │   ├── llm/                # OpenAI 兼容 + Ollama Provider + FIM 补全
+│   │   ├── codeindex/          # 语义索引：切块 / Embedding / SQLite 向量库
 │   │   ├── mcp/                # MCP 客户端 / 管理器
 │   │   ├── memory/             # SQLite FTS5 + Markdown 记忆
 │   │   ├── skills/             # SKILL.md 加载器 + 4 个内置报告 Skill
@@ -182,8 +186,10 @@ workreport-intellij-plugin/
 │   ├── scripts/                # 协议冒烟脚本
 │   └── packaging/              # PyInstaller spec
 ├── src/main/java/com/workreport/
-│   ├── agent/                  # rpc / tools / ui / actions
-│   └── plugin/                 # settings（含 MCP 配置）
+│   ├── agent/                  # rpc（共享 Core 会话）/ tools / ui / inline / actions
+│   └── plugin/                 # settings（含 MCP、Embedding 与 ghost text 开关）
+├── src/main/kotlin/com/workreport/
+│   └── agent/inline/           # 编辑器 InlineCompletionProvider
 ├── vscode/                     # VS Code Shell（TypeScript）
 ├── scripts/                    # build_plugin.ps1 / build_core.ps1 / build_native.ps1 / verify_all.ps1
 ├── docs/                       # 详细设计
@@ -202,7 +208,7 @@ workreport-intellij-plugin/
 - Maven 3.6+
 - Python 3.9+（运行 Agent Core；仅依赖 pydantic v2 与 httpx）
 - Node.js 18+（构建 VS Code 扩展）
-- IntelliJ IDEA 2025.3.x
+- IntelliJ IDEA 2025.2.x+（Kotlin 编译依赖平台的 inline completion API）
 - Git
 
 ### 克隆项目
@@ -233,8 +239,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-2.0.0.jar` - 插件 JAR
-- `workreport-ai-assistant-2.0.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 17 MB）
+- `workreport-intellij-plugin-2.2.0.jar` - 插件 JAR
+- `workreport-ai-assistant-2.2.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30 MB）
 
 ### 运行调试
 
@@ -264,13 +270,34 @@ powershell -File scripts/build_plugin.ps1
 - MCP：stdio / HTTP 服务器接入，工具以 `mcp__server__tool` 暴露，支持设置页 JSON 配置
 - Subagent：`code-reviewer` / `bug-hunter` / `test-generator` 并行子代理，工具白名单隔离
 
+### 4. 多模型切换与自动执行
+
+- 设置页维护模型列表（名称 / 类型 / 端点 / 模型），每个模型一把 API Key（PasswordSafe 按名称分开存储）
+- 面板顶部 **模型** 下拉框随时切换，切换后下一条消息即用新模型，无需重启 IDE 或 Core
+- **自动执行** 勾选后写文件/删除不再弹确认，直接落盘，适合“改完直接跑”的场景（仍可用 `revert_file` 回退）
+
+### 5. 编辑器内 Ghost text 补全
+
+- 基于平台 `com.intellij.inline.completion.provider` 扩展点（Kotlin `AgentInlineCompletionProvider`），停笔 300 ms 后触发
+- 光标前后文经 `inline/complete` 发给 Core，由当前模型做 FIM（fill-in-the-middle）补全：Ollama 走 `/api/generate` 的 `suffix`，OpenAI 兼容走 `/v1/completions`
+- **Tab** 接受 / **Esc** 取消；Core 不可用、端点不支持 FIM 或超时（1.5 s）时静默返回空，不打扰输入
+- 补全请求在 Core 侧是后台任务，不会阻塞聊天流；设置页「编辑器内幽灵补全」可随时关掉
+
+### 6. 语义索引（code-index）
+
+- 只内置 **Embedding 模型**，不引入独立向量数据库：向量以 float32 BLOB 存在本地 SQLite，检索用归一化点积（numpy 存在时矩阵批量加速，否则纯 Python 回退）
+- 切块：优先用 Rust 加速的 tree-sitter 按函数切，失败回退 60 行 / 10 行重叠窗口；跳过 vendor、node_modules 等目录
+- 增量：按文件 sha1 比对，只重算变更文件；换 Embedding 模型自动整库重建；`index/status` 可查文件/块数与进度
+- 工具：`semantic_search`（语义检索代码块）、`build_index`（按需重建），Agent 会在找代码时自动调用
+- 索引存放在 `~/.agent/data/<项目哈希>/`，模型变更或想强制重建时可删库重来
+
 ---
 
 ## 🔐 隐私与安全
 
 - ✅ **本地优先**: 支持完全离线使用（配合 Ollama 本地模型）
 - ✅ **加密存储**: API Key 使用 IntelliJ PasswordSafe 加密
-- ✅ **透明收集**: 仅收集 Git 提交历史，不上传其他数据
+- ✅ **透明收集**: 仅收集 Git 提交历史，不上传其他数据；语义索引与补全只把光标前后文/代码块发给**你自己配置**的模型端点
 - ✅ **用户控制**: 所有配置项完全由用户掌控
 
 ---

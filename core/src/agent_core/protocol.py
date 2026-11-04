@@ -73,6 +73,7 @@ class ChatConfig(BaseModel):
     max_iterations: int = 15
     tool_concurrency: int = 4
     subagent_concurrency: int = 3
+    embedding_model: str = "nomic-embed-text"
     mcp_servers: List[Dict[str, Any]] = Field(default_factory=list)
 
 

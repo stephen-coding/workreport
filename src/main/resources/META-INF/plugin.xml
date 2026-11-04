@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.workreport.ai-assistant</id>
     <name>Agent Coding Assistant</name>
-    <version>2.1.0</version>
+    <version>2.2.0</version>
     <vendor>WeeklyReport</vendor>
     <description><![CDATA[
         AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
@@ -12,9 +12,10 @@
         记忆与 Skill。经典的工作报告生成器将迁移为内置 Skill。
     ]]></description>
 
-    <!-- IntelliJ IDEA 2023.3.x - 2026.2.x (build 233.* - 262.*) -->
-    <!-- 兼容 IntelliJ IDEA 2023.3.x 到 2026.2.x（构建号 233.* 到 262.*） -->
-    <idea-version since-build="233" until-build="262.*"/>
+    <!-- IntelliJ IDEA 2025.2.x - 2026.2.x (build 252.* - 262.*) -->
+    <!-- 兼容 IntelliJ IDEA 2025.2.x 到 2026.2.x（构建号 252.* 到 262.*）；
+         252 起才有 inline completion 扩展点 -->
+    <idea-version since-build="252" until-build="262.*"/>
 
     <!-- Platform dependency -->
     <!-- 平台核心依赖 -->
@@ -37,6 +38,13 @@
                 id="com.workreport.settings"
                 displayName="Agent Coding Assistant"
                 parentId="tools"/>
+
+        <!-- Editor ghost text (fill-in-the-middle completion) -->
+        <!-- 编辑器内幽灵补全（FIM 补全） -->
+        <inline.completion.provider
+                id="com.workreport.agent.inline"
+                implementation="com.workreport.agent.inline.AgentInlineCompletionProvider"
+                order="first"/>
 
         <!-- Persistent state for plugin settings -->
         <!-- 插件设置的持久化状态服务 -->

@@ -6,7 +6,7 @@
 
     <groupId>com.workreport</groupId>
     <artifactId>workreport-intellij-plugin</artifactId>
-    <version>2.1.0</version>
+    <version>2.2.0</version>
     <packaging>jar</packaging>
 
     <name>Work Report AI Assistant</name>
@@ -27,6 +27,10 @@
         <!-- Dependency versions -->
         <!-- 依赖版本号 -->
         <okhttp.version>4.12.0</okhttp.version>
+
+        <!-- Kotlin version must match the one bundled with the target platform -->
+        <!-- Kotlin 版本需与目标平台内置的保持一致 -->
+        <kotlin.version>2.3.20-RC2</kotlin.version>
     </properties>
 
     <!-- JetBrains IntelliJ Platform artifact repositories -->
@@ -132,6 +136,15 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- Inline completion (editor ghost text) API -->
+        <!-- 编辑器内幽灵补全 API -->
+        <dependency>
+            <groupId>com.jetbrains.intellij.platform</groupId>
+            <artifactId>ide-codeinsight-inline</artifactId>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- JetBrains annotations (@NotNull, @Nullable) -->
         <!-- JetBrains 注解（@NotNull、@Nullable） -->
         <dependency>
@@ -152,6 +165,21 @@
 
         <!-- ==================== Bundled dependencies (shipped with plugin) ==================== -->
         <!-- ==================== 打包依赖（随插件一起分发） ==================== -->
+
+        <!-- Kotlin stdlib + coroutines are provided by the IDE at runtime -->
+        <!-- Kotlin 标准库与协程由 IDE 运行时提供 -->
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib</artifactId>
+            <version>${kotlin.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.intellij.deps.kotlinx</groupId>
+            <artifactId>kotlinx-coroutines-core-jvm</artifactId>
+            <version>1.10.2-intellij-1</version>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- OkHttp3 for HTTP calls to LLM APIs -->
         <!-- OkHttp3 用于调用 LLM API 的 HTTP 请求 -->
@@ -175,6 +203,30 @@
                     <source>21</source>
                     <target>21</target>
                     <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+
+            <!-- Kotlin compiler: the inline completion API is coroutine based -->
+            <!-- Kotlin 编译器：幽灵补全 API 为协程风格，需用 Kotlin 实现 -->
+            <plugin>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-maven-plugin</artifactId>
+                <version>${kotlin.version}</version>
+                <executions>
+                    <execution>
+                        <id>compile-kotlin</id>
+                        <phase>process-sources</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <jvmTarget>21</jvmTarget>
+                    <sourceDirs>
+                        <sourceDir>${project.basedir}/src/main/kotlin</sourceDir>
+                        <sourceDir>${project.basedir}/src/main/java</sourceDir>
+                    </sourceDirs>
                 </configuration>
             </plugin>
 

@@ -5,17 +5,21 @@
 ### 支持的版本范围
 
 ```xml
-<idea-version since-build="233" until-build="253.*"/>
+<idea-version since-build="252" until-build="262.*"/>
 ```
 
 **兼容版本**:
-- ✅ **IntelliJ IDEA 2023.3.x** (build 233.*)
-- ✅ **IntelliJ IDEA 2024.1.x** (build 241.*)
-- ✅ **IntelliJ IDEA 2024.2.x** (build 242.*)
-- ✅ **IntelliJ IDEA 2024.3.x** (build 243.*)
-- ✅ **IntelliJ IDEA 2025.1.x** (build 251.*)
-- ✅ **IntelliJ IDEA 2025.2.x** (build 252.*)
+- ✅ **IntelliJ IDEA 2025.2.x** (build 252.*) — 最低支持版本
 - ✅ **IntelliJ IDEA 2025.3.x** (build 253.*)
+- ✅ **IntelliJ IDEA 2026.1.x** (build 261.*)
+- ✅ **IntelliJ IDEA 2026.2.x** (build 262.*)
+
+> **为什么从 252 开始**：编辑器 ghost text 依赖平台的 inline completion API
+> （`com.intellij.inline.completion.provider` 扩展点 + `ide-codeinsight-inline` 产物），
+> 该 API 的稳定形态从 2025.2（252）开始提供；更早的 233–251 无法编译通过。
+> 其余功能本身并不需要 252，仅 ghost text 扩展点拉高了门槛。
+> Kotlin `AgentInlineCompletionProvider` 由 Maven `kotlin-maven-plugin` 在 `process-sources` 阶段编译，
+> `kotlin-stdlib` / `kotlinx-coroutines` 为 `provided`（IDE 运行时自带）。
 
 ---
 
@@ -44,27 +48,31 @@ IntelliJ IDEA 使用以下版本号格式：`主版本。次版本。修订号`
 | 2025.1.x | 251.* | 2025 Q2 |
 | 2025.2.x | 252.* | 2025 Q3 |
 | 2025.3.x | 253.* | 2025 Q4 |
+| 2026.1.x | 261.* | 2026 Q1 |
+| 2026.2.x | 262.* | 2026 Q2 |
 
 ---
 
 ## ⚙️ 如何修改兼容版本
 
-### 场景 1: 支持更老的版本（如 2023.2）
+### 场景 1: 向下降低最低版本
 
 编辑 `src/main/resources/META-INF/plugin.xml`:
 
 ```xml
-<!-- 向下扩展到 2023.2.x -->
-<idea-version since-build="232" until-build="253.*"/>
+<!-- 例如回退到 2025.1.x（必须先移除 ghost text 扩展点） -->
+<idea-version since-build="251" until-build="262.*"/>
 ```
 
-**注意**: 需要确保代码没有使用新版本 API，否则在老版本 IDE 上会报错。
+**注意**: 需要确保代码没有使用新版本 API，否则在老版本 IDE 上会报错；
+且必须同时删掉 `plugin.xml` 里的 `<inline.completion.provider>` 与 Kotlin provider、
+以及 `pom.xml` 的 `ide-codeinsight-inline` 依赖，否则无法编译。
 
 ### 场景 2: 只支持最新版本
 
 ```xml
 <!-- 仅支持最新稳定版 -->
-<idea-version since-build="253" until-build="*"/>
+<idea-version since-build="262" until-build="*"/>
 ```
 
 ### 场景 3: 移除版本限制（不推荐）
@@ -284,30 +292,22 @@ public void createToolWindow(Project project) {
 ### 示例：分版本发布
 
 ```xml
-<!-- 针对老用户的 LTS 版本 -->
-<idea-version since-build="223" until-build="243.*"/>
+<!-- 老版本 LTS（移除 ghost text 扩展点与 Kotlin provider） -->
+<idea-version since-build="251" until-build="251.*"/>
 <!-- 插件 ID: workreport-ai-assistant-lts -->
 
-<!-- 针对新用户的标准版本 -->
-<idea-version since-build="233" until-build="253.*"/>
+<!-- 标准版本（含编辑器 ghost text 与语义索引） -->
+<idea-version since-build="252" until-build="262.*"/>
 <!-- 插件 ID: workreport-ai-assistant -->
 ```
 
 ---
 
-## 📊 版本分布统计（参考）
+## 📊 版本分布统计
 
-根据 JetBrains 官方数据（2024 年）:
-
-| IDEA 版本系列 | 用户占比 | 建议支持 |
-|--------------|---------|---------|
-| 2023.3.x | ~15% | ✅ 支持 |
-| 2024.1.x | ~25% | ✅ 支持 |
-| 2024.2.x | ~30% | ✅ 支持 |
-| 2024.3.x | ~20% | ✅ 支持 |
-| 2025.x | ~10% | ✅ 支持 |
-
-**结论**: 支持最近 2-3 年的版本可以覆盖 ~80% 的用户
+2.2.0 起不再按版本占比做“向下兼容”：ghost text 依赖 252+ 才有的 inline completion API，
+因此直接以官方当前支持的 IDE 版本为基线（2025.2 及以后）。
+如果日后需要覆盖更老版本，建议采用上面的“LTS + 标准版”双包策略，而不是降低主包 `since-build`。
 
 ---
 
@@ -315,14 +315,14 @@ public void createToolWindow(Project project) {
 
 ### 已实施
 
-✅ **宽松的兼容策略**: 支持 2023.3.x - 2025.3.x
+✅ **收紧后的兼容策略**: 支持 2025.2.x - 2026.2.x（`since-build=252`）
 
 ### 待验证
 
 ⏳ **需要在多个版本上测试**:
-- 在 2023.3.x 上测试 Git 日志采集
-- 在 2024.x 上测试 UI 界面
-- 在 2025.3.x 上测试所有功能
+- 在 2025.2.x 上验证 ghost text（inline completion API 最早可用版本）
+- 在 2026.1.x 上验证聊天、工具、语义索引全链路
+- 在 2026.2.x 上验证 diff 确认 / 快照回退等编辑功能
 
 ### 下一步计划
 
@@ -336,7 +336,7 @@ public void createToolWindow(Project project) {
 
 ### 关键要点
 
-1. ✅ **当前配置支持 3 年内的主流版本**
+1. ✅ **当前配置覆盖 2025.2 及以后的所有稳定版**
 2. ⚠️ **需要在实际环境中测试各版本兼容性**
 3. 🔄 **根据用户反馈动态调整版本策略**
 4. 📊 **优先保证核心功能的稳定性**

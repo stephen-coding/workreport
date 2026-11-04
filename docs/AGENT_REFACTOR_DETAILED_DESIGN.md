@@ -2,7 +2,7 @@
 
 **依据**：方案 v3（Python 核心 · 多语言混合架构）
 **范围**：RPC 协议、Python Core、Rust 扩展、IntelliJ Shell、VSCode Shell、配置与安全
-**兼容目标**：IntelliJ 全家桶（build 233–262）+ VSCode；辅助编码语言：py/rust/js/ts/java/go/c/cpp 等
+**兼容目标**：IntelliJ 全家桶（build 252–262）+ VSCode；辅助编码语言：py/rust/js/ts/java/go/c/cpp 等
 
 ---
 
@@ -605,7 +605,7 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **82 个用例全绿**（`python -m unittest discover -s tests`）
+- Core 单测 **98 个用例全绿**（`python -m unittest discover -s tests`）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
@@ -618,7 +618,7 @@ powershell -File scripts/build_plugin.ps1
 # 等价于：build_native(可选) -> build_core -> mvn package
 ```
 
-- 产物：`target/workreport-ai-assistant-<version>.zip`（约 17.5 MB），`Install Plugin from Disk` 即可安装
+- 产物：`target/workreport-ai-assistant-<version>.zip`（约 30 MB），`Install Plugin from Disk` 即可安装
 - 布局：`com.workreport.ai-assistant/lib/*.jar` + `com.workreport.ai-assistant/agent-core/agent-core.exe`
   （`assembly/plugin-assembly.xml` 直接取 `core/dist`）
 - 定位顺序（`PythonLocator.locateCoreExe`）：`AGENT_CORE_EXE` → 插件内置 `agent-core/` →
@@ -633,3 +633,44 @@ powershell -File scripts/build_plugin.ps1
 - 单测框架使用标准库 `unittest`（而非 pytest），避免引入额外依赖，语义覆盖范围与 §10 一致。
 - Rust 加速层保留完整源码与门面接口，构建机无 cargo 时自动走纯 Python 路径，行为对等；有 cargo 时 `scripts/build_native.ps1` 已实测可产出并被加载（详见 §4.4.1）。
 - 跨 Shell 的协议一致性以「同一 Core + 两套 Shell 冒烟脚本」验证，未单独维护 golden 消息文件。
+
+---
+
+## 13. v2.2.0 增量：编辑器 Ghost text 与语义索引
+
+### 13.1 Ghost text（inline completion）
+
+| 层 | 位置 | 说明 |
+|---|---|---|
+| 扩展点 | `plugin.xml` | `<inline.completion.provider id="com.workreport.agent.inline" order="first">` |
+| Shell | `src/main/kotlin/.../AgentInlineCompletionProvider.kt` | 继承 `DebouncedInlineCompletionProvider`，debounce 300ms，取前后文 4000/1200 字符 |
+| Shell | `src/main/java/.../inline/InlineCompletionClient.java` | `inline/complete` 请求，1.5s 超时，失败返回空串 |
+| Core | `llm/completion.py` | FIM：Ollama `/api/generate` + `suffix`；OpenAI 兼容 `/v1/completions` |
+| Core | `rpc/server.py` | `inline/complete` 以 `asyncio.create_task` 后台执行，不阻塞 stdin 循环 |
+
+- 平台依赖：`com.jetbrains.intellij.platform:ide-codeinsight-inline`（provided）+ `kotlin-stdlib` + `kotlinx-coroutines-core-jvm`（provided，IDE 运行时提供），`since-build` 因此提到 252。
+- 编排：Core 侧统一 `sanitize()`（去代码围栏、截断与 suffix 重复的行、去 prefix 回显），确保 ghost text 只显示新增片段。
+- 降级：端点不支持 FIM、Core 未启动、超时 → 一律返回 `{"text": ""}`，编辑器不弹错误。
+
+### 13.2 语义索引（code-index）
+
+不引入独立向量数据库：**Embedding 模型 + SQLite BLOB + 余弦点积** 已足够支撑单仓库检索。
+
+| 模块 | 职责 |
+|---|---|
+| `codeindex/chunker.py` | 扩展名白名单 + 忽略 vendor/node_modules；优先 tree-sitter 按函数切，失败回退 60 行 / 10 行重叠 |
+| `codeindex/embeddings.py` | Ollama `/api/embed`（回退 legacy `/api/embeddings`）与 OpenAI `/embeddings`，batch=16 |
+| `codeindex/store.py` | `code_files` / `code_chunks` 两表；float32 归一化 BLOB；numpy 矩阵点积加速 + 纯 Python 回退；按 model 隔离 |
+| `codeindex/service.py` | `build(full)`：sha1 增量 + prune + 换模型整库重建；`search()`；注册工具 |
+| `rpc/server.py` | `index/build`（后台任务 + `index/progress` 通知）、`index/status` |
+
+- 工具：`semantic_search`（query/top_k）、`build_index`（full 可选），permission=auto，Agent 找代码时自动使用。
+- 数据位置：`~/.agent/data/<projectHash>/index.db`，与聊天会话共用目录，随项目隔离。
+- 配置：`ChatConfig.embedding_model`（默认 `nomic-embed-text`），由设置页下发；换模型自动重建。
+- 共享会话：新增 `AgentCoreService`（`@Service(PROJECT)`）持有唯一 Core 进程与 RPC 连接，聊天面板与 ghost text 共用，避免双进程。
+
+### 13.3 已知边界
+
+- 252 以下 IDE 无法加载（inline completion API 不存在）；若需兼容需单独发 LTS 包并移除 EP 与 Kotlin provider。
+- FIM 质量取决于模型：建议用 `qwen2.5-coder` / `codellama` 等支持 suffix 的模型。
+- 语义索引不解析符号引用关系（无 call graph），跨文件“找实现”靠语义相似度而非精确跳转。

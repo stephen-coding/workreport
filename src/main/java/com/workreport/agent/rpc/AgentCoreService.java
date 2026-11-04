@@ -118,8 +118,8 @@ public final class AgentCoreService implements Disposable {
         }
     }
 
-    // Push the active model profile to the Core (provider/model/endpoint/key + MCP).
-    // 将当前选中的模型配置下发给 Core（提供商/模型/端点/Key + MCP）。
+    // Push the active model profile to the Core (provider/model/endpoint/key + MCP + embedding).
+    // 将当前选中的模型配置下发给 Core（提供商/模型/端点/Key + MCP + embedding 模型）。
     public void pushSettings(@NotNull JsonRpcConnection conn) {
         ReportSettingsState state = ReportSettingsState.getInstance();
         ModelProfile profile = ModelProfiles.active(state);
@@ -128,6 +128,7 @@ public final class AgentCoreService implements Disposable {
         settings.put("provider", ollama ? "ollama" : "openai_compat");
         settings.put("base_url", profile.baseUrl);
         settings.put("model", profile.model);
+        settings.put("embedding_model", state.embeddingModel);
         String apiKey = ModelProfiles.apiKey(profile.name);
         if (!ollama && apiKey != null && !apiKey.isEmpty()) {
             settings.put("api_key", apiKey);

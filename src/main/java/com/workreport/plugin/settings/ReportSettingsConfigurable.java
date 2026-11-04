@@ -33,6 +33,8 @@ public final class ReportSettingsConfigurable implements Configurable {
     private JBTextField coreExeField;
     private JBTextField coreHomeField;
     private JBTextField pythonField;
+    private JCheckBox inlineCompletionBox;
+    private JBTextField embeddingModelField;
 
     @Nls(capitalization = Nls.Capitalization.Title)
     @Override
@@ -86,6 +88,9 @@ public final class ReportSettingsConfigurable implements Configurable {
         coreExeField = new JBTextField(40);
         coreHomeField = new JBTextField(40);
         pythonField = new JBTextField(40);
+        inlineCompletionBox = new JCheckBox("编辑器内幽灵补全（Ghost text：Tab 接受 / Esc 取消）");
+        embeddingModelField = new JBTextField(30);
+        embeddingModelField.getEmptyText().setText("nomic-embed-text（本地 Ollama 推荐）或 text-embedding-3-small");
         coreExeField.getEmptyText().setText("留空自动探测：插件内置 agent-core → AGENT_CORE_EXE → core/dist");
         coreHomeField.getEmptyText().setText("回退到 Python 模式时的 core 目录，例如 D:/learn/workreport-intellij-plugin/core");
         pythonField.getEmptyText().setText("回退到 Python 模式时的解释器，例如 python；留空用 AGENT_PYTHON / PATH");
@@ -108,6 +113,12 @@ public final class ReportSettingsConfigurable implements Configurable {
                 .addComponent(new JBScrollPane(mcpConfigField))
                 .addComponent(new JBLabel("（支持数组或 name 映射；项目内 .agent/mcp.json 优先）"))
                 .addSeparator()
+                .addComponent(new JBLabel("编辑器增强:"))
+                .addComponent(inlineCompletionBox)
+                .addLabeledComponent(new JBLabel("Embedding 模型:"), embeddingModelField, 1, false)
+                .addComponent(new JBLabel("（语义索引使用当前端点的 embedding 接口；切换模型后首次"
+                        + "检索会提示重建索引）"))
+                .addSeparator()
                 .addComponent(new JBLabel("Agent Core 运行环境（一般不需要改）:"))
                 .addLabeledComponent(new JBLabel("Core 可执行文件:"), coreExeField, 1, false)
                 .addLabeledComponent(new JBLabel("Core 目录:"), coreHomeField, 1, false)
@@ -129,7 +140,9 @@ public final class ReportSettingsConfigurable implements Configurable {
                 || !mcpConfigField.getText().trim().equals(state.mcpServersJson)
                 || !coreExeField.getText().trim().equals(state.coreExePath)
                 || !coreHomeField.getText().trim().equals(state.coreHomePath)
-                || !pythonField.getText().trim().equals(state.pythonPath);
+                || !pythonField.getText().trim().equals(state.pythonPath)
+                || inlineCompletionBox.isSelected() != state.inlineCompletionEnabled
+                || !embeddingModelField.getText().trim().equals(state.embeddingModel);
     }
 
     @Override
@@ -173,6 +186,9 @@ public final class ReportSettingsConfigurable implements Configurable {
         state.coreExePath = coreExeField.getText().trim();
         state.coreHomePath = coreHomeField.getText().trim();
         state.pythonPath = pythonField.getText().trim();
+        state.inlineCompletionEnabled = inlineCompletionBox.isSelected();
+        state.embeddingModel = embeddingModelField.getText().trim().isEmpty()
+                ? "nomic-embed-text" : embeddingModelField.getText().trim();
     }
 
     @Override
@@ -193,6 +209,8 @@ public final class ReportSettingsConfigurable implements Configurable {
         coreExeField.setText(state.coreExePath);
         coreHomeField.setText(state.coreHomePath);
         pythonField.setText(state.pythonPath);
+        inlineCompletionBox.setSelected(state.inlineCompletionEnabled);
+        embeddingModelField.setText(state.embeddingModel);
     }
 
     private List<ModelProfile> collectProfiles() {

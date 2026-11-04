@@ -4,7 +4,7 @@
 
 Work Report AI Assistant 是一款 IntelliJ IDEA 插件，通过自动采集项目的 Git 提交历史，结合大语言模型（LLM）AI 润色能力，帮助开发者快速生成结构化的日报、周报、季报和年报，大幅减少手写工作报告的时间成本。
 
-> **版本说明**：1.0.0 起插件已重构为 Agent 编码助手（当前 **2.0.0**）：底部为 **AgentCoder** 对话面板，
+> **版本说明**：1.0.0 起插件已重构为 Agent 编码助手（当前 **2.2.0**，支持多模型切换、自动执行、编辑器 ghost text 与语义索引）：底部为 **AgentCoder** 对话面板，
 > 日报/周报等能力变为 Core 内置 Skill（对话里说「生成今天的日报」，或使用 `Tools` → `生成今日日报`）。
 > 下文关于报告面板的旧流程仅作历史参考，实际界面以 Agent 面板为准，详见 README。
 
@@ -16,14 +16,14 @@ Work Report AI Assistant 是一款 IntelliJ IDEA 插件，通过自动采集项�
 
 | 条件 | 说明 |
 |------|------|
-| IntelliJ IDEA 版本 | 2023.3.x - 2026.2.x（构建号 233.* - 262.*） |
+| IntelliJ IDEA 版本 | 2025.2.x - 2026.2.x（构建号 252.* - 262.*） |
 | 插件依赖 | Git4Idea（IDEA 内置，无需单独安装） |
 | 项目要求 | 当前项目必须是 Git 仓库 |
 | Python | **无需安装**（插件 zip 已内置 `agent-core` 可执行文件） |
 
 ### 安装步骤
 
-1. 获取插件包：执行 `powershell -File scripts/build_plugin.ps1`，生成 `target/workreport-ai-assistant-2.0.0.zip`
+1. 获取插件包：执行 `powershell -File scripts/build_plugin.ps1`，生成 `target/workreport-ai-assistant-2.2.0.zip`
    （或从 Releases 下载已构建好的 zip）
 2. 打开 IDEA：**Settings → Plugins → ⚙️ 图标 → Install Plugin from Disk**
 3. 选择上述 ZIP 文件
@@ -65,6 +65,8 @@ Work Report AI Assistant 是一款 IntelliJ IDEA 插件，通过自动采集项�
 | 模型名称 | 必填 | 调用的模型标识符，需与 API 服务支持的模型一致 | `qwen2.5:7b` |
 | API Key | 云端模式必填 | 认证密钥，通过系统密钥链加密存储，不以明文保存 | `sk-xxxxxxxx` |
 | Git 作者过滤 | 可选 | 填写 Git 用户名可只采集自己的提交；留空则包含所有人 | `Zhang San` |
+| Embedding 模型 | 语义索引可选 | 向量模型名；Ollama 常用 `nomic-embed-text`，OpenAI 兼容用 `text-embedding-3-small` | `nomic-embed-text` |
+| 幽灵补全 | 可选 | 是否启用编辑器内 ghost text（默认开启） | 勾选 / 取消 |
 
 > **注意**：API 端点必须是完整路径，不能只填域名。例如填 `https://api.xxx.com` 会返回 HTML 页面导致解析失败，正确应为 `https://api.xxx.com/v1/chat/completions`。
 
@@ -184,6 +186,29 @@ Work Report AI Assistant 是一款 IntelliJ IDEA 插件，通过自动采集项�
 
 ---
 
+## 编辑器内 Ghost text 与语义索引
+
+### Ghost text（行内补全）
+
+1. 设置页勾选「编辑器内幽灵补全」（默认开启）
+2. 在任意本地文件中正常敲代码，停笔约 300 ms 后光标后出现灰色补全文本
+3. **Tab** 接受，**Esc** 取消；继续输入即忽略建议
+
+注意事项：
+
+- 补全走当前选中模型的 FIM 接口：Ollama 需模型支持 `/api/generate` 的 `suffix`（如 `qwen2.5-coder`），OpenAI 兼容端点需支持 `/v1/completions`
+- 端点不支持、Core 未启动或超过 1.5 s 未返回时，不会出现任何提示（静默跳过）
+- 只发送光标前 4000 / 后 1200 个字符，不发送整个文件
+
+### 语义索引
+
+- Agent 在对话里找代码时，会优先用 `semantic_search` 做语义检索（无需手动建库，首次自动构建）
+- 也可以直接说「重建代码索引」/「刷新索引」，Agent 会调用 `build_index` 重新扫描
+- 索引是增量的：只重算改动过的文件；更换 Embedding 模型会自动整库重建
+- 索引与向量数据存在本机 `~/.agent/data/<项目哈希>/`，不上传任何服务器
+
+---
+
 ## 隐私说明
 
 | 场景 | 数据去向 |
@@ -191,6 +216,7 @@ Work Report AI Assistant 是一款 IntelliJ IDEA 插件，通过自动采集项�
 | Ollama 本地模式 | 数据只在本机处理，不经过任何网络 |
 | 云端 API 模式 | 报告文本通过 HTTPS 发送至配置的 API 端点 |
 | API Key 存储 | 使用 IntelliJ PasswordSafe + 系统密钥链加密存储，不以明文写入配置文件 |
+| 语义索引 / Ghost text | 代码块与光标前后文只发送到你配置的模型端点；向量与索引文件仅存本机 |
 | 首次润色提示 | 每次更换 API 端点后，首次润色都会弹窗再次确认 |
 
 ---
@@ -228,6 +254,17 @@ Work Report AI Assistant 是一款 IntelliJ IDEA 插件，通过自动采集项�
 1. 检查日期范围内是否真的有 Git 提交
 2. 检查 Git 作者过滤是否与 `git config user.name` 完全一致（大小写敏感）
 3. 检查 IDEA 底部状态栏是否显示当前 Git 分支名（确认项目已关联 Git）
+
+### Ghost text 不出现
+
+- 检查设置页「编辑器内幽灵补全」是否勾选，且文件在本地文件系统（远程/大文件自动跳过）
+- 检查当前模型端点是否支持 FIM（`/api/generate` 的 `suffix` 或 `/v1/completions`），不支持时插件会静默不提示
+- 首次使用需要启动 Core，稍等几秒后继续输入即可触发
+
+### 语义检索没命中 / 结果陈旧
+
+- 在对话里说「重建代码索引」，或删除 `~/.agent/data/<项目哈希>/` 下的索引库后重新触发
+- 索引只收录常见源码扩展名且跳过 vendor/node_modules 等目录，新增文件类型需改 Core 白名单
 
 ### 报告内容乱码
 
