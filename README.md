@@ -24,7 +24,7 @@
 - 🔒 **隐私优先**：API Key 加密存储，数据完全可控
 - 📊 **Git 历史分析**：智能提取 Commit 记录，结构化展示
 - 🎨 **友好界面**：集成到 IDEA 工具窗口，操作简便
-- ✨ **编辑器 Ghost text**：光标处 FIM 补全，Tab 接受 / Esc 取消
+- ✨ **编辑器行内补全（Ghost text）**：光标处 FIM 补全，Tab 接受 / Esc 取消
 - 🔎 **语义索引**：Embedding + SQLite 本地向量检索，Agent 可跨文件找代码
 
 ---
@@ -149,7 +149,7 @@ powershell -File scripts/build_plugin.ps1
    - **Model Name**: 模型名称（如 `qwen2.5:7b`, `deepseek-chat`）
    - **API Key**: 云服务 API 密钥（本地 Ollama 可为空）
    - **Embedding 模型**: 语义索引用的向量模型（默认 `nomic-embed-text`；OpenAI 兼容端点为 `text-embedding-3-small`）
-   - **编辑器内幽灵补全**: 勾选后启用 ghost text（默认开启）
+   - **编辑器行内补全（Ghost text）**: 勾选后启用行内补全（默认开启）
 
 3. 点击 `Apply` 保存配置
 
@@ -276,12 +276,12 @@ powershell -File scripts/build_plugin.ps1
 - 面板顶部 **模型** 下拉框随时切换，切换后下一条消息即用新模型，无需重启 IDE 或 Core
 - **自动执行** 勾选后写文件/删除不再弹确认，直接落盘，适合“改完直接跑”的场景（仍可用 `revert_file` 回退）
 
-### 5. 编辑器内 Ghost text 补全
+### 5. 编辑器行内补全（Ghost text）
 
 - 基于平台 `com.intellij.inline.completion.provider` 扩展点（Kotlin `AgentInlineCompletionProvider`），停笔 300 ms 后触发
 - 光标前后文经 `inline/complete` 发给 Core，由当前模型做 FIM（fill-in-the-middle）补全：Ollama 走 `/api/generate` 的 `suffix`，OpenAI 兼容走 `/v1/completions`
 - **Tab** 接受 / **Esc** 取消；Core 不可用、端点不支持 FIM 或超时（1.5 s）时静默返回空，不打扰输入
-- 补全请求在 Core 侧是后台任务，不会阻塞聊天流；设置页「编辑器内幽灵补全」可随时关掉
+- 补全请求在 Core 侧是后台任务，不会阻塞聊天流；设置页「编辑器内行内补全」可随时关掉
 
 ### 6. 语义索引（code-index）
 

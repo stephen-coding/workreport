@@ -88,7 +88,7 @@ public final class ReportSettingsConfigurable implements Configurable {
         coreExeField = new JBTextField(40);
         coreHomeField = new JBTextField(40);
         pythonField = new JBTextField(40);
-        inlineCompletionBox = new JCheckBox("编辑器内幽灵补全（Ghost text：Tab 接受 / Esc 取消）");
+        inlineCompletionBox = new JCheckBox("编辑器内行内补全（Ghost text：Tab 接受 / Esc 取消）");
         embeddingModelField = new JBTextField(30);
         embeddingModelField.getEmptyText().setText("nomic-embed-text（本地 Ollama 推荐）或 text-embedding-3-small");
         coreExeField.getEmptyText().setText("留空自动探测：插件内置 agent-core → AGENT_CORE_EXE → core/dist");

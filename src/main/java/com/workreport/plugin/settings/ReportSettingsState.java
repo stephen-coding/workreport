@@ -50,8 +50,8 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
     // 自动执行：写文件不再弹 diff 确认
     public boolean autoAcceptEdits = false;
 
-    // Editor ghost text (fill-in-the-middle) completion
-    // 编辑器内幽灵补全（FIM）
+    // Editor inline completion (ghost text, fill-in-the-middle)
+    // 编辑器行内补全（Ghost text，FIM）
     public boolean inlineCompletionEnabled = true;
 
     // Embedding model used by the semantic code index

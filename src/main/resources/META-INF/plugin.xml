@@ -39,8 +39,8 @@
                 displayName="Agent Coding Assistant"
                 parentId="tools"/>
 
-        <!-- Editor ghost text (fill-in-the-middle completion) -->
-        <!-- 编辑器内幽灵补全（FIM 补全） -->
+        <!-- Editor inline completion (ghost text / fill-in-the-middle) -->
+        <!-- 编辑器行内补全（Ghost text / FIM 补全） -->
         <inline.completion.provider
                 id="com.workreport.agent.inline"
                 implementation="com.workreport.agent.inline.AgentInlineCompletionProvider"

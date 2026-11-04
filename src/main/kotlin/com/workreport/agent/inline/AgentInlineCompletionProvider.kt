@@ -17,9 +17,9 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * Editor ghost text: sends the text before/after the caret to the Agent Core,
+ * Editor inline completion (ghost text): sends the text before/after the caret to the Agent Core,
  * which answers with a fill-in-the-middle completion for the active model.
- * 编辑器内幽灵补全：把光标前后文发给 Agent Core，由 Core 用当前模型做 FIM 补全。
+ * 编辑器行内补全（Ghost text）：把光标前后文发给 Agent Core，由 Core 用当前模型做 FIM 补全。
  */
 class AgentInlineCompletionProvider : DebouncedInlineCompletionProvider() {
 

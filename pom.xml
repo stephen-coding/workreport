@@ -137,7 +137,7 @@
         </dependency>
 
         <!-- Inline completion (editor ghost text) API -->
-        <!-- 编辑器内幽灵补全 API -->
+        <!-- 编辑器行内补全（Ghost text）API -->
         <dependency>
             <groupId>com.jetbrains.intellij.platform</groupId>
             <artifactId>ide-codeinsight-inline</artifactId>
@@ -207,7 +207,7 @@
             </plugin>
 
             <!-- Kotlin compiler: the inline completion API is coroutine based -->
-            <!-- Kotlin 编译器：幽灵补全 API 为协程风格，需用 Kotlin 实现 -->
+            <!-- Kotlin 编译器：行内补全 API 为协程风格，需用 Kotlin 实现 -->
             <plugin>
                 <groupId>org.jetbrains.kotlin</groupId>
                 <artifactId>kotlin-maven-plugin</artifactId>

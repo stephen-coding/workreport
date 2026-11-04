@@ -636,9 +636,9 @@ powershell -File scripts/build_plugin.ps1
 
 ---
 
-## 13. v2.2.0 增量：编辑器 Ghost text 与语义索引
+## 13. v2.2.0 增量：行内补全（Ghost text）与语义索引
 
-### 13.1 Ghost text（inline completion）
+### 13.1 行内补全（Ghost text / inline completion）
 
 | 层 | 位置 | 说明 |
 |---|---|---|
