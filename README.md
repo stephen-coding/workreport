@@ -85,7 +85,7 @@ powershell -File scripts/verify_all.ps1 -Native    # 先编译 Rust 加速，再
 | M7 | Subagent 并行池 + 3 个内置子代理 | 完成 |
 | M8 | VS Code Shell + PyInstaller 分发 + CI + 一键验证 | 完成 |
 
-验收基线：Core 单测 78 用例全绿、4 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过，
+验收基线：Core 单测 82 用例全绿、4 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过，
 产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
 
 ---
@@ -117,6 +117,18 @@ powershell -File scripts/verify_all.ps1 -Native    # 先编译 Rust 加速，再
 4. 选择下载的 `.zip` 文件
 5. 重启 IDE
 
+### 方式三：本地打包（内置 Agent Core，免 Python）
+
+```powershell
+powershell -File scripts/build_plugin.ps1
+```
+
+这一条命令会依次完成：编译 Rust 加速（有 cargo 时）→ 用 PyInstaller 打包 `core/dist/agent-core(.exe)` →
+`mvn package` 并把可执行文件打进 zip 的 `agent-core/` 目录。产物为
+`target/workreport-ai-assistant-<version>.zip`，安装后插件启动时自动使用内置 Core，用户机器上
+**不需要安装 Python**；仅 `mvn package` 而不先构建 Core 时，zip 不含可执行文件，将回退到
+开发模式（需 `AGENT_CORE_HOME` + Python）。
+
 ---
 
 ## 🚀 快速开始
@@ -137,24 +149,17 @@ powershell -File scripts/verify_all.ps1 -Native    # 先编译 Rust 加速，再
 
 3. 点击 `Apply` 保存配置
 
-### 2. 生成工作报告
+### 2. 使用 Agent 面板
 
-1. 在 IDEA 底部工具栏点击 **WorkReport** 工具窗口
-2. 选择报告类型：
-   - **日报**: 今日提交
-   - **周报**: 本周提交
-   - **月报**: 本月提交
-   - **季报**: 本季度提交
-   - **年报**: 本年提交
-3. 点击 `采集 Git 日志` 获取提交记录并生成草稿
-4. 点击 `AI 润色` 开始第一次润色（开启对话模式）
-5. 润色完成后，可在下方对话输入框继续输入优化指令：
-   - 「精简一点」
-   - 「换个更正式的说法」
-   - 「强调技术难点」
-   - 「扩展这部分内容」
-6. 点击 `发送` 继续优化，反复迭代直到满意
-7. 可一键复制或导出报告
+1. 底部工具栏打开 **AgentCoder** 工具窗口（首次发送时自动启动 Core，状态栏显示进度）
+2. 直接提需求，例如：
+   - 「看下 `AgentChatPanel` 里 confirm 消息是怎么回传给 Core 的」
+   - 「修复 `subagent.py` 里工具白名单漏掉 `git_log` 的问题，改完跑下测试」
+   - 「生成今天的日报」（也可用 `Tools` → `生成今日日报` 菜单）
+3. 写文件/删除先弹 diff 卡片，默认需要确认（由 Core 的 permission 级别控制）；
+   拒绝后不落盘，也可让 Agent 调 `revert_file` 撤回上一次修改
+4. MCP 工具调用会弹 Yes/No 确认；连续拒绝 3 次 Core 会自动终止当前任务
+5. 工具与子代理进度以状态行插入对话流，例如 `[工具] read_file 执行中...`、`[子代理] code-reviewer 完成`
 
 ---
 
@@ -180,7 +185,7 @@ workreport-intellij-plugin/
 │   ├── agent/                  # rpc / tools / ui / actions
 │   └── plugin/                 # settings（含 MCP 配置）
 ├── vscode/                     # VS Code Shell（TypeScript）
-├── scripts/                    # build_core.ps1 / verify_all.ps1
+├── scripts/                    # build_plugin.ps1 / build_core.ps1 / build_native.ps1 / verify_all.ps1
 ├── docs/                       # 详细设计
 ├── .github/workflows/ci.yml    # Core / IntelliJ / VS Code / 打包 CI
 ├── pom.xml                     # Maven 项目配置
@@ -220,16 +225,16 @@ cd workreport
 ### 编译构建
 
 ```bash
-# 编译项目
+# 仅编译（开发调试）
 mvn clean compile
 
-# 打包插件
-mvn clean package
+# 打包插件（需要先构建 Core，否则 zip 不含内置可执行文件）
+powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
 - `workreport-intellij-plugin-1.0.0.jar` - 插件 JAR
-- `workreport-ai-assistant-1.0.0.zip` - 可安装的 ZIP 包
+- `workreport-ai-assistant-1.0.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 17 MB）
 
 ### 运行调试
 
@@ -239,38 +244,25 @@ mvn clean package
 
 ---
 
-## 📋 核心功能
+## 📋 核心能力
 
-### 1. Git 日志采集 (`GitLogCollectorService`)
+### 1. 会话与流式输出 (`AgentChatPanel` + Core RPC)
 
-- 基于时间范围过滤提交记录
-- 支持多种粒度：日/周/月/季/年
-- 提取 Commit Hash、作者、日期、提交信息
+- 流式 token 渲染、停止按钮、状态提示
+- 工具事件（`chat/toolStart` / `chat/toolEnd`）与子代理事件（`chat/subagent`）以状态行展示
+- 工具在 Core 侧并行调度，界面按事件到达顺序追加
 
-### 2. AI 润色服务 (`ReportPolishService`)
+### 2. 工具与编辑
 
-- 调用 LLM API 优化文本表达
-- 支持流式响应处理（打字机效果）
-- **新增：对话历史模式**，支持多轮持续优化
-- **新增：上下文理解**，AI 能记住前序对话内容
-- 自动重试机制
-- 错误处理与用户提示
+- 文件读写、搜索、Git 日志/diff、终端、诊断信息由 IDE 侧执行
+- 写文件/删除前显示 diff 确认卡，所有写操作先做快照，支持 `revert_file` 回退
 
-### 3. 设置管理 (`ReportSettingsState`)
+### 3. 记忆 / Skill / MCP / Subagent
 
-- 基于 `PersistentStateComponent` 持久化配置
-- 安全存储 API Key
-- 支持导入/导出配置
-
-### 4. UI 界面 (`ReportToolWindowPanel`)
-
-- 简洁的工具窗口设计
-- **新增：对话输入区**，支持自定义优化指令
-- **新增：新对话按钮**，一键清空历史记录
-- 实时进度反馈（流式打字机效果）
-- 状态智能提示（颜色动态变化）
-- 一键复制功能
-- 异常提示弹窗
+- 记忆：SQLite FTS5 检索 + Markdown 镜像，启动时注入 overview
+- Skill：`SKILL.md` 内置日报/周报/月报/季报/年报，按场景自动匹配
+- MCP：stdio / HTTP 服务器接入，工具以 `mcp__server__tool` 暴露，支持设置页 JSON 配置
+- Subagent：`code-reviewer` / `bug-hunter` / `test-generator` 并行子代理，工具白名单隔离
 
 ---
 

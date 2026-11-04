@@ -4,6 +4,10 @@
 
 Work Report AI Assistant 是一款 IntelliJ IDEA 插件，通过自动采集项目的 Git 提交历史，结合大语言模型（LLM）AI 润色能力，帮助开发者快速生成结构化的日报、周报、季报和年报，大幅减少手写工作报告的时间成本。
 
+> **版本说明**：1.0.0 起插件已重构为 Agent 编码助手：底部分别是 **AgentCoder** 对话面板，
+> 日报/周报等能力变为 Core 内置 Skill（对话里说「生成今天的日报」，或使用 `Tools` → `生成今日日报`）。
+> 下文关于报告面板的旧流程仅作历史参考，实际界面以 Agent 面板为准，详见 README。
+
 ---
 
 ## 安装
@@ -12,13 +16,15 @@ Work Report AI Assistant 是一款 IntelliJ IDEA 插件，通过自动采集项�
 
 | 条件 | 说明 |
 |------|------|
-| IntelliJ IDEA 版本 | 2025.3.x（构建号 253.*） |
+| IntelliJ IDEA 版本 | 2023.3.x - 2026.2.x（构建号 233.* - 262.*） |
 | 插件依赖 | Git4Idea（IDEA 内置，无需单独安装） |
 | 项目要求 | 当前项目必须是 Git 仓库 |
+| Python | **无需安装**（插件 zip 已内置 `agent-core` 可执行文件） |
 
 ### 安装步骤
 
-1. 获取插件包：执行 `mvn clean package`，生成 `target/workreport-ai-assistant-1.0.0.zip`
+1. 获取插件包：执行 `powershell -File scripts/build_plugin.ps1`，生成 `target/workreport-ai-assistant-1.0.0.zip`
+   （或从 Releases 下载已构建好的 zip）
 2. 打开 IDEA：**Settings → Plugins → ⚙️ 图标 → Install Plugin from Disk**
 3. 选择上述 ZIP 文件
 4. 点击 **Restart IDE** 完成安装

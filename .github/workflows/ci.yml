@@ -121,3 +121,20 @@ jobs:
       - name: Accelerator status
         working-directory: core
         run: ./dist/agent-core.exe --native-info
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Package plugin with bundled core
+        run: mvn -q -DskipTests package
+      - name: Verify bundled core in plugin zip
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = Get-ChildItem target/*.zip | Select-Object -First 1
+          if (-not $zip) { throw 'plugin zip not produced' }
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName)
+          $entry = $archive.Entries | Where-Object { $_.FullName -like '*agent-core/agent-core.exe' }
+          $archive.Dispose()
+          if (-not $entry) { throw "agent-core.exe missing from $($zip.Name)" }
+          Write-Host "bundled: $($entry.FullName) ($([math]::Round($entry.Length/1MB,1)) MB)"

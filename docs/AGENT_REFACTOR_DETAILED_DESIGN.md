@@ -605,11 +605,28 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **78 个用例全绿**（`python -m unittest discover -s tests`）
+- Core 单测 **82 个用例全绿**（`python -m unittest discover -s tests`）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
 - 打包：PyInstaller 产物 `core/dist/agent-core(.exe)` 可启动，`AGENT_CORE_EXE` 模式下冒烟同样通过（证明 SKILL.md / SUBAGENT.md 已随包分发）
+
+### 12.1.1 可安装插件产物
+
+```powershell
+powershell -File scripts/build_plugin.ps1
+# 等价于：build_native(可选) -> build_core -> mvn package
+```
+
+- 产物：`target/workreport-ai-assistant-<version>.zip`（约 17.5 MB），`Install Plugin from Disk` 即可安装
+- 布局：`com.workreport.ai-assistant/lib/*.jar` + `com.workreport.ai-assistant/agent-core/agent-core.exe`
+  （`assembly/plugin-assembly.xml` 直接取 `core/dist`）
+- 定位顺序（`PythonLocator.locateCoreExe`）：`AGENT_CORE_EXE` → 插件内置 `agent-core/` →
+  `core/dist`（从工作目录向上查找）；只有三者全无才回退到 `python -m agent_core`，
+  回退路径才需要 `AGENT_PYTHON` + `AGENT_CORE_HOME`
+- 已实测：把 zip 解压到临时目录后执行 `agent-core/agent-core.exe --native-info`，输出
+  `{"backend": "rust", "tokenizer": "rust", "codesoup": "rust"}`；仅 `mvn package`（未构建 Core）仍可
+  成功构建但 zip 不含可执行文件（供开发模式使用）
 
 ### 12.2 与详设的差异说明
 
