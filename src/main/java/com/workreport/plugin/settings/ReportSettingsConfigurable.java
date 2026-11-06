@@ -104,7 +104,8 @@ public final class ReportSettingsConfigurable implements Configurable {
                 .addComponent(new JBLabel("模型列表（面板下拉框可随时切换）:"))
                 .addComponent(tablePanel)
                 .addComponent(keyHint)
-                .addComponent(new JBLabel("（类型 ollama = 本地 Ollama；openai_compat = 任意 OpenAI 兼容云端服务）"))
+                .addComponent(new JBLabel("（类型 ollama = 本地 Ollama；openai_compat = 任意 OpenAI 兼容云端服务。"
+                        + "类型与端点冲突时以端点为准：含 /v1/chat/completions 按 OpenAI 兼容，含 /api/chat 按 Ollama）"))
                 .addSeparator()
                 .addLabeledComponent(new JBLabel("Git 作者过滤:"), authorFilterField, 1, false)
                 .addComponent(new JBLabel("（留空表示包含所有作者的提交记录）"))
@@ -178,7 +179,7 @@ public final class ReportSettingsConfigurable implements Configurable {
         ModelProfile current = ModelProfiles.active(state);
         state.apiEndpoint = current.baseUrl;
         state.modelName = current.model;
-        state.useOllamaMode = "ollama".equals(current.provider);
+        state.useOllamaMode = ModelEndpoints.isOllama(current.provider, current.baseUrl);
         state.resetPrivacyIfEndpointChanged(current.baseUrl);
 
         state.authorFilter = authorFilterField.getText().trim();

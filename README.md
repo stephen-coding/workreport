@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-2.2.0-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-2.3.0-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2.x%2B-green.svg)](https://www.jetbrains.com/idea/)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
 
@@ -21,6 +21,7 @@
 - 🚀 **自动化报告生成**：一键生成日报/周报/季报/年报
 - 🤖 **AI 智能润色**：支持本地 Ollama 或云端 LLM API
 - 💬 **多轮对话优化**：支持持续对话，基于上下文理解进行 iterative 优化
+- 🗂️ **多会话并行**：顶部标签页最多 8 个会话同时跑，通知按 taskId 各回各家
 - 🔒 **隐私优先**：API Key 加密存储，数据完全可控
 - 📊 **Git 历史分析**：智能提取 Commit 记录，结构化展示
 - 🎨 **友好界面**：集成到 IDEA 工具窗口，操作简便
@@ -139,17 +140,24 @@ powershell -File scripts/build_plugin.ps1
 
 首次使用需配置 AI 模型参数：
 
-1. 打开 Agent 面板右下角的 **设置** 按钮（或 `Settings` → `Tools` → `Agent Coding Assistant`）
+1. 打开 Agent 面板输入区工具栏的 **设置** 按钮（或 `Tools` → 「模型设置…」、`Settings` → `Tools` → `Agent Coding Assistant（模型设置）`）
 2. 填写以下配置：
 
    - **LLM Provider**: 选择服务商（Ollama / DeepSeek / Qwen 等）
    - **API URL**: 模型服务地址
      - 本地 Ollama: `http://localhost:11434/api/generate`
      - 云端 API: 服务商提供的地址
+     - vLLM: `http://<host>:<port>/v1/chat/completions`；启动时需带 `--enable-auto-tool-choice --tool-call-parser hermes`，否则插件会自动降级为纯对话模式
    - **Model Name**: 模型名称（如 `qwen2.5:7b`, `deepseek-chat`）
    - **API Key**: 云服务 API 密钥（本地 Ollama 可为空）
    - **Embedding 模型**: 语义索引用的向量模型（默认 `nomic-embed-text`；OpenAI 兼容端点为 `text-embedding-3-small`）
    - **编辑器行内补全（Ghost text）**: 勾选后启用行内补全（默认开启）
+
+> **类型与端点冲突时以端点为准**（v2.2.1 起）：端点以 `/api/...` 结尾按 Ollama 协议、含 `/v1/chat/completions` 或 `/v1` 按 OpenAI 兼容协议，填错「类型」不会再拼出 `.../v1/chat/completions/api/chat` 这类 404 地址。
+>
+> **Key 一律下发**（v2.2.2 起）：只要该模型填了 API Key 就会带上 Bearer 头，即使「类型」选了 Ollama——New API 这类网关不会再报 `Invalid token`。
+>
+> 自建 vLLM / 昇腾部署 27B 模型、工具调用参数怎么加：见 [docs/VLLM_DEPLOYMENT_GUIDE.md](docs/VLLM_DEPLOYMENT_GUIDE.md)。
 
 3. 点击 `Apply` 保存配置
 
@@ -160,9 +168,11 @@ powershell -File scripts/build_plugin.ps1
    - 「看下 `AgentChatPanel` 里 confirm 消息是怎么回传给 Core 的」
    - 「修复 `subagent.py` 里工具白名单漏掉 `git_log` 的问题，改完跑下测试」
    - 「生成今天的日报」（也可用 `Tools` → `生成今日日报` 菜单）
-3. 写文件/删除先弹 diff 卡片，需要确认；面板右上角勾选 **自动执行** 后不再弹窗（可直接改代码）
+3. 写文件/删除先弹 diff 卡片，需要确认；输入区工具栏勾选 **自动执行** 后不再弹窗（可直接改代码）
 4. MCP 工具调用会弹 Yes/No 确认；连续拒绝 3 次 Core 会自动终止当前任务
-5. 工具与子代理进度以状态行插入对话流，例如 `[工具] read_file 执行中...`、`[子代理] code-reviewer 完成`
+5. 工具与子代理进度以状态行插入对话流，例如 `[工具] read_file 执行中...`、`[子代理] code-reviewer 完成`；`[提示] ...` 表示非致命降级（如端点不支持 tools），任务会继续
+6. 输入区支持多行输入（`Enter` 发送 / `Shift+Enter` 换行）、拖动上方分隔线调整高度、「附件」添加文件作为上下文（文本内联，二进制只给路径）
+7. 顶部标签栏点 `+` 新建会话（最多 8 个），**多个会话可同时各跑一个任务**；状态栏右侧显示 `N 个任务并行运行中`。写文件类工具在项目内排队执行（对话里会打 `[排队]` 提示），读文件/搜索不受影响
 
 ---
 
@@ -239,8 +249,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-2.2.0.jar` - 插件 JAR
-- `workreport-ai-assistant-2.2.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30 MB）
+- `workreport-intellij-plugin-2.3.0.jar` - 插件 JAR
+- `workreport-ai-assistant-2.3.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30 MB）
 
 ### 运行调试
 
@@ -255,8 +265,12 @@ powershell -File scripts/build_plugin.ps1
 ### 1. 会话与流式输出 (`AgentChatPanel` + Core RPC)
 
 - 流式 token 渲染、停止按钮、状态提示
+- 顶部标签页多会话（`AgentChatPanel` + `ChatSessionPanel`）：每个标签独立 sessionId/taskId，可同时运行，事件按 taskId 路由；状态栏显示在跑的任务数
+- 左右分侧气泡流：用户消息在右、Agent 回答在左（Markdown 标题/列表/表格/代码块）
+- 输入区（`ChatComposer`）：多行自适应（4~14 行）、分隔条可拖动、附件 chip 可增删；附件正文内联进消息，路径写入 `contextSnapshot.open_files`
 - 工具事件（`chat/toolStart` / `chat/toolEnd`）与子代理事件（`chat/subagent`）以状态行展示
 - 工具在 Core 侧并行调度，界面按事件到达顺序追加
+- 写类工具（`write_file` / `edit_file` / `delete_file` / `revert_file`）经 `ProjectWriteGate` 项目级排队，避免并行会话互相覆盖、多个 diff 弹窗撞车
 
 ### 2. 工具与编辑
 
@@ -272,8 +286,11 @@ powershell -File scripts/build_plugin.ps1
 
 ### 4. 多模型切换与自动执行
 
+- **入口**：`Tools` 菜单 → 「模型设置…」，或输入区工具栏的「设置」；也可 `Ctrl+Shift+A` 搜“模型设置”
+- **协议自动识别**：按端点形状判定 Ollama / OpenAI 兼容，与设置页「类型」冲突时以端点为准
+- **工具调用降级**：端点拒绝 `tools`（如 vLLM 未开 `--enable-auto-tool-choice`）时去掉工具重试一次，对话继续并在面板打一行 `[提示]`；同一 `(端点, 模型)` 组合在当前 Core 进程内只提示一次
 - 设置页维护模型列表（名称 / 类型 / 端点 / 模型），每个模型一把 API Key（PasswordSafe 按名称分开存储）
-- 面板顶部 **模型** 下拉框随时切换，切换后下一条消息即用新模型，无需重启 IDE 或 Core
+- 输入区工具栏的 **模型** 下拉框随时切换，切换后下一条消息即用新模型，无需重启 IDE 或 Core
 - **自动执行** 勾选后写文件/删除不再弹确认，直接落盘，适合“改完直接跑”的场景（仍可用 `revert_file` 回退）
 
 ### 5. 编辑器行内补全（Ghost text）

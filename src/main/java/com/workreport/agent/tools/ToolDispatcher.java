@@ -9,6 +9,8 @@ import com.workreport.plugin.settings.ReportSettingsState;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Consumer;
 
 // Routes tool/invoke notifications to the concrete tool implementations and
 // answers the Core with a tool/result request.
@@ -17,12 +19,19 @@ public final class ToolDispatcher {
 
     private static final Logger LOG = Logger.getInstance(ToolDispatcher.class);
 
+    // Tools that mutate files; they take turns across parallel sessions.
+    // 会改文件的工具；并行会话之间需要排队。
+    private static final Set<String> WRITE_TOOLS =
+            Set.of("write_file", "edit_file", "delete_file", "revert_file");
+
+    private final ProjectWriteGate writeGate;
     private final FileTools fileTools;
     private final SearchTools searchTools;
     private final GitTools gitTools;
     private final EditTools editTools;
 
     public ToolDispatcher(Project project) {
+        this.writeGate = ProjectWriteGate.getInstance(project);
         this.fileTools = new FileTools(project);
         this.searchTools = new SearchTools(project, fileTools);
         this.gitTools = new GitTools(project);
@@ -30,6 +39,13 @@ public final class ToolDispatcher {
     }
 
     public void onToolInvoke(JsonObject params, JsonRpcConnection connection) {
+        onToolInvoke(params, connection, "会话", null);
+    }
+
+    // sessionLabel identifies the owning chat tab, notice reports queueing to that tab.
+    // sessionLabel 标识发起会话（用于排队提示），notice 把排队信息写回该会话的对话区。
+    public void onToolInvoke(JsonObject params, JsonRpcConnection connection,
+                             String sessionLabel, Consumer<String> notice) {
         String toolCallId = params.has("toolCallId") ? params.get("toolCallId").getAsString() : "";
         String toolName = params.has("toolName") ? params.get("toolName").getAsString() : "";
         String permission = params.has("permission") ? params.get("permission").getAsString() : "auto";
@@ -43,13 +59,25 @@ public final class ToolDispatcher {
         // 面板勾选「自动执行」时，文件写操作不再弹 diff 确认。
         boolean autoAccept = ReportSettingsState.getInstance().autoAcceptEdits;
         boolean needsApproval = !"auto".equals(permission) && !autoAccept;
+        boolean writeOp = WRITE_TOOLS.contains(toolName);
+        String label = sessionLabel == null || sessionLabel.isBlank() ? "会话" : sessionLabel;
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            if (writeOp) {
+                String waitedFor = writeGate.acquire(label);
+                if (waitedFor != null && notice != null) {
+                    notice.accept("[排队] 等待会话「" + waitedFor + "」写完文件后继续 " + toolName + "...");
+                }
+            }
             ToolResult result;
             try {
                 result = dispatch(toolName, args, needsApproval);
             } catch (Exception e) {
                 LOG.warn("tool " + toolName + " failed", e);
                 result = ToolResult.fail(e.getMessage() == null ? e.toString() : e.getMessage());
+            } finally {
+                if (writeOp) {
+                    writeGate.release();
+                }
             }
             Map<String, Object> payload = new HashMap<>();
             payload.put("toolCallId", toolCallId);

@@ -372,10 +372,16 @@ class RpcServer:
                 "summary": summary[:300],
             })
 
+        async def on_notice(text: str) -> None:
+            # Provider degradations (e.g. endpoint without tool support) are surfaced
+            # as a non-fatal notice instead of failing the whole task.
+            self._send_notification("chat/notice", {"taskId": task_id, "text": text})
+
         try:
             result = await run_chat(
                 session, user_input, self.config, provider, emit_token,
                 registry=self.tools, on_tool_start=on_tool_start, on_tool_end=on_tool_end,
+                on_notice=on_notice,
                 memory_overview=self.memory.overview_text(),
                 skill_instruction=self.skills.instruction_for(user_input, skill_name),
             )

@@ -25,6 +25,7 @@ SYSTEM_PROMPT = (
 
 ToolStartCallback = Callable[[ToolCall], Awaitable[None]]
 ToolEndCallback = Callable[[ToolCall, ToolResult], Awaitable[None]]
+NoticeCallback = Callable[[str], Awaitable[None]]
 
 
 async def _noop_tool_call(call: ToolCall) -> None:
@@ -38,6 +39,16 @@ def _tool_path(call: ToolCall) -> Optional[str]:
     return path if isinstance(path, str) else None
 
 
+async def _flush_notice(provider, on_notice: Optional[NoticeCallback]) -> None:
+    """Forward a provider warning (e.g. tools disabled) to the Shell once."""
+    consume = getattr(provider, "consume_notice", None)
+    if consume is None:
+        return
+    text = consume()
+    if text and on_notice is not None:
+        await on_notice(text)
+
+
 async def run_chat(
     session: Session,
     user_input: str,
@@ -47,6 +58,7 @@ async def run_chat(
     registry: Optional[ToolRegistry] = None,
     on_tool_start: Optional[ToolStartCallback] = None,
     on_tool_end: Optional[ToolEndCallback] = None,
+    on_notice: Optional[NoticeCallback] = None,
     memory_overview: Optional[str] = None,
     skill_instruction: Optional[str] = None,
     base_prompt: Optional[str] = None,
@@ -73,6 +85,7 @@ async def run_chat(
             on_token=emit_token,
             on_tool_call=_noop_tool_call,
         )
+        await _flush_notice(provider, on_notice)
 
         if not result.tool_calls:
             session.append(Message(role=Role.ASSISTANT, content=result.content))

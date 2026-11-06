@@ -170,6 +170,9 @@ export class CoreSession {
         this.panel.setStatus("出错");
         break;
       }
+      case "chat/notice":
+        this.panel.appendSystem(`\n  [提示] ${String(params.text ?? "")}`);
+        break;
       case "tool/invoke":
         if (this.connection) {
           void this.toolRunner.onToolInvoke(params, this.connection);

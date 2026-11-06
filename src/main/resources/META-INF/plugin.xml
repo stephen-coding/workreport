@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.workreport.ai-assistant</id>
     <name>Agent Coding Assistant</name>
-    <version>2.2.0</version>
+    <version>2.3.0</version>
     <vendor>WeeklyReport</vendor>
     <description><![CDATA[
         AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
@@ -31,12 +31,13 @@
                     anchor="bottom"
                     factoryClass="com.workreport.agent.ui.AgentToolWindowFactory"/>
 
-        <!-- Settings page: Tools -> Work Report AI Assistant -->
-        <!-- 设置页面：位于 Tools -> Work Report AI Assistant -->
+        <!-- Settings page: Settings -> Tools -> Agent Coding Assistant (model list / MCP / Embedding) -->
+        <!-- 设置页面：Settings -> Tools -> Agent Coding Assistant（模型列表 / MCP / Embedding）；
+             名称里带“模型设置”便于在设置树与搜索里被找到 -->
         <applicationConfigurable
                 instance="com.workreport.plugin.settings.ReportSettingsConfigurable"
                 id="com.workreport.settings"
-                displayName="Agent Coding Assistant"
+                displayName="Agent Coding Assistant（模型设置）"
                 parentId="tools"/>
 
         <!-- Editor inline completion (ghost text / fill-in-the-middle) -->
@@ -52,14 +53,23 @@
                 serviceImplementation="com.workreport.plugin.settings.ReportSettingsState"/>
     </extensions>
 
-    <!-- Legacy report entry: sends "生成今天的日报" to the agent panel -->
-    <!-- 旧报告入口：向 Agent 面板发送“生成今天的日报”指令 -->
+    <!-- Tools menu: jump straight to the model settings page -->
+    <!-- Tools 菜单：直接打开模型设置页（模型列表 / MCP / Embedding），Ctrl+Shift+A 也可搜到 -->
     <actions>
+        <action id="AgentCoder.OpenSettings"
+                class="com.workreport.agent.actions.OpenSettingsAction"
+                text="模型设置…"
+                description="打开 Agent Coding Assistant 设置页：模型列表、MCP 服务、Embedding 模型">
+            <add-to-group group-id="ToolsMenu" anchor="first"/>
+        </action>
+
+        <!-- Legacy report entry: sends "生成今天的日报" to the agent panel -->
+        <!-- 旧报告入口：向 Agent 面板发送“生成今天的日报”指令 -->
         <action id="AgentCoder.GenerateReport"
                 class="com.workreport.agent.actions.GenerateReportAction"
                 text="生成今日日报"
                 description="通过 Agent 的内置日报 Skill 生成今天的日报">
-            <add-to-group group-id="ToolsMenu" anchor="first"/>
+            <add-to-group group-id="ToolsMenu" anchor="after" relative-to-action="AgentCoder.OpenSettings"/>
         </action>
     </actions>
 </idea-plugin>

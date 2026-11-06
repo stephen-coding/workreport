@@ -7,6 +7,7 @@ import com.intellij.openapi.Disposable;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
+import com.workreport.plugin.settings.ModelEndpoints;
 import com.workreport.plugin.settings.ModelProfile;
 import com.workreport.plugin.settings.ModelProfiles;
 import com.workreport.plugin.settings.ReportSettingsState;
@@ -124,13 +125,15 @@ public final class AgentCoreService implements Disposable {
         ReportSettingsState state = ReportSettingsState.getInstance();
         ModelProfile profile = ModelProfiles.active(state);
         Map<String, Object> settings = new HashMap<>();
-        boolean ollama = "ollama".equals(profile.provider);
-        settings.put("provider", ollama ? "ollama" : "openai_compat");
+        // Endpoint shape wins over the typed provider: a gateway on an OpenAI endpoint
+        // must still receive the bearer token even when "ollama" was selected.
+        // 端点形状优先于「类型」：OpenAI 形状的网关即使类型选了 ollama，也必须带上 Key。
+        settings.put("provider", ModelEndpoints.detect(profile.provider, profile.baseUrl));
         settings.put("base_url", profile.baseUrl);
         settings.put("model", profile.model);
         settings.put("embedding_model", state.embeddingModel);
         String apiKey = ModelProfiles.apiKey(profile.name);
-        if (!ollama && apiKey != null && !apiKey.isEmpty()) {
+        if (apiKey != null && !apiKey.isEmpty()) {
             settings.put("api_key", apiKey);
         }
         Object mcpServers = parseMcpServers(state.mcpServersJson);

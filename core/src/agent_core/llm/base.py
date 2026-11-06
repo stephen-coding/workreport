@@ -10,6 +10,20 @@ from agent_core.protocol import Message, Role, ToolCall, ToolDef
 TokenCallback = Callable[[str], Awaitable[None]]
 ToolCallCallback = Callable[[ToolCall], Awaitable[None]]
 
+# Endpoints that refuse tool definitions (vLLM without --enable-auto-tool-choice,
+# Ollama models without tool support ...) answer 400 with one of these phrases.
+# 端点拒绝工具定义时（vLLM 未开 auto tool choice、模型不支持 tools 等）会在 400 里
+# 带上这些关键字，据此把“请求失败”降级成“纯对话重试”。
+_TOOL_UNSUPPORTED_HINTS = (
+    "tool_choice",
+    "tool-call-parser",
+    "enable-auto-tool-choice",
+    "does not support tools",
+    "do not support tools",
+    "tools are not supported",
+    "function calling is not supported",
+)
+
 
 class ChatResult(BaseModel):
     content: str = ""
@@ -30,6 +44,14 @@ class LLMProvider(Protocol):
         on_tool_call: ToolCallCallback,
     ) -> ChatResult:
         ...
+
+
+def is_tool_unsupported(status_code: int, body: str) -> bool:
+    """True when the endpoint rejected the request because of its tool definitions."""
+    if status_code not in (400, 422):
+        return False
+    lowered = (body or "").lower()
+    return any(hint in lowered for hint in _TOOL_UNSUPPORTED_HINTS)
 
 
 def to_openai_messages(messages: List[Message]) -> List[Dict[str, Any]]:
