@@ -5,7 +5,8 @@
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
 [![Version](https://img.shields.io/badge/version-2.3.0-blue.svg)](https://github.com/stephen-coding/workreport)
-[![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2.x%2B-green.svg)](https://www.jetbrains.com/idea/)
+[![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
+![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
 
 </div>
@@ -27,6 +28,20 @@
 - 🎨 **友好界面**：集成到 IDEA 工具窗口，操作简便
 - ✨ **编辑器行内补全（Ghost text）**：光标处 FIM 补全，Tab 接受 / Esc 取消
 - 🔎 **语义索引**：Embedding + SQLite 本地向量检索，Agent 可跨文件找代码
+
+---
+
+## 📚 文档导航
+
+| 文档 | 内容 |
+|---|---|
+| [USER_GUIDE.md](USER_GUIDE.md) | 面向使用者的完整手册：术语、安装、首次配置、面板与状态行、行内补全、语义索引、报告 Skill、MCP、FAQ |
+| [COMPATIBILITY.md](COMPATIBILITY.md) | IntelliJ 版本号规则、兼容区间调整与多版本测试方法 |
+| [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md) | 模块职责、数据流转、扩展点注册、打包分发与关键设计决策 |
+| [TECHNICAL_ARCHITECTURE.md](TECHNICAL_ARCHITECTURE.md) | 早期架构的实现说明（UI / Git 采集 / AI 润色服务），保留作为历史参考 |
+| [docs/AGENT_REFACTOR_DETAILED_DESIGN.md](docs/AGENT_REFACTOR_DETAILED_DESIGN.md) | Agent 重构详设与 M1–M8 逐项验收 |
+| [docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md) | 行内补全全链路（FIM 报文 / sanitize / 超时降级）与语义索引原理、调试手册 |
+| [docs/VLLM_DEPLOYMENT_GUIDE.md](docs/VLLM_DEPLOYMENT_GUIDE.md) | vLLM / 昇腾部署 27B 模型与工具调用参数 |
 
 ---
 
@@ -53,8 +68,10 @@ VS Code 扩展 (TS)     ─┘                              ├─ LLM: OpenAI �
 ### 快速启动
 
 ```bash
-# 1) Core 依赖
-pip install "pydantic>=2.5" "httpx>=0.27"
+# 1) Core 依赖（以可编辑模式装入当前解释器）
+pip install -e ./core
+# 等价的最小依赖：pip install "pydantic>=2.5" "httpx>=0.27"
+# 语义索引提速（可选）：pip install numpy，缺失时自动回退纯 Python 点积
 
 # 2) IntelliJ 插件
 mvn -q -DskipTests compile
@@ -70,9 +87,10 @@ cd vscode && npm install && npm run compile
 ### 一键验证
 
 ```powershell
-powershell -File scripts/verify_all.ps1            # 单测 + 4 个协议冒烟 + Java 编译 + TS 编译/冒烟
-powershell -File scripts/verify_all.ps1 -SkipJava  # 仅 Core 与 VS Code
-powershell -File scripts/verify_all.ps1 -Native    # 先编译 Rust 加速，再强制断言后端为 rust
+powershell -File scripts/verify_all.ps1             # 单测 + 4 个协议冒烟 + Java 编译 + TS 编译/冒烟
+powershell -File scripts/verify_all.ps1 -SkipJava   # 仅 Core 与 VS Code
+powershell -File scripts/verify_all.ps1 -SkipNode   # 仅 Core 与 IntelliJ
+powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 加速，再强制断言后端为 rust
 ```
 
 ### 里程碑状态（M1–M8 全部完成）
@@ -88,18 +106,34 @@ powershell -File scripts/verify_all.ps1 -Native    # 先编译 Rust 加速，再
 | M7 | Subagent 并行池 + 3 个内置子代理 | 完成 |
 | M8 | VS Code Shell + PyInstaller 分发 + CI + 一键验证 | 完成 |
 
-验收基线：Core 单测 98 用例全绿、4 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过，
-产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
+验收基线：Core 单测 **111 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
+VS Code 编译与冒烟 PASS、IntelliJ 编译通过，产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
+
+### 版本演进（v2.0 → v2.3）
+
+M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用」，逐版本对应如下（括号内为提交短哈希）：
+
+| 版本 | 提交 | 主要变更 |
+|---|---|---|
+| v2.0.0 | `66a18f8`、`c15c369` | 插件 zip 内置 Agent Core（免 Python）；设置页改名 Agent Coding Assistant，面板加「设置」入口；新增 Core 可执行文件 / Core 目录 / Python 解释器三个覆盖项，留空自动探测；每条消息前重下发 settings |
+| v2.1.0 | `d3e4185` | 设置页改为模型列表（每模型独立 API Key 走 PasswordSafe）；面板顶部模型下拉 + 「自动执行」；Core 会话抽成项目级 `AgentCoreService`，面板复用同一连接 |
+| v2.2.0 | `be1b359`、`694d349` | 编辑器行内补全（Ghost text，FIM + sanitize + 超时降级）；语义索引（tree-sitter 切块 / Embedding / SQLite float32 向量 + 增量构建）；`since-build` 由 233 提到 252；全仓术语统一为「行内补全（Ghost text）」 |
+| v2.2.1 ~ v2.2.4 | 未单独提交（仅本地补丁构建） | 2.2.1 端点与「类型」冲突时以端点为准 + 端点不支持 tools 时降级纯对话；2.2.2 API Key 一律下发（即使类型选 Ollama）；2.2.3 对话区改为左右分侧气泡；2.2.4 输入区重做。**这四次补丁的改动全部并入 v2.3.0 的 `6605347`**，所以正文里出现的「v2.2.x 起」标注指这些补丁构建 |
+| v2.3.0 | `6605347` | 多会话并行（标签页 + 按 taskId 路由）与 `ProjectWriteGate` 写操作串行；输入区重做（4~14 行自适应 / 分隔条 / 附件 / 拖拽）；Markdown 渲染 + 左右分侧气泡；LLM 协议按端点形状自动判定，端点不支持 tools 时降级为纯对话；设置入口提升到 `Tools` 菜单 |
+
+更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
+`bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
 
 ---
 
 ## 🛠️ 技术栈
 
-- **Agent Core**: Python 3.9+（pydantic v2、httpx；可选 Rust 加速扩展）
-- **IntelliJ Shell**: Java 21 + Kotlin（inline completion）+ IntelliJ Platform SDK + Maven
+- **Agent Core**: Python 3.9+（pydantic v2、httpx；numpy 可选，用于语义检索矩阵加速；可选 Rust 加速扩展）
+- **IntelliJ Shell**: Java 21 + Kotlin（行内补全 Provider）+ IntelliJ Platform SDK + Maven
 - **VS Code Shell**: TypeScript + Node 18
 - **通信协议**: JSON-RPC 2.0 over stdio（JSON Lines）
-- **兼容版本**: IntelliJ IDEA 2025.2.x - 2026.2.x（`since-build=252`，ghost text 依赖平台的 inline completion API）；VS Code 1.85+
+- **构建目标平台**: `intellij.version = 261.25134.95`（2026.1）从 JetBrains 仓库拉取，Kotlin 2.3.20-RC2 与平台内置版本对齐；无需本地安装 IDEA 路径
+- **兼容版本**: IntelliJ IDEA 2025.2 - 2026.2（`since-build=252` / `until-build=262.*`，行内补全依赖平台的 inline completion API）；VS Code 1.85+
 
 ---
 
@@ -202,8 +236,12 @@ workreport-intellij-plugin/
 │   └── agent/inline/           # 编辑器 InlineCompletionProvider
 ├── vscode/                     # VS Code Shell（TypeScript）
 ├── scripts/                    # build_plugin.ps1 / build_core.ps1 / build_native.ps1 / verify_all.ps1
-├── docs/                       # 详细设计
-├── .github/workflows/ci.yml    # Core / IntelliJ / VS Code / 打包 CI
+├── docs/                       # 重构详设 / 行内补全与语义索引 / vLLM 部署指南
+├── .github/workflows/ci.yml    # CI 共 5 个 job（core / intellij / vscode / native / core-exe）
+├── USER_GUIDE.md               # 面向使用者的完整手册
+├── COMPATIBILITY.md            # IDE 版本兼容策略
+├── TECHNICAL_DESIGN.md         # 技术设计与模块职责
+├── TECHNICAL_ARCHITECTURE.md   # 早期架构说明（历史参考）
 ├── pom.xml                     # Maven 项目配置
 └── README.md
 ```
@@ -218,8 +256,9 @@ workreport-intellij-plugin/
 - Maven 3.6+
 - Python 3.9+（运行 Agent Core；仅依赖 pydantic v2 与 httpx）
 - Node.js 18+（构建 VS Code 扩展）
-- IntelliJ IDEA 2025.2.x+（Kotlin 编译依赖平台的 inline completion API）
 - Git
+- 本地**无需安装 IntelliJ IDEA**：构建时由 Maven 从 JetBrains 仓库拉取目标平台（首次下载较慢）
+- 装包运行调试时需 IntelliJ IDEA 2025.2 - 2026.2 中任一版本（行内补全依赖平台 inline completion API）
 
 ### 克隆项目
 
@@ -228,15 +267,20 @@ git clone https://github.com/stephen-coding/workreport.git
 cd workreport
 ```
 
-### 修改 IDEA 路径
+### 调整目标平台与兼容区间
 
-编辑 `pom.xml`，配置你的 IntelliJ IDEA 安装路径：
+`pom.xml` 不读取本地 IDEA 安装路径，目标平台由 `intellij.version` 决定；`plugin.xml` 的
+`since-build` / `until-build` 决定可安装的 IDE 区间。升级平台时这三项需一起改：
 
 ```xml
-<properties>
-    <idea.home>D:/IntelliJ IDEA 2025.2.5</idea.home>
-</properties>
+<!-- pom.xml -->
+<intellij.version>261.25134.95</intellij.version>
+<!-- src/main/resources/META-INF/plugin.xml -->
+<idea-version since-build="252" until-build="262.*"/>
 ```
+
+`kotlin.version` 必须与目标平台内置的 Kotlin 版本一致（当前 `2.3.20-RC2`），否则 Kotlin 编译会报
+元数据版本不匹配。版本号规则与多版本测试方法见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
 ### 编译构建
 
@@ -250,7 +294,7 @@ powershell -File scripts/build_plugin.ps1
 
 构建产物位于 `target/` 目录：
 - `workreport-intellij-plugin-2.3.0.jar` - 插件 JAR
-- `workreport-ai-assistant-2.3.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30 MB）
+- `workreport-ai-assistant-2.3.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
 
 ### 运行调试
 
