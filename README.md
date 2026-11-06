@@ -42,6 +42,7 @@
 | [docs/AGENT_REFACTOR_DETAILED_DESIGN.md](docs/AGENT_REFACTOR_DETAILED_DESIGN.md) | Agent 重构详设与 M1–M8 逐项验收 |
 | [docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md) | 行内补全全链路（FIM 报文 / sanitize / 超时降级）与语义索引原理、调试手册 |
 | [docs/VLLM_DEPLOYMENT_GUIDE.md](docs/VLLM_DEPLOYMENT_GUIDE.md) | vLLM / 昇腾部署 27B 模型与工具调用参数 |
+| [vscode/README.md](vscode/README.md) | VS Code 扩展（Agent Coder）的设置项、命令与打包说明 |
 
 ---
 
@@ -165,6 +166,62 @@ powershell -File scripts/build_plugin.ps1
 `target/workreport-ai-assistant-<version>.zip`，安装后插件启动时自动使用内置 Core，用户机器上
 **不需要安装 Python**；仅 `mvn package` 而不先构建 Core 时，zip 不含可执行文件，将回退到
 开发模式（需 `AGENT_CORE_HOME` + Python）。
+
+---
+
+## 🧩 VS Code 扩展（Agent Coder）
+
+同一个 Agent Core 同时驱动 VS Code：`vscode/` 是与其协议对等的 Shell 扩展（要求 VS Code `^1.85.0`）。
+编辑、工具、记忆、Skill、MCP、子代理均在 Core 侧执行，扩展只负责 IDE 侧动作（文件 IO、git CLI、
+diff 确认、终端），与 IntelliJ 插件共用同一个 Core 和同一套 RPC。
+
+### 方式一：开发模式（F5）
+
+```bash
+cd vscode
+npm install
+npm run compile
+```
+
+用 VS Code 打开 `vscode/` 目录后按 `F5` 启动「扩展开发宿主」窗口，新窗口左侧活动栏会出现
+**Agent Coder** 图标，点开即对话面板（webview 视图 `agentCoder.chatView`）。
+不启 IDE 时可用 `npm run smoke` 直接拉起真实 Core 跑一轮对话做冒烟。
+
+### 方式二：打包成 .vsix 安装
+
+```bash
+cd vscode && npm install && npm run compile
+npx @vscode/vsce package                 # 产物 vscode/agent-coder-0.1.0.vsix
+code --install-extension agent-coder-0.1.0.vsix
+```
+
+> 该扩展尚未发布到 Marketplace，目前只能走上面两种方式安装。
+
+### Core 的定位规则
+
+- **优先用打包好的可执行文件**：`AGENT_CORE_EXE` → `<扩展>/bin/agent-core(.exe)` →
+  上层 `core/dist/agent-core(.exe)` → `<工作区>/core/dist/agent-core(.exe)`，命中即无需 Python
+- **回退到 Python 源码模式**：解释器取 `agentCoder.pythonPath` → `AGENT_PYTHON` → `python`（Windows）/
+  `python3`；Core 目录取 `agentCoder.coreHome` → `AGENT_CORE_HOME` → 上层 `core/` → `<工作区>/core`，
+  以 `src/agent_core/__main__.py` 是否存在为准
+
+### 配置与命令
+
+在 `Settings` 搜索 `agentCoder`：`provider`（`ollama` / `openai_compat`）、`baseUrl`、`model`、
+`apiKey`（建议改用 `OPENAI_API_KEY` 环境变量）、`maxIterations`（默认 15）、`toolConcurrency`（4）、
+`subagentConcurrency`（3）、`autoAcceptEdits`（默认 false，跳过 diff 确认）、`mcpServers`
+（项目内 `.agent/mcp.json` 优先）。
+
+命令面板可执行：`Agent: 打开对话面板`、`Agent: 生成日报`、`Agent: 重启 Agent Core`。
+端点与「类型」冲突时同样以端点形状为准（`vscode/src/settings.ts` 复刻了 Core 的协议判定）。
+
+### 与 IntelliJ 侧的差异
+
+- 没有行内补全（Ghost text）——扩展未注册 inline completion 提供者
+- 没有 Embedding 模型设置项，语义索引走 Core 默认值
+- API Key 存在 VS Code 明文设置项里，不是 PasswordSafe 加密存储
+
+完整说明见 [vscode/README.md](vscode/README.md)。
 
 ---
 
