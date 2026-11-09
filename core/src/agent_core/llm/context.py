@@ -27,11 +27,25 @@ def messages_tokens(messages: List[Message]) -> int:
 
 
 def trim_history(messages: List[Message], budget: int = DEFAULT_BUDGET) -> List[Message]:
-    """Keep the system prompt and drop oldest non-system messages until in budget."""
+    """Keep the system prompt and drop the oldest rounds until in budget.
+
+    Rounds go out whole: an assistant message that carries ``tool_calls`` is removed
+    together with the tool results that follow it, otherwise the endpoint rejects the
+    orphan ``tool`` message ("tool message must follow a tool_calls message").
+    按“轮”从最旧丢：带 tool_calls 的 assistant 消息要和后面的 tool 结果一起丢，
+    否则会留下孤立的 tool 消息，OpenAI 兼容端点会直接 400。
+    """
     if messages_tokens(messages) <= budget:
         return list(messages)
     system = [m for m in messages if m.role.value == "system"]
     rest = [m for m in messages if m.role.value != "system"]
     while rest and messages_tokens(system + rest) > budget:
+        dropped = rest.pop(0)
+        if dropped.tool_calls:
+            while rest and rest[0].role.value == "tool":
+                rest.pop(0)
+    # Never start with tool results whose assistant message was trimmed away.
+    # 不要以孤立的 tool 结果开头。
+    while rest and rest[0].role.value == "tool":
         rest.pop(0)
     return system + rest

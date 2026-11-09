@@ -11,6 +11,7 @@ import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.util.ui.UIUtil;
 import com.workreport.agent.rpc.AgentCoreService;
+import com.workreport.plugin.settings.ReportSettingsState;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -19,6 +20,7 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 // Agent chat tool window: a tab strip of parallel chat sessions.
@@ -218,22 +220,43 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         target.onCoreMessage(method, params);
     }
 
-    // Open the plugin settings page; drop the Core afterwards so path/model edits take effect.
-    // 打开插件设置页；关闭后重启 Core，使路径/模型修改立即生效。
+    // Open the plugin settings page. Model / endpoint / MCP edits reach the running Core through
+    // settings/update (pushed before every message), so the Core is only rebuilt when one of the
+    // three Core location paths changed — rebuilding wipes every session's conversation history.
+    // 打开插件设置页。模型/端点/MCP 的修改由 settings/update 实时下发（每条消息前都会推一次），
+    // 只有 Core 可执行文件/目录/解释器这三个路径变了才重建 Core——重建会清空所有会话上下文。
     private void openSettings() {
+        ReportSettingsState state = ReportSettingsState.getInstance();
+        String exePath = state.coreExePath;
+        String homePath = state.coreHomePath;
+        String pythonPath = state.pythonPath;
+
         ShowSettingsUtil.getInstance().showSettingsDialog(project, "com.workreport.settings");
         for (ChatSessionPanel session : sessions.values()) {
             session.refreshModelCombo();
         }
-        for (ChatSessionPanel session : sessions.values()) {
-            if (session.isBusy()) {
-                setStatus("配置已保存，当前有任务在跑，等它结束后重建 Core");
-                return;
+
+        boolean corePathsChanged = !Objects.equals(exePath, state.coreExePath)
+                || !Objects.equals(homePath, state.coreHomePath)
+                || !Objects.equals(pythonPath, state.pythonPath);
+        if (corePathsChanged) {
+            for (ChatSessionPanel session : sessions.values()) {
+                if (session.isBusy()) {
+                    setStatus("Core 路径已修改，当前有任务在跑，等它结束后重建 Core");
+                    return;
+                }
             }
+            ApplicationManager.getApplication().executeOnPooledThread(() -> {
+                coreService.restart();
+                setStatus("Core 路径已更新，下条消息重建 Core（会话上下文会清空）");
+            });
+            return;
         }
+        // Apply model / endpoint / MCP right away; running sessions keep their history.
+        // 立即下发模型/端点/MCP，已打开的会话仍保留上下文。
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            coreService.restart();
-            setStatus("配置已更新，下条消息重建 Core");
+            coreService.pushSettings();
+            setStatus("配置已下发，会话上下文保持不变");
         });
     }
 

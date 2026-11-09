@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-2.3.1-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-2.3.2-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
@@ -107,7 +107,7 @@ powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 加速，�
 | M7 | Subagent 并行池 + 3 个内置子代理 | 完成 |
 | M8 | VS Code Shell + PyInstaller 分发 + CI + 一键验证 | 完成 |
 
-验收基线：Core 单测 **111 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
+验收基线：Core 单测 **117 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
 VS Code 编译与冒烟 PASS、IntelliJ 编译通过，产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
 
 ### 版本演进（v2.0 → v2.3）
@@ -122,6 +122,7 @@ M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用
 | v2.2.1 ~ v2.2.4 | 未单独提交（仅本地补丁构建） | 2.2.1 端点与「类型」冲突时以端点为准 + 端点不支持 tools 时降级纯对话；2.2.2 API Key 一律下发（即使类型选 Ollama）；2.2.3 对话区改为左右分侧气泡；2.2.4 输入区重做。**这四次补丁的改动全部并入 v2.3.0 的 `6605347`**，所以正文里出现的「v2.2.x 起」标注指这些补丁构建 |
 | v2.3.0 | `6605347` | 多会话并行（标签页 + 按 taskId 路由）与 `ProjectWriteGate` 写操作串行；输入区重做（4~14 行自适应 / 分隔条 / 附件 / 拖拽）；Markdown 渲染 + 左右分侧气泡；LLM 协议按端点形状自动判定，端点不支持 tools 时降级为纯对话；设置入口提升到 `Tools` 菜单 |
 | v2.3.1 | `811b7a7` | 端点拒绝 `tools` 后不再「一票否决」：改为 5 分钟假释，服务端补上 `--enable-auto-tool-choice` 后自动重新探测，无需重启 IDE；降级提示改为每个 `(端点, 模型)` 在一个 Core 进程内只出现一次 |
+| v2.3.2 | 随后补充 | 关闭设置页不再重建 Core：模型 / 端点 / MCP 由 `settings/update` 实时下发，只有改了 Core 路径才重建——修掉「打开一次设置页就把所有会话上下文清空」；上下文裁剪改为按「轮」整轮丢弃，不再留下孤立 `tool` 消息被端点 400 |
 
 更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
 `bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
@@ -351,8 +352,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-2.3.1.jar` - 插件 JAR
-- `workreport-ai-assistant-2.3.1.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
+- `workreport-intellij-plugin-2.3.2.jar` - 插件 JAR
+- `workreport-ai-assistant-2.3.2.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
 
 ### 运行调试
 

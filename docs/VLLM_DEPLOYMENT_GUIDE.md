@@ -1,7 +1,7 @@
 # vLLM 详解与 27B 模型部署指南
 
 > 适用对象：需要在内网/本机部署 Qwen 系 27B 量级模型，并让 Agent Coding Assistant 具备**工具调用**能力的开发者
-> 对应插件版本：**2.3.1**
+> 对应插件版本：**2.3.2**
 > 相关文档：[USER_GUIDE §11.4](../USER_GUIDE.md)（报错排查）、[README §1](../README.md)（插件侧配置）
 
 ---
@@ -455,7 +455,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/v1/chat/completio
 1. 设置页端点填 `http://<host>:8000/v1`（绕过网关时）或网关地址 `http://172.29.1.22:3000/v1`
 2. 模型名填 `--served-model-name` 的值（经网关时填网关渠道里的模型名）
 3. 类型选 **OpenAI 兼容**（2.2.2 起填错也会按端点自动纠正）
-4. **重启 IDE**（或设置页点 Apply）——降级状态有 5 分钟假释（v2.3.1 起），重启可立即恢复
+4. **重启 IDE**——降级状态有 5 分钟假释（v2.3.1 起），重启可立即恢复
 5. 发「列出当前目录的文件」，看到 `[工具] list_dir 执行中...` 即全链路打通
 
 ---
@@ -465,7 +465,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/v1/chat/completio
 | 报错 | 根因 | 处理 |
 |---|---|---|
 | `"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set` | 没开工具调用 | 启动命令补两个参数并重启（§5.3） |
-| 回答里出现裸的 `<tool_call>` / `<function=...>` 文本，文件没被改 | 当前请求没带工具定义，模型只能把调用当文本输出 | 确认启动参数后，插件 5 分钟内自动重试；或重启 IDE 立即生效 |
+| 回答里出现裸的 `<tool_call>` / `<function=...>` 文本，文件没被改 | 请求没带工具定义（降级期内），或 `--tool-call-parser` 与模型不匹配导致 vLLM 没解析出 `tool_calls` | 前者：确认启动参数后 5 分钟自动重试；后者：Qwen2.5/Qwen3 用 `hermes`、Qwen3-Coder 用 `qwen3_coder`，重启 vLLM 后重启 IDE |
 | `... does not support tools` | 模型或 chat 模板不支持工具 | 换 `hermes` parser，或换支持工具调用的模型 |
 | `ValueError: Unknown tool parser` | parser 名在当前版本不存在 | 升级 vLLM，或退回 `hermes` |
 | `The model's max seq len (...) is larger than max_model_len` | `--max-model-len` 设小了 | 调大或让模型自动取 |
@@ -507,7 +507,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/v1/chat/completio
 2. **工具调用降级**：端点拒绝 `tools` 时，去掉工具重试一次，面板打一行 `[提示]`，对话继续（能力降级为纯聊天）
 
 > 降级状态只保持 5 分钟（v2.3.1 起）：服务端补上参数后，下一次发送会自动重新带上工具；
-> 想立即生效就**重启 IDE** 或设置页点一次 `Apply`。
+> 想立即生效就**重启 IDE**（v2.3.2 起改设置不会再重建 Core）。
 
 ---
 
