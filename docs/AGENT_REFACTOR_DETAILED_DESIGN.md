@@ -94,7 +94,7 @@ IDE  → { "method": "ide/hello", "params": {"protocolVersion": "1.0", "ide": "i
 | IDE→Core | `settings/update` | 通知 | `{settings}` |
 | IDE→Core | `session/list` | 请求 | `{}` → `{sessions: [{id, title, preview, messageCount, updatedAt}]}`（按 `updatedAt` 倒序，最多 50 条） |
 | IDE→Core | `session/get` | 请求 | `{sessionId}` → `{id, title, updatedAt, messages: [{role, content}]}`（只含 user / assistant 非空正文，供回放） |
-| IDE→Core | `session/delete` | 请求 | `{sessionId}` → `{deleted: bool}`（同时清内存与磁盘） |
+| IDE→Core | `session/delete` | 请求 | `{sessionId}` → `{deleted: bool, freedBytes: int}`（先取消该会话在跑的任务，再同时清内存与磁盘，`.tmp` 残留一并删除） |
 | IDE→Core | `tool/result` | 请求 | `{taskId, toolCallId, ok, result?, error?}` |
 | IDE→Core | `ui/event` | 通知 | `{taskId, event, payload}`（diff 接受/拒绝、确认结果） |
 | Core→IDE | `chat/token` | 通知 | `{taskId, delta}` |
@@ -608,7 +608,7 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **125 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
+- Core 单测 **129 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
@@ -697,3 +697,10 @@ powershell -File scripts/build_plugin.ps1
 - `ChatConfig.max_iterations` 默认 15 → 40；`loop.py` 触顶文案改为「已达到最大迭代轮次 N…回复「继续」可接着跑」
 - IntelliJ：`ReportSettingsState.maxIterations`（默认 40，`loadState` 兼容旧 XML 的 0）+ 设置页「最大迭代轮次」（5~300，越界报 `ConfigurationException`）+ `AgentCoreService.pushSettings` 下发 `max_iterations`
 - VS Code：`agentCoder.maxIterations` 默认 40，`settings.ts` 同步
+
+### 14.3 删除即释放磁盘（v2.4.1）
+
+- `session/delete`：先 `cancel` 该会话在跑的任务（`_task_sessions` 记录 taskId → sessionId），再删文件；返回 `{deleted, freedBytes}`，Shell 状态行显示释放体积
+- `SessionManager.delete`：从内存移除对象、打 `deleted` 墓碑并 `messages.clear()`；`save()` 遇到墓碑直接返回，任务收尾的 `finally` 不会把删掉的文件写回来
+- `SessionStore.delete`：同时删 `<id>.json` 与 `<id>.json.tmp`，返回真正释放的字节数
+- `session/list`：顺带清扫 mtime 超过 1 小时的 `.tmp`（崩溃残留），新鲜临时文件不动

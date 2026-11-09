@@ -71,6 +71,9 @@ class RpcServer:
         self._mcp_settings: List[Any] = []
         self._pending_confirms: Dict[str, asyncio.Future] = {}
         self._tasks: Dict[str, asyncio.Task] = {}
+        # taskId -> sessionId, so deleting a conversation can stop its running task.
+        # taskId → sessionId：删除历史会话时据此取消该会话在跑的任务。
+        self._task_sessions: Dict[str, str] = {}
         self._pending_tools: Dict[str, asyncio.Future] = {}
         self._lines: Optional[asyncio.Queue] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -215,8 +218,13 @@ class RpcServer:
         if method == "session/get":
             return self.sessions.detail(str(params.get("sessionId") or ""))
         if method == "session/delete":
-            deleted = self.sessions.delete(str(params.get("sessionId") or ""))
-            return {"deleted": deleted}
+            session_id = str(params.get("sessionId") or "")
+            # Stop the task first: its finally-block would otherwise compete with the
+            # unlink and could leave the file behind on a slow disk.
+            # 先停任务再删文件：任务收尾的那一刻可能把文件又写回来。
+            self._cancel_session_tasks(session_id)
+            freed = self.sessions.delete(session_id)
+            return {"deleted": freed > 0, "freedBytes": freed}
         raise RpcError(ErrorCode.PROTOCOL_ERROR, "unknown method: %s" % method)
 
     def _tool_result(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -343,8 +351,24 @@ class RpcServer:
         skill_name = (params.get("skill") or "").strip()
         task = asyncio.create_task(self._run_task(task_id, session, user_input, skill_name))
         self._tasks[task_id] = task
-        task.add_done_callback(lambda _t: self._tasks.pop(task_id, None))
+        self._task_sessions[task_id] = session_id
+        task.add_done_callback(lambda _t, tid=task_id: self._forget_task(tid))
         return {"taskId": task_id}
+
+    def _forget_task(self, task_id: str) -> None:
+        self._tasks.pop(task_id, None)
+        self._task_sessions.pop(task_id, None)
+
+    def _cancel_session_tasks(self, session_id: str) -> None:
+        """Cancel every running task that belongs to one conversation."""
+        if not session_id:
+            return
+        for task_id, owner in list(self._task_sessions.items()):
+            if owner != session_id:
+                continue
+            task = self._tasks.get(task_id)
+            if task is not None and not task.done():
+                task.cancel()
 
     def _bind_project_root(self, project_root: Optional[str]) -> None:
         """Rebind memory to the IDE project once the shell reports it."""

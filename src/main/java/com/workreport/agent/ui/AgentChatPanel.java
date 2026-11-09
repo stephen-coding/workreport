@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -358,21 +359,42 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
             return;
         }
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            long freed;
             try {
                 JsonRpcConnection conn = coreService.connection();
-                conn.request("session/delete", params("sessionId", entry.id)).get(20, TimeUnit.SECONDS);
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    ChatSessionPanel open = sessions.get(entry.id);
-                    if (open != null) {
-                        closeSession(open);
-                    }
-                    setStatus("已删除历史会话：" + entry.displayTitle());
-                });
+                JsonObject response = conn.request("session/delete", params("sessionId", entry.id))
+                        .get(20, TimeUnit.SECONDS);
+                JsonObject result = response.has("result") && response.get("result").isJsonObject()
+                        ? response.getAsJsonObject("result") : new JsonObject();
+                freed = result.has("freedBytes") && !result.get("freedBytes").isJsonNull()
+                        ? result.get("freedBytes").getAsLong() : 0L;
             } catch (Exception e) {
                 LOG.warn("failed to delete session " + entry.id, e);
                 setStatus("删除历史会话失败：" + e.getMessage());
+                return;
             }
+            ApplicationManager.getApplication().invokeLater(() -> {
+                ChatSessionPanel open = sessions.get(entry.id);
+                if (open != null) {
+                    closeSession(open);
+                }
+                // Say how much disk the delete actually reclaimed.
+                // 告诉用户这次删除真正释放了多少磁盘。
+                setStatus("已删除历史会话：" + entry.displayTitle()
+                        + (freed > 0 ? "（释放 " + formatSize(freed) + "）" : ""));
+            });
         });
+    }
+
+    // Human-readable byte count for the status line ("640 B" / "12.3 KB" / "1.4 MB").
+    private static String formatSize(long bytes) {
+        if (bytes < 1024) {
+            return bytes + " B";
+        }
+        if (bytes < 1024 * 1024) {
+            return String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0);
+        }
+        return String.format(Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0));
     }
 
     private static List<ChatSessionPanel.HistoryMessage> parseHistoryMessages(JsonObject result) {

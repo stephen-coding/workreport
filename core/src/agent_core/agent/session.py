@@ -48,6 +48,10 @@ class Session:
         # Title and updated_at are what the history list shows.
         self.title: str = ""
         self.updated_at: int = 0
+        # Set by SessionManager.delete: a task still holding this object must stop
+        # persisting it, otherwise its final save() recreates the deleted file.
+        # 删除墓碑：仍在跑的任务持着这个对象，结束时不能再写回磁盘。
+        self.deleted: bool = False
 
     def append(self, message: Message) -> None:
         self.messages.append(message)
@@ -93,7 +97,7 @@ class SessionManager:
 
     def save(self, session: Session) -> None:
         """Persist after every task; a broken store must never break the chat."""
-        if self._store is None:
+        if session.deleted or self._store is None:
             return
         try:
             self._store.save(session)
@@ -141,15 +145,22 @@ class SessionManager:
             "messages": display_messages(session.messages),
         }
 
-    def delete(self, session_id: str) -> bool:
-        self._sessions.pop(session_id, None)
+    def delete(self, session_id: str) -> int:
+        """Drop the conversation from memory and disk; returns the bytes freed."""
+        session = self._sessions.pop(session_id, None)
+        if session is not None:
+            # Release the transcript now instead of waiting for the tab/task to go away,
+            # and tombstone it so an in-flight task cannot write it back afterwards.
+            # 立即释放内存，并给仍在跑的任务打墓碑，避免任务结束时又把文件写回来。
+            session.deleted = True
+            session.messages.clear()
         if self._store is None:
-            return False
+            return 0
         try:
             return self._store.delete(session_id)
         except Exception:  # pragma: no cover - defensive
             LOGGER.exception("failed to delete session %s", session_id)
-            return False
+            return 0
 
 
 def _first_user_text(messages: List[Message]) -> str:

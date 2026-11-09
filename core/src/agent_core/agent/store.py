@@ -26,6 +26,8 @@ STORE_VERSION = 1
 MAX_MESSAGES = 240
 MAX_LIST_ITEMS = 50
 PREVIEW_CHARS = 80
+# A .tmp file older than this was left behind by a crashed write; sweep it on list.
+TEMP_MAX_AGE_SEC = 3600
 
 
 def _file_name(session_id: str) -> str:
@@ -112,6 +114,7 @@ class SessionStore:
     def list_sessions(self) -> List[Dict[str, Any]]:
         if not self.root.exists():
             return []
+        self._sweep_temps()
         entries: List[Dict[str, Any]] = []
         for path in self.root.glob("*.json"):
             try:
@@ -135,16 +138,35 @@ class SessionStore:
         entries.sort(key=lambda item: item["updatedAt"], reverse=True)
         return entries[:MAX_LIST_ITEMS]
 
-    def delete(self, session_id: str) -> bool:
+    def delete(self, session_id: str) -> int:
+        """Remove the session file plus any half-written temp file.
+
+        Returns the number of bytes actually freed, so the Shell can tell the user
+        the space is gone (0 means nothing was on disk).
+        删除会话文件并清掉同名的 .tmp 残留，返回真正释放的字节数。
+        """
         path = self._path(session_id)
-        try:
-            path.unlink()
-            return True
-        except FileNotFoundError:
-            return False
-        except OSError:  # pragma: no cover - defensive
-            LOGGER.warning("failed to delete %s", path, exc_info=True)
-            return False
+        freed = 0
+        for target in (path, path.with_name(path.name + ".tmp")):
+            try:
+                freed += target.stat().st_size
+                target.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError:  # pragma: no cover - defensive
+                LOGGER.warning("failed to delete %s", target, exc_info=True)
+        return freed
+
+    def _sweep_temps(self) -> None:
+        """Drop stale .tmp files left by an interrupted save (never touches fresh ones)."""
+        now = time.time()
+        for path in self.root.glob("*.tmp"):
+            try:
+                if now - path.stat().st_mtime > TEMP_MAX_AGE_SEC:
+                    path.unlink()
+                    LOGGER.info("swept stale session temp %s", path)
+            except OSError:  # pragma: no cover - defensive
+                continue
 
 
 def _first_user_text(messages: List[Message]) -> str:

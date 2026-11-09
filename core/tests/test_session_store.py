@@ -1,6 +1,8 @@
 """Tests for persisted chat sessions (history list + restart resume)."""
 
+import os
 import tempfile
+import time
 import unittest
 
 from agent_core.agent import store as store_module
@@ -67,6 +69,35 @@ class TestSessionStore(unittest.TestCase):
         self.assertIsNone(self.store.load("hash#1"))
         self.assertIsNotNone(self.store.load("hash#2"))
         self.assertFalse(self.store.delete("hash#1"))
+
+    def test_delete_frees_bytes_and_drops_temp_file(self):
+        self.store.save(_session())
+        path = self.store._path("hash#1")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text("leftover", encoding="utf-8")
+        file_size = path.stat().st_size
+
+        freed = self.store.delete("hash#1")
+
+        self.assertGreaterEqual(freed, file_size + len("leftover"))
+        self.assertFalse(path.exists())
+        self.assertFalse(tmp.exists())
+
+    def test_delete_of_unknown_session_frees_nothing(self):
+        self.assertEqual(self.store.delete("never-existed"), 0)
+
+    def test_stale_temp_file_is_swept_on_list(self):
+        self.store.save(_session())
+        path = self.store._path("hash#1")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text("crashed write", encoding="utf-8")
+        old = time.time() - 7200
+        os.utime(tmp, (old, old))
+
+        self.store.list_sessions()
+
+        self.assertFalse(tmp.exists())
+        self.assertIsNotNone(self.store.load("hash#1"))
 
     def test_trimming_never_starts_with_an_orphan_tool_result(self):
         original = store_module.MAX_MESSAGES
@@ -143,6 +174,19 @@ class TestSessionManagerHistory(unittest.TestCase):
         self.assertTrue(manager.delete("hash#1"))
         self.assertIsNone(manager.get("hash#1"))
         self.assertIsNone(self.store.load("hash#1"))
+
+    def test_deleted_session_is_not_written_back_by_a_running_task(self):
+        manager = SessionManager(self.store)
+        session = manager.get_or_create("hash#1")
+        session.append(Message(role=Role.USER, content="查一个很长的东西"))
+        manager.save(session)
+
+        manager.delete("hash#1")
+        # A task still holding the old object saves in its finally-block.
+        manager.save(session)
+
+        self.assertIsNone(self.store.load("hash#1"))
+        self.assertEqual(session.messages, [])
 
 
 if __name__ == "__main__":
