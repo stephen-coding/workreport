@@ -21,11 +21,10 @@ from agent_core.llm.base import (
 )
 from agent_core.llm.streaming import OllamaStreamAccumulator, parse_sse_line
 from agent_core.llm.tool_text import TextToolCallFilter, recover_text_tool_calls
+from agent_core.llm.transport import HTTP_TIMEOUT, describe_transport_error
 from agent_core.protocol import ChatConfig, ErrorCode, Message, RpcError, ToolDef
 
 LOGGER = logging.getLogger(__name__)
-
-_HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
 
 _TOOLS_DISABLED_NOTICE = (
     "当前 Ollama 模型不支持工具调用（tools），已改用文本工具调用兼容模式："
@@ -102,20 +101,25 @@ class OllamaProvider(LLMProvider):
             for visible in guard.feed(piece):
                 await on_token(visible)
 
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, transport=self._transport) as client:
-            try:
-                accumulator = await self._stream(client, url, body, emit)
-                if wants_tools:
-                    # The model accepted tool definitions again: end the probation.
-                    # 模型又接受工具定义：结束假释。
-                    accept_tools(*tools_key)
-            except _ToolRejected as rejected:
-                LOGGER.warning("endpoint %s rejects tool definitions (%d): %s",
-                               url, rejected.status, rejected.body[:200])
-                suppress_tools(*tools_key)
-                self._warn_once(tools_key)
-                body.pop("tools", None)
-                accumulator = await self._stream(client, url, body, emit)
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, transport=self._transport) as client:
+                try:
+                    accumulator = await self._stream(client, url, body, emit)
+                    if wants_tools:
+                        # The model accepted tool definitions again: end the probation.
+                        # 模型又接受工具定义：结束假释。
+                        accept_tools(*tools_key)
+                except _ToolRejected as rejected:
+                    LOGGER.warning("endpoint %s rejects tool definitions (%d): %s",
+                                   url, rejected.status, rejected.body[:200])
+                    suppress_tools(*tools_key)
+                    self._warn_once(tools_key)
+                    body.pop("tools", None)
+                    accumulator = await self._stream(client, url, body, emit)
+        except httpx.TransportError as exc:
+            # httpcore drops the text on timeouts/resets; give the Shell a real message.
+            # httpcore 的超时/断连异常没有文本，这里补上阶段、端点与处置建议。
+            raise describe_transport_error(exc, url, config.model) from exc
 
         for visible in guard.flush():
             await on_token(visible)

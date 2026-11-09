@@ -55,6 +55,11 @@ CONFIRM_TIMEOUT = 120.0
 _current_task = contextvars.ContextVar("current_task", default="")
 
 
+def _error_text(exc: BaseException) -> str:
+    """Never hand the Shell an empty message: httpcore timeouts carry none."""
+    return str(exc).strip() or type(exc).__name__
+
+
 class RpcServer:
     def __init__(self, project_id: str, data_dir: str) -> None:
         self.project_id = project_id
@@ -197,10 +202,10 @@ class RpcServer:
             result = await self._handle_request(method, params)
             self._send(make_response(req_id, result))
         except RpcError as exc:
-            self._send(make_error(req_id, exc.code, str(exc)))
+            self._send(make_error(req_id, exc.code, _error_text(exc)))
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.exception("request %s failed", method)
-            self._send(make_error(req_id, ErrorCode.INTERNAL_ERROR, str(exc)))
+            self._send(make_error(req_id, ErrorCode.INTERNAL_ERROR, _error_text(exc)))
 
     async def _handle_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         if method == "chat/start":
@@ -276,10 +281,10 @@ class RpcServer:
             stats = await self.index.build(full=bool(params.get("full")), progress=on_progress)
             self._send(make_response(req_id, stats))
         except RpcError as exc:
-            self._send(make_error(req_id, exc.code, str(exc)))
+            self._send(make_error(req_id, exc.code, _error_text(exc)))
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.exception("index build failed")
-            self._send(make_error(req_id, ErrorCode.INTERNAL_ERROR, str(exc)))
+            self._send(make_error(req_id, ErrorCode.INTERNAL_ERROR, _error_text(exc)))
 
     async def _handle_notification(self, method: str, params: Dict[str, Any]) -> None:
         if method == "settings/update":
@@ -435,13 +440,13 @@ class RpcServer:
         except RpcError as exc:
             self._send_notification("chat/error", {
                 "taskId": task_id,
-                "error": {"code": exc.code, "message": str(exc)},
+                "error": {"code": exc.code, "message": _error_text(exc)},
             })
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.exception("chat task %s failed", task_id)
             self._send_notification("chat/error", {
                 "taskId": task_id,
-                "error": {"code": ErrorCode.LLM_ERROR, "message": str(exc)},
+                "error": {"code": ErrorCode.LLM_ERROR, "message": _error_text(exc)},
             })
         finally:
             _current_task.reset(task_token)

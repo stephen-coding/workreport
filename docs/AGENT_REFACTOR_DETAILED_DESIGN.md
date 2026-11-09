@@ -619,7 +619,7 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **153 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
+- Core 单测 **161 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
@@ -804,3 +804,21 @@ powershell -File scripts/build_plugin.ps1
 - 现象②：用户在新标签里问“继续上一个任务”，模型回答“这是全新对话”——因为新标签确实是空上下文，但界面只说“这是一个独立会话”
 - 修法：新标签首屏提示改为「这是新会话，不继承其它标签的上下文；要接着上次聊，点右上「历史」打开那条会话。」；历史回放仍保留「以上为历史记录（已保存在本机），可以接着聊。」
 - 从「历史」打开的会话**确实带上下文**：面板用 `entry.id` 作为 sessionId，`chat/start` → `SessionManager.get_or_create` → `SessionStore.load` 恢复整段消息（含工具轮），已有 `test_session_is_restored_after_a_core_restart` 覆盖
+
+### 14.11 传输层错误不再空白（v2.4.7）
+
+**现象**：多轮对话跑到一半，对话区只出现一截 `[错误:LLM_ERROR]`，冒号后面什么都没有，用户无从判断是超时、断网还是服务端挂了。
+
+**根因**：`httpcore` 在超时 / 断连时抛出的 `ReadTimeout` / `ReadError` / `ConnectError` **构造时不带 message**（`str(exc) == ""`），`server._run_task` 的兜底分支又直接 `str(exc)` 塞进 `chat/error`，Shell 原样拼成 `[错误:LLM_ERROR] `。多轮对话后提示词变长、首字延迟变大，或多个会话并行让服务端排队，正好是读超时（180 s 无新数据）最容易发生的时候。
+
+**修法**：
+
+| 位置 | 行为 |
+|---|---|
+| 新增 `llm/transport.py` | `HTTP_TIMEOUT`（连接 10 s / 读 180 s / 写 30 s / 池 10 s）与 `describe_transport_error()`；按异常类型给出阶段、端点、模型与处置建议，文本**不依赖** `str(exc)` |
+| `openai_compat.py` / `ollama.py` | 用 `try/except httpx.TransportError` 包住整个流式请求（含 tools 降级后的第二次请求），统一抛 `RpcError(LLM_ERROR, 说明)` |
+| `rpc/server.py` | 新增 `_error_text()`：`str(exc).strip() or type(exc).__name__`，`chat/error`、`make_error` 所有兜底分支都改用它，任何异常都不会再变成空消息 |
+
+- 文案分四档：超时（区分建立连接 / 发送请求 / 获取连接 / 等待模型输出）、`ConnectError`（端点不可达）、`NetworkError`（流中途被断开）、`ProtocolError`（响应不完整），其余兜底为 `LLM 网络错误（类名）`
+- 处理建议统一指向「确认服务端还在运行后，重发一次「继续」」；超时档还提示可调小 `max_tokens` 或减少历史轮次
+- 用例（`core/tests/test_transport_errors.py`，8 个）：读超时文案含阶段 / 时长 / 端点 / 模型、连接超时指向建立连接、断流不为空、连接失败、未知传输错误兜底、两个 provider 端到端不抛空消息、`_error_text` 回退类名
