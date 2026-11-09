@@ -7,6 +7,7 @@ from agent_core.agent.compression import compress_tool_output
 from agent_core.agent.permissions import PermissionTracker
 from agent_core.agent.scheduler import ToolScheduler
 from agent_core.agent.session import Session
+from agent_core.agent.status import TurnStats
 from agent_core.llm.base import ChatResult, TokenCallback
 from agent_core.llm.context import trim_history
 from agent_core.protocol import ChatConfig, Message, Role, ToolCall, ToolResult
@@ -68,6 +69,7 @@ async def run_chat(
     scheduler = ToolScheduler(registry, config.tool_concurrency) if registry is not None else None
     max_iterations = max(1, config.max_iterations)
     tracker = PermissionTracker()
+    stats = TurnStats()
     system_prompt = base_prompt or SYSTEM_PROMPT
     if memory_overview:
         system_prompt += ("\n\n以下是项目长期记忆索引（需要某条正文时调用 memory_recall）：\n"
@@ -76,6 +78,7 @@ async def run_chat(
         system_prompt += "\n\n" + skill_instruction
 
     for _ in range(max_iterations):
+        stats.begin_round()
         messages = [Message(role=Role.SYSTEM, content=system_prompt)] + session.messages
         messages = trim_history(messages)
         if not any(m.role == Role.USER for m in messages):
@@ -83,6 +86,12 @@ async def run_chat(
             # survives; re-anchor the current input instead of losing the turn.
             # 兜底：裁剪后如果一条 user 都没有，就把本轮输入补回去，避免 vLLM 直接 400。
             messages.append(Message(role=Role.USER, content=user_input))
+        # The status bar is appended after trimming, so it is never the thing that
+        # gets dropped, and it only touches the tail of the prefix.
+        # 状态栏在裁剪之后追加：既不会被裁掉，也只改动前缀末尾。
+        status = stats.render(max_iterations)
+        if status:
+            messages.append(Message(role=Role.USER, content=status))
         result = await provider.chat_stream(
             messages,
             tools=tools,
@@ -100,6 +109,7 @@ async def run_chat(
         # 一轮工具调用：保留含 tool_calls 的 assistant 消息，再注入工具结果。
         session.append(Message(role=Role.ASSISTANT, content=result.content,
                                 tool_calls=result.tool_calls))
+        stats.record_calls(result.tool_calls)
         tool_results = await scheduler.run_parallel(
             result.tool_calls, on_start=on_tool_start, on_end=on_tool_end)
         denied_too_often = False
@@ -111,6 +121,7 @@ async def run_chat(
                 content = "ERROR: " + (tool_result.error or "tool failed")
             session.append(Message(role=Role.TOOL, tool_call_id=call.id,
                                    name=call.name, content=content))
+            stats.record_result(call, tool_result.ok, tool_result.error or "")
             if tracker.record_result(tool_result.ok, tool_result.error or ""):
                 denied_too_often = True
 

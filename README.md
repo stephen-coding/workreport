@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-2.4.4-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-2.4.5-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
@@ -22,13 +22,14 @@
 - 🚀 **自动化报告生成**：一键生成日报/周报/季报/年报
 - 🤖 **AI 智能润色**：支持本地 Ollama 或云端 LLM API
 - 💬 **多轮对话优化**：支持持续对话，基于上下文理解进行 iterative 优化
-- 🗂️ **多会话并行**：顶部标签页最多 8 个会话同时跑，通知按 taskId 各回各家
+- 🗂️ **多会话并行**：顶部标签页最多 8 个会话同时跑，通知按 taskId 各回各家；关掉一个标签，右边的立即左移补位，不会留下空框
 - 🕘 **历史会话**：关掉标签也不丢，随时从「历史」列表重新打开接着聊；会话以 JSON 落盘在本机，重启 IDE / 重启 Core 后仍在；在列表里删除会立即释放磁盘
 - 🔁 **更大的迭代预算**：单个任务默认 40 轮（每轮一次模型调用 + 该轮全部工具），设置页可在 5~300 之间调整
 - 🔤 **文本工具调用兜底**：端点没开 `--tool-call-parser`、模型把 `<tool_call>` 直接写进正文时，插件照样解析并执行，不再把 XML 原样刷到对话区
 - 📄 **不挑文件编码**：`read_file` / `search_code` 自动识别 UTF-8 / UTF-16（BOM）/ GBK，`write_file` / `edit_file` 写回保持原编码；PowerShell 重定向出来的 UTF-16 日志也能读
 - 🧵 **长任务不丢提问**：上下文超预算时先丢旧对话、再丢本轮的旧工具轮，用户这次的问题始终留在请求里，不会再因为「没有 user 消息」被 vLLM 400 打断
 - ⌨️ **输入区按键不再失灵**：`Shift+Enter` 真的换行（原生 `JTextArea` 根本没绑这个键），任务还在跑时按 `Enter` 也会换行而不是什么也不发生
+- 🧭 **每轮自检状态栏**：请求末尾追加一行由代码算出的「轮次 / 工具次数 / 重复调用 / 失败 / 已改文件」，模型不用自己数就能发现跑偏；只在末尾追加，system 前缀不变，缓存照旧命中
 - 🔒 **隐私优先**：API Key 加密存储，数据完全可控
 - 📊 **Git 历史分析**：智能提取 Commit 记录，结构化展示
 - 🎨 **友好界面**：集成到 IDEA 工具窗口，操作简便
@@ -113,7 +114,7 @@ powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 加速，�
 | M7 | Subagent 并行池 + 3 个内置子代理 | 完成 |
 | M8 | VS Code Shell + PyInstaller 分发 + CI + 一键验证 | 完成 |
 
-验收基线：Core 单测 **141 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
+验收基线：Core 单测 **149 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
 VS Code 编译与冒烟 PASS、IntelliJ 编译通过，产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
 
 ### 版本演进（v2.0 → v2.4）
@@ -134,6 +135,7 @@ M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用
 | v2.4.2 | `eba1945` | 两处让人误以为「某个模型不行」的硬伤：①正文里的 `<tool_call>` 标记（Hermes / Qwen 格式，含 JSON 形态）会被解析成真实工具调用执行，并在流式输出时屏蔽，不再把 XML 刷到对话区；②`read_file` / `search_code` / `write_file` / `edit_file` 不再假定 UTF-8——按 BOM（UTF-8 / UTF-16 LE / BE）→ 严格 UTF-8 → GBK 依次探测，写回保持原编码，`Input length = 1` 不再出现；`search_code` 的 `path` 允许直接给文件 |
 | v2.4.3 | `ab746c2` | 长任务不再被 `400 No user query found in messages.` 打断：历史裁剪以前从最旧一条无差别丢，跑十几轮工具后会把开头的提问一起丢掉，请求里一条 `user` 都不剩；现在先按整个旧对话丢（提问 + 回答），超预算再丢本轮较早的工具轮，**最新一轮的 user 提问永远保留**，`loop.py` 还有一层兜底补回 |
 | v2.4.4 | `1c8cd6c` | 输入区换行修好：`ChatComposer` 只绑了 `Enter` / `Ctrl+Enter`，而原生 `JTextArea` 并没有 `Shift+Enter` 绑定，所以按下去既不发送也不换行（按键被整颗抛掉）；现在把 `Shift+Enter` 显式接到 `insert-break`，任务运行中（发送按钮禁用）按 `Enter` 也降级成换行 |
+| v2.4.5 | `<待回填>` | 新增 Agent 自检状态栏：Core 每轮在请求末尾追加 `<agent_status>`（轮次 / 工具调用次数 / 重复调用 / 失败次数与截断错误 / 已改文件），全部由代码统计，不让模型自己数；追加位置在裁剪之后、system 前缀之外。另修关闭会话标签后残留空框：标签条改为不透明并主动重排父容器，关闭当前标签后优先切到右侧邻居 |
 
 更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
 `bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
@@ -276,7 +278,7 @@ code --install-extension agent-coder-0.1.0.vsix
 4. MCP 工具调用会弹 Yes/No 确认；连续拒绝 3 次 Core 会自动终止当前任务
 5. 工具与子代理进度以状态行插入对话流，例如 `[工具] read_file 执行中...`、`[子代理] code-reviewer 完成`；`[提示] ...` 表示非致命降级（如端点不支持 tools，5 分钟后会自动重试），任务会继续
 6. 输入区支持多行输入（`Enter` 发送 / `Shift+Enter` 换行）、拖动上方分隔线调整高度、「附件」添加文件作为上下文（文本内联，二进制只给路径）
-7. 顶部标签栏点 `+` 新建会话（最多 8 个），**多个会话可同时各跑一个任务**；状态栏右侧显示 `N 个任务并行运行中`。写文件类工具在项目内排队执行（对话里会打 `[排队]` 提示），读文件/搜索不受影响
+7. 顶部标签栏点 `+` 新建会话（最多 8 个），**多个会话可同时各跑一个任务**；状态栏右侧显示 `N 个任务并行运行中`。写文件类工具在项目内排队执行（对话里会打 `[排队]` 提示），读文件/搜索不受影响；点 `×` 关掉一个标签后，后面的标签立即左移补位
 
 ---
 
@@ -363,8 +365,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-2.4.4.jar` - 插件 JAR
-- `workreport-ai-assistant-2.4.4.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
+- `workreport-intellij-plugin-2.4.5.jar` - 插件 JAR
+- `workreport-ai-assistant-2.4.5.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
 
 ### 运行调试
 

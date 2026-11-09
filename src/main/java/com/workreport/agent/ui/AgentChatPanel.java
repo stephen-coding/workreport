@@ -93,7 +93,11 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         busyLabel.setForeground(UIUtil.getContextHelpForeground());
         statusPanel.add(busyLabel, BorderLayout.EAST);
 
-        tabsBar.setOpaque(false);
+        // Opaque on purpose: after a tab is removed the strip must erase the pixels it
+        // used to occupy, otherwise the empty slot stays visible as a leftover frame.
+        // 故意设为不透明：删掉标签后必须擦掉它占过的像素，否则会留下一个空框。
+        tabsBar.setOpaque(true);
+        tabsBar.setBackground(UIUtil.getPanelBackground());
         JPanel head = new JPanel(new BorderLayout(0, 4));
         head.setOpaque(false);
         head.add(statusPanel, BorderLayout.NORTH);
@@ -139,18 +143,35 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         if (session == null) {
             return;
         }
+        // Remember the slot first: the tab that follows should move into it, so the
+        // strip closes the gap instead of keeping an empty frame.
+        // 先记住位置：关闭后由后面的标签补上，标签条收紧而不是留一个空框。
+        List<String> order = new ArrayList<>(sessions.keySet());
+        int slot = order.indexOf(session.sessionId());
+
         session.dispose();
         sessions.remove(session.sessionId());
         cards.remove(session);
         byTask.values().remove(session);
+
         if (active == session) {
-            active = sessions.isEmpty() ? null : sessions.values().iterator().next();
+            String next = null;
+            if (slot >= 0) {
+                if (slot < order.size() - 1) {
+                    next = order.get(slot + 1);
+                } else if (slot > 0) {
+                    next = order.get(slot - 1);
+                }
+            }
+            active = next != null ? sessions.get(next) : null;
         }
         if (active == null) {
             openSession();
         } else {
             selectSession(active);
         }
+        cards.revalidate();
+        cards.repaint();
         rebuildTabs();
         refreshBusyLabel();
     }
@@ -177,6 +198,12 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         tabsBar.add(history);
 
         tabsBar.revalidate();
+        // The strip may lose a whole wrapped row; the parent has to re-measure the height
+        // as well, otherwise the freed space stays behind as a blank band.
+        // 标签条可能少一整行，父容器也要重新量高度，否则空出来的位置会留成一条空白。
+        if (tabsBar.getParent() != null) {
+            tabsBar.getParent().revalidate();
+        }
         tabsBar.repaint();
     }
 

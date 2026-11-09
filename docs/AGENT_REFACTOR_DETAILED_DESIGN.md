@@ -619,7 +619,7 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **141 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
+- Core 单测 **149 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
@@ -740,3 +740,41 @@ powershell -File scripts/build_plugin.ps1
 - 根因：`ChatComposer.installInputBindings` 只往 `WHEN_FOCUSED` 的 InputMap 里放了两条——`ENTER -> chat-send`、`CTRL+ENTER -> chat-send`；Swing 原生 `JTextArea` 的 InputMap 里**没有** `SHIFT+ENTER` 条目（只有各级 `ENTER -> insert-break`），而 Swing 的按键分发是精确匹配、不会对 SHIFT 做回退，所以 `Shift+Enter` 落到“无绑定” → 整颗按键被丢弃。实测：`lookup ENTER : insert-break`、`lookup SHIFT+ENTER : none`
 - 修法：显式 `keys.put(SHIFT+ENTER, DefaultEditorKit.insertBreakAction)`；`chat-send` 在 `sendButton` 禁用（任务在跑）时改为 `input.replaceSelection("\n")`，避免发送不出去又把回车吞掉
 - 验证：继承 `JTextArea` 暴露 `processKeyBinding` 后直推按键——`ENTER`/`CTRL+ENTER` 走发送、`SHIFT+ENTER` 文本变成“第一行<NL>”、`busy` 下 `ENTER` 也插入换行；高度计算本身经单独探针确认按宽度线性增长（300/400/700 px 下 48 字符分 1/1/2 行），不是折行问题
+
+### 14.7 Agent 自检状态栏（v2.4.5）
+
+**问题**：模型对“已经试过几次”这类自身历史的统计不可靠——同一文件被原参数读了三四遍、上一轮已经失败过的工具照原样再调，用户只看到在原地打转。长任务里上下文被反复裁剪，模型也没有稳定的计数器可用。
+
+**修法**：由代码统计、以 `user` 角色追加在**请求末尾**的一段 `<agent_status>`：
+
+| 层 | 位置 | 说明 |
+|---|---|---|
+| Core | `agent/status.py` | `TurnStats`：`begin_round()` / `record_calls(calls)` / `record_result(call, ok, error)` / `render(max_rounds)`；常量 `REPEAT_MIN=2`、`MAX_TOOLS=4`、`MAX_REPEATS=3`、`MAX_EDITED=3`、`MAX_ERROR=40` |
+| Core | `agent/loop.py` | 每轮 `stats.begin_round()`；`trim_history` 之后追加、`chat_stream` 之前渲染；工具返回后回填 `record_calls` / `record_result` |
+
+行格式与阈值：
+
+- `轮次: N/M`：已跑轮数 / 最大迭代预算（`ChatConfig.max_iterations`），提供进度感
+- `工具: name count · …`：按次数倒序取前 4 个工具
+- `重复: name(arg) ×N`：按 `(工具名, 参数 sha1 前 8 位)` 聚合，**总次数 ≥ 2** 才列出，最多 3 条；`arg` 取参数里的 `path`，去掉目录只留文件名
+- `失败: name ×N — 错误`：同类工具合并计数，错误取**最近一次**失败的原文并截到 40 字（超出补 `…`）
+- `已改: a.java、b.java`：`write_file` / `edit_file` / `delete_file` 成功后才计，去重保序，最多 3 个
+- 一次调用都没发生时 `render()` 返回空串，第一轮请求里不会出现空状态块
+
+三个约束（都有测试盯着）：
+
+1. **只在末尾追加**，不动 `system` 前缀 ← `test_system_prefix_is_stable_and_history_stays_clean` 断言两轮 system 完全相等
+2. **不进会话历史** ← 同一用例断言 `session.messages` 中不存在 `agent_status`；状态栏是每请求的临时投影
+3. **排在裁剪之后** ← 否则长任务里最先被丢的就是它；`test_status_appears_only_on_later_rounds` 断言第 1 轮没有、第 2 轮最后一条是 `user` 且含 `轮次: 2/6`
+
+**为什么不用 TODO 工具**：TODO 需要模型主动写、主动勾，多一轮调用且模型容易忘；状态栏是零调用成本的事后事实，两者不冲突，后续若加 `todo_write` 再叠加。
+
+用例（`core/tests/test_status.py`，8 个）：空轮不输出块、计数与重复识别、一次性调用不会被当成重复、重复列表最多 3 条、错误截断且整块 < 400 字、已改文件去重保序、只在第 2 轮起注入、system 前缀稳定且不进历史。
+
+### 14.8 关闭会话标签后残留空框（v2.4.5）
+
+- 现象：点标签的 `×` 后会话确实关掉了，但标签条上那块位置还是一个空框；后面的标签不会往前挪
+- 根因（两处叠加）：①`tabsBar` 是 `setOpaque(false)` 的透明 `JPanel`（`FlowLayout`），移除子组件后没人重绘那块背景，旧标签的像素留在原地；②标签条可能少一整行，`rebuildTabs()` 只 `revalidate()` 了 `tabsBar` 自己，父容器（`BorderLayout.SOUTH`）的高度没有重新量，空出来的高度就那么空着
+- 修法：`tabsBar.setOpaque(true)` + `setBackground(UIUtil.getPanelBackground())` 保证旧像素被擦；`rebuildTabs()` 末尾同时 `tabsBar.getParent().revalidate()`；`closeSession()` 里补 `cards.revalidate()/repaint()`
+- 顺手修的体验问题：关闭**当前**标签时以前跳回第一个会话，现在按原位置记录 `slot`，优先切到右侧邻居（`order.get(slot+1)`），没有右侧才切到左侧
+- 探针结论：`FlowLayout.doLayout()` 本身会前移（`target/_probe/TabProbe.java`：7 个标签删掉第 1 个后剩下的整体前移；剩 3 个时 x=4/158/312），所以“不往前挪”不是布局算法的问题，而是没触发重排 + 没擦背景
