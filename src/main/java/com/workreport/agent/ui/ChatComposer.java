@@ -15,6 +15,7 @@ import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import javax.swing.text.DefaultEditorKit;
 import java.awt.*;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.event.ActionEvent;
@@ -361,9 +362,21 @@ public final class ChatComposer extends JPanel {
         InputMap keys = input.getInputMap(JComponent.WHEN_FOCUSED);
         keys.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "chat-send");
         keys.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, KeyEvent.CTRL_DOWN_MASK), "chat-send");
+        // A plain JTextArea has no Shift+Enter binding at all, so the key used to do nothing:
+        // no newline, no send. Point it back at the editor's own line break.
+        // 原生 JTextArea 根本没绑 Shift+Enter，按下去既不发也不换行，这里接回编辑器自带的换行。
+        keys.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, KeyEvent.SHIFT_DOWN_MASK),
+                DefaultEditorKit.insertBreakAction);
         input.getActionMap().put("chat-send", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
+                if (!sendButton.isEnabled()) {
+                    // Nothing can go out while the agent is running, so fall back to a newline
+                    // instead of swallowing the key.
+                    // 任务在跑时发不出去，把回车让给换行，避免按键没反应。
+                    input.replaceSelection("\n");
+                    return;
+                }
                 triggerSend();
             }
         });

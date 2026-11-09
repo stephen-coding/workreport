@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-2.4.3-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-2.4.4-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
@@ -28,6 +28,7 @@
 - 🔤 **文本工具调用兜底**：端点没开 `--tool-call-parser`、模型把 `<tool_call>` 直接写进正文时，插件照样解析并执行，不再把 XML 原样刷到对话区
 - 📄 **不挑文件编码**：`read_file` / `search_code` 自动识别 UTF-8 / UTF-16（BOM）/ GBK，`write_file` / `edit_file` 写回保持原编码；PowerShell 重定向出来的 UTF-16 日志也能读
 - 🧵 **长任务不丢提问**：上下文超预算时先丢旧对话、再丢本轮的旧工具轮，用户这次的问题始终留在请求里，不会再因为「没有 user 消息」被 vLLM 400 打断
+- ⌨️ **输入区按键不再失灵**：`Shift+Enter` 真的换行（原生 `JTextArea` 根本没绑这个键），任务还在跑时按 `Enter` 也会换行而不是什么也不发生
 - 🔒 **隐私优先**：API Key 加密存储，数据完全可控
 - 📊 **Git 历史分析**：智能提取 Commit 记录，结构化展示
 - 🎨 **友好界面**：集成到 IDEA 工具窗口，操作简便
@@ -132,6 +133,7 @@ M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用
 | v2.4.1 | `afec4ac` | 删除历史会话立即回收磁盘：先取消该会话在跑的任务，再删 JSON 与同名 `.tmp` 残留并返回释放字节数；被删会话打删除墓碑，任务收尾的 `finally` 不会再把它写回来；打开历史列表时顺带清扫超过 1 小时的 `.tmp`；面板状态行显示「已删除历史会话：X（释放 12.3 KB）」 |
 | v2.4.2 | `eba1945` | 两处让人误以为「某个模型不行」的硬伤：①正文里的 `<tool_call>` 标记（Hermes / Qwen 格式，含 JSON 形态）会被解析成真实工具调用执行，并在流式输出时屏蔽，不再把 XML 刷到对话区；②`read_file` / `search_code` / `write_file` / `edit_file` 不再假定 UTF-8——按 BOM（UTF-8 / UTF-16 LE / BE）→ 严格 UTF-8 → GBK 依次探测，写回保持原编码，`Input length = 1` 不再出现；`search_code` 的 `path` 允许直接给文件 |
 | v2.4.3 | `ab746c2` | 长任务不再被 `400 No user query found in messages.` 打断：历史裁剪以前从最旧一条无差别丢，跑十几轮工具后会把开头的提问一起丢掉，请求里一条 `user` 都不剩；现在先按整个旧对话丢（提问 + 回答），超预算再丢本轮较早的工具轮，**最新一轮的 user 提问永远保留**，`loop.py` 还有一层兜底补回 |
+| v2.4.4 | 本次 | 输入区换行修好：`ChatComposer` 只绑了 `Enter` / `Ctrl+Enter`，而原生 `JTextArea` 并没有 `Shift+Enter` 绑定，所以按下去既不发送也不换行（按键被整颗抛掉）；现在把 `Shift+Enter` 显式接到 `insert-break`，任务运行中（发送按钮禁用）按 `Enter` 也降级成换行 |
 
 更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
 `bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
@@ -361,8 +363,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-2.4.3.jar` - 插件 JAR
-- `workreport-ai-assistant-2.4.3.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
+- `workreport-intellij-plugin-2.4.4.jar` - 插件 JAR
+- `workreport-ai-assistant-2.4.4.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
 
 ### 运行调试
 
