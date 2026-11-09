@@ -6,7 +6,7 @@
 
     <groupId>com.workreport</groupId>
     <artifactId>workreport-intellij-plugin</artifactId>
-    <version>2.3.0</version>
+    <version>2.3.1</version>
     <packaging>jar</packaging>
 
     <name>Work Report AI Assistant</name>

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -11,9 +12,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import httpx  # noqa: E402
 
 from agent_core.llm import build_provider, detect_provider  # noqa: E402
+from agent_core.llm import base as llm_base  # noqa: E402
 from agent_core.llm.base import is_tool_unsupported  # noqa: E402
-from agent_core.llm.providers import ollama as ollama_module  # noqa: E402
-from agent_core.llm.providers import openai_compat as openai_module  # noqa: E402
 from agent_core.llm.providers.ollama import OllamaProvider, resolve_chat_url as ollama_url  # noqa: E402
 from agent_core.llm.providers.openai_compat import (  # noqa: E402
     OpenAICompatProvider,
@@ -105,7 +105,10 @@ class TestToolUnsupportedDetection(unittest.TestCase):
 
 class TestOpenAIToolsFallback(unittest.TestCase):
     def setUp(self):
-        openai_module._TOOLS_UNSUPPORTED.clear()
+        # Probation state is module level, so every test starts from a clean slate.
+        # 假释状态在模块级，每个用例都从头开始。
+        llm_base._tools_suppressed.clear()
+        llm_base._notice_shown.clear()
 
     def test_retries_without_tools_and_reports_once(self):
         sent = []
@@ -139,7 +142,7 @@ class TestOpenAIToolsFallback(unittest.TestCase):
         self.assertIsNone(provider.consume_notice())
 
     def test_known_endpoint_skips_tools_on_next_task(self):
-        openai_module._TOOLS_UNSUPPORTED.add(("https://host/v1/chat/completions", "glm-5.1"))
+        llm_base.suppress_tools("https://host/v1/chat/completions", "glm-5.1")
         sent = []
 
         def handler(request):
@@ -161,10 +164,73 @@ class TestOpenAIToolsFallback(unittest.TestCase):
         self.assertNotIn("tools", sent[0])
         self.assertIsNotNone(provider.consume_notice())
 
+    def test_probation_expires_so_a_fixed_endpoint_is_reprobed(self):
+        # Ops restarted vLLM with --enable-auto-tool-choice; the next task must try
+        # tools again instead of staying in plain-chat mode until the IDE restarts.
+        # 运维重启 vLLM 后，下一次任务应重新带工具，而不是继续纯对话。
+        key = ("https://host/v1/chat/completions", "glm-5.1")
+        llm_base.suppress_tools(*key)
+        llm_base._tools_suppressed[key] = time.monotonic() - 1.0
+        sent = []
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, content=_sse(
+                {"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}))
+
+        provider = OpenAICompatProvider(transport=httpx.MockTransport(handler))
+        config = ChatConfig(provider="openai_compat", model="glm-5.1",
+                            base_url="https://host/v1/chat/completions")
+
+        async def scenario():
+            return await provider.chat_stream([], TOOLS, config, _noop_token, _noop_tool_call)
+
+        asyncio.run(scenario())
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("tools", sent[0])
+        self.assertFalse(llm_base.tools_suppressed(*key))
+
+    def test_notice_is_shown_once_per_endpoint_across_tasks(self):
+        # A fresh provider is built for every task, so the notice flag must live
+        # outside the provider instance.
+        # 每个任务都会新建 provider，提示去重必须放在模块级。
+        key = ("https://host/v1/chat/completions", "glm-5.1")
+        llm_base.suppress_tools(*key)
+        config = ChatConfig(provider="openai_compat", model="glm-5.1",
+                            base_url="https://host/v1/chat/completions")
+
+        def handler(request):
+            return httpx.Response(200, content=_sse(
+                {"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}))
+
+        async def scenario():
+            first = OpenAICompatProvider(transport=httpx.MockTransport(handler))
+            await first.chat_stream([], TOOLS, config, _noop_token, _noop_tool_call)
+            second = OpenAICompatProvider(transport=httpx.MockTransport(handler))
+            await second.chat_stream([], TOOLS, config, _noop_token, _noop_tool_call)
+            return first.consume_notice(), second.consume_notice()
+
+        first_notice, second_notice = asyncio.run(scenario())
+
+        self.assertIn("函数调用", first_notice)
+        self.assertIsNone(second_notice)
+
+    def test_accept_tools_clears_probation_and_notice_flag(self):
+        key = ("https://host/v1/chat/completions", "glm-5.1")
+        llm_base.suppress_tools(*key)
+        self.assertTrue(llm_base.take_tools_notice(*key))
+
+        llm_base.accept_tools(*key)
+
+        self.assertFalse(llm_base.tools_suppressed(*key))
+        self.assertTrue(llm_base.take_tools_notice(*key))
+
 
 class TestOllamaToolsFallback(unittest.TestCase):
     def setUp(self):
-        ollama_module._TOOLS_UNSUPPORTED.clear()
+        llm_base._tools_suppressed.clear()
+        llm_base._notice_shown.clear()
 
     def test_retries_without_tools(self):
         sent = []

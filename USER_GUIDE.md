@@ -1,6 +1,6 @@
 # Agent Coding Assistant 使用手册
 
-> 适用版本：**2.3.0** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.2**（`since-build=252`）
+> 适用版本：**2.3.1** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.2**（`since-build=252`）
 >
 > 本手册面向使用者。想了解内部实现（RPC 协议、FIM 补全原理、向量检索细节），
 > 请看 [技术详情文档](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md)。
@@ -59,12 +59,12 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 
 ### 2.2 安装步骤
 
-1. 拿到 `workreport-ai-assistant-2.3.0.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
+1. 拿到 `workreport-ai-assistant-2.3.1.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
 2. IDEA → `Settings` → `Plugins` → ⚙️ → `Install Plugin from Disk...`
 3. 选择该 zip → `Restart IDE`
 4. 重启后底部出现 **AgentCoder** 工具窗口；菜单 `Tools` 下多出 **「模型设置…」** 与 `生成今日日报`
 
-> **升级提醒**：如果版本号没变（例如都是 2.3.0），IDEA 可能仍显示旧缓存。
+> **升级提醒**：如果版本号没变（例如都是 2.3.1），IDEA 可能仍显示旧缓存。
 > 让版本号变化（或先卸载再装）才能确保界面与代码一致。
 
 ---
@@ -80,7 +80,7 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 - Agent 面板输入区工具栏的 **「设置」** 按钮
 
 > 找不到入口时也可以按 **`Ctrl+Shift+A`**，输入 `模型设置` 直接跳转；
-> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `2.3.0` 的 zip。
+> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `2.3.1` 的 zip。
 
 ### 3.2 配置模型（必做）
 
@@ -173,7 +173,7 @@ DeepSeek（OpenAI 兼容）：
 | `[子代理] xxx 开始：…` / `完成` / `失败` | 子代理并行任务 |
 | `[确认] MCP 服务 … 请求调用 …` + 弹窗 | MCP 工具调用需要你点「允许 / 拒绝」 |
 | `[错误:CODE] 说明` | Core 返回的错误（如 `LLM_ERROR`、`TOOL_TIMEOUT`） |
-| `[提示] …` | 非致命降级提示，例如端点不支持函数调用已自动改为纯对话模式（任务继续） |
+| `[提示] …` | 非致命降级提示，例如端点不支持函数调用已自动改为纯对话模式（任务继续；同一端点只提示一次，5 分钟后会自动重试） |
 
 ### 4.3 气泡布局与 Markdown 渲染
 
@@ -468,7 +468,23 @@ v2.3.0 起面板顶部是一排会话标签（最多 8 个），**每个会话�
 2. **不改服务端**：v2.2.1 起插件会自动降级成**纯对话模式**并打一行 `[提示]`，
    能聊天但读写文件/执行命令/检索代码都不可用
 
-> 降级只在当前 Core 进程内记住，改完服务端后重启 IDE（或改一下设置）即可恢复完整能力。
+> 降级状态只对当前 Core 进程生效，且**只保持 5 分钟**（v2.3.1 起）：服务端补上参数后，
+> 下一次发送会自动重新带工具；想立即生效就重启 IDE（或改一下设置触发 Core 重建）。
+>
+> **如果提示里没有报错、模型却在回答里写出了 `<tool_call>` 文本**：说明当前请求确实没带工具定义，
+> 模型只能把工具调用当普通文字输出（不会被执行）。先按上面第 1 条确认 vLLM 启动参数，
+> 再用下面的命令确认服务端真的接受 tools（返回里应有 `tool_calls` 字段）：
+>
+> ```bash
+> curl http://<host>:<port>/v1/chat/completions -H "Content-Type: application/json" -d '{
+>   "model": "<模型>", "messages": [{"role": "user", "content": "列出当前目录"}],
+>   "tools": [{"type": "function", "function": {"name": "list_dir", "description": "list",
+>   "parameters": {"type": "object", "properties": {}}}}], "tool_choice": "auto"
+> }'
+> ```
+>
+> 仍返回 400 时注意错误正文里缺哪个参数：只加 `--enable-auto-tool-choice` 不够，
+> `--tool-call-parser` 必须与模型匹配（Qwen2.5/Qwen3 → `hermes`，Qwen3-Coder → `qwen3_coder`）。
 
 ### 11.4.3 报错 `Invalid token (new_api_error)`
 

@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Tuple
 
 import httpx
 
@@ -11,9 +11,13 @@ from agent_core.llm.base import (
     LLMProvider,
     TokenCallback,
     ToolCallCallback,
+    accept_tools,
     is_tool_unsupported,
+    suppress_tools,
+    take_tools_notice,
     to_openai_messages,
     to_openai_tools,
+    tools_suppressed,
 )
 from agent_core.llm.streaming import OpenAIStreamAccumulator, parse_sse_line
 from agent_core.protocol import ChatConfig, ErrorCode, Message, RpcError, ToolDef
@@ -22,13 +26,10 @@ LOGGER = logging.getLogger(__name__)
 
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
 
-# (url, model) pairs already known to reject tool definitions, so later requests skip
-# the wasted 400. 记录已知不支持 tools 的端点，后续请求直接不带工具定义。
-_TOOLS_UNSUPPORTED: Set[Tuple[str, str]] = set()
-
 _TOOLS_DISABLED_NOTICE = (
     "端点未启用函数调用（vLLM 需启动参数 --enable-auto-tool-choice --tool-call-parser <parser>），"
     "本次已按纯对话模式回答：可以对话，但读写文件、执行命令、检索代码等工具不可用。"
+    "服务端补上参数后插件会自动重试，重启 IDE 可立即生效。"
 )
 
 
@@ -62,7 +63,6 @@ class OpenAICompatProvider(LLMProvider):
     def __init__(self, transport: Optional[httpx.AsyncBaseTransport] = None) -> None:
         # Tests inject a mock transport; production keeps None (real network).
         self._transport = transport
-        self._notified = False
 
     def consume_notice(self) -> Optional[str]:
         """One-shot human readable warning for the Shell (``chat/notice``)."""
@@ -94,21 +94,25 @@ class OpenAICompatProvider(LLMProvider):
             "stream_options": {"include_usage": True},
         }
         tools_key = (url, config.model or "")
-        wants_tools = bool(tools) and tools_key not in _TOOLS_UNSUPPORTED
+        wants_tools = bool(tools) and not tools_suppressed(*tools_key)
         if wants_tools:
             body["tools"] = to_openai_tools(tools)
             body["tool_choice"] = "auto"
         elif tools:
-            self._warn_once()
+            self._warn_once(tools_key)
 
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, transport=self._transport) as client:
             try:
                 accumulator = await self._stream(client, url, headers, body, on_token)
+                if wants_tools:
+                    # The endpoint took the tool definitions again: end the probation.
+                    # 端点又接受工具定义：结束假释，后续请求继续带工具。
+                    accept_tools(*tools_key)
             except _ToolRejected as rejected:
                 LOGGER.warning("endpoint %s rejects tool definitions (%d): %s",
                                url, rejected.status, rejected.body[:200])
-                _TOOLS_UNSUPPORTED.add(tools_key)
-                self._warn_once()
+                suppress_tools(*tools_key)
+                self._warn_once(tools_key)
                 body.pop("tools", None)
                 body.pop("tool_choice", None)
                 accumulator = await self._stream(client, url, headers, body, on_token)
@@ -150,7 +154,9 @@ class OpenAICompatProvider(LLMProvider):
                     await on_token(token)
         return accumulator
 
-    def _warn_once(self) -> None:
-        if not self._notified:
-            self._notified = True
+    def _warn_once(self, tools_key: Tuple[str, str]) -> None:
+        # One notice per endpoint per Core process, even though a new provider is
+        # built for every task.
+        # 同一端点在一个 Core 进程内只提示一次（provider 是每个任务新建的）。
+        if take_tools_notice(*tools_key):
             self.notice = _TOOLS_DISABLED_NOTICE

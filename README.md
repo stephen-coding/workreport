@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-2.3.0-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-2.3.1-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
@@ -121,6 +121,7 @@ M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用
 | v2.2.0 | `be1b359`、`694d349` | 编辑器行内补全（Ghost text，FIM + sanitize + 超时降级）；语义索引（tree-sitter 切块 / Embedding / SQLite float32 向量 + 增量构建）；`since-build` 由 233 提到 252；全仓术语统一为「行内补全（Ghost text）」 |
 | v2.2.1 ~ v2.2.4 | 未单独提交（仅本地补丁构建） | 2.2.1 端点与「类型」冲突时以端点为准 + 端点不支持 tools 时降级纯对话；2.2.2 API Key 一律下发（即使类型选 Ollama）；2.2.3 对话区改为左右分侧气泡；2.2.4 输入区重做。**这四次补丁的改动全部并入 v2.3.0 的 `6605347`**，所以正文里出现的「v2.2.x 起」标注指这些补丁构建 |
 | v2.3.0 | `6605347` | 多会话并行（标签页 + 按 taskId 路由）与 `ProjectWriteGate` 写操作串行；输入区重做（4~14 行自适应 / 分隔条 / 附件 / 拖拽）；Markdown 渲染 + 左右分侧气泡；LLM 协议按端点形状自动判定，端点不支持 tools 时降级为纯对话；设置入口提升到 `Tools` 菜单 |
+| v2.3.1 | 随后补充 | 端点拒绝 `tools` 后不再「一票否决」：改为 5 分钟假释，服务端补上 `--enable-auto-tool-choice` 后自动重新探测，无需重启 IDE；降级提示改为每个 `(端点, 模型)` 在一个 Core 进程内只出现一次 |
 
 更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
 `bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
@@ -261,7 +262,7 @@ code --install-extension agent-coder-0.1.0.vsix
    - 「生成今天的日报」（也可用 `Tools` → `生成今日日报` 菜单）
 3. 写文件/删除先弹 diff 卡片，需要确认；输入区工具栏勾选 **自动执行** 后不再弹窗（可直接改代码）
 4. MCP 工具调用会弹 Yes/No 确认；连续拒绝 3 次 Core 会自动终止当前任务
-5. 工具与子代理进度以状态行插入对话流，例如 `[工具] read_file 执行中...`、`[子代理] code-reviewer 完成`；`[提示] ...` 表示非致命降级（如端点不支持 tools），任务会继续
+5. 工具与子代理进度以状态行插入对话流，例如 `[工具] read_file 执行中...`、`[子代理] code-reviewer 完成`；`[提示] ...` 表示非致命降级（如端点不支持 tools，5 分钟后会自动重试），任务会继续
 6. 输入区支持多行输入（`Enter` 发送 / `Shift+Enter` 换行）、拖动上方分隔线调整高度、「附件」添加文件作为上下文（文本内联，二进制只给路径）
 7. 顶部标签栏点 `+` 新建会话（最多 8 个），**多个会话可同时各跑一个任务**；状态栏右侧显示 `N 个任务并行运行中`。写文件类工具在项目内排队执行（对话里会打 `[排队]` 提示），读文件/搜索不受影响
 
@@ -350,8 +351,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-2.3.0.jar` - 插件 JAR
-- `workreport-ai-assistant-2.3.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
+- `workreport-intellij-plugin-2.3.1.jar` - 插件 JAR
+- `workreport-ai-assistant-2.3.1.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
 
 ### 运行调试
 
@@ -389,7 +390,7 @@ powershell -File scripts/build_plugin.ps1
 
 - **入口**：`Tools` 菜单 → 「模型设置…」，或输入区工具栏的「设置」；也可 `Ctrl+Shift+A` 搜“模型设置”
 - **协议自动识别**：按端点形状判定 Ollama / OpenAI 兼容，与设置页「类型」冲突时以端点为准
-- **工具调用降级**：端点拒绝 `tools`（如 vLLM 未开 `--enable-auto-tool-choice`）时去掉工具重试一次，对话继续并在面板打一行 `[提示]`；同一 `(端点, 模型)` 组合在当前 Core 进程内只提示一次
+- **工具调用降级**：端点拒绝 `tools`（如 vLLM 未开 `--enable-auto-tool-choice`）时去掉工具重试一次，对话继续并在面板打一行 `[提示]`；同一 `(端点, 模型)` 组合在当前 Core 进程内只提示一次，且 **5 分钟后自动重新尝试带工具**（服务端补上参数后无需重启 IDE）
 - 设置页维护模型列表（名称 / 类型 / 端点 / 模型），每个模型一把 API Key（PasswordSafe 按名称分开存储）
 - 输入区工具栏的 **模型** 下拉框随时切换，切换后下一条消息即用新模型，无需重启 IDE 或 Core
 - **自动执行** 勾选后写文件/删除不再弹确认，直接落盘，适合“改完直接跑”的场景（仍可用 `revert_file` 回退）

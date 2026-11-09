@@ -1,7 +1,8 @@
 """Provider protocol shared by all LLM backends."""
 
 import json
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
+import time
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Set, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -52,6 +53,54 @@ def is_tool_unsupported(status_code: int, body: str) -> bool:
         return False
     lowered = (body or "").lower()
     return any(hint in lowered for hint in _TOOL_UNSUPPORTED_HINTS)
+
+
+# --- endpoint probation -----------------------------------------------------
+# A rejection is remembered only for a short window.  The Core process used to skip
+# tool definitions for its whole lifetime after the first 400, so once the server was
+# fixed (vLLM restarted with --enable-auto-tool-choice, model swapped in, ...) the
+# plugin kept answering in plain-chat mode until the IDE was restarted.
+# 拒绝只记一小段时间：Core 进程此前会“一票否决”，服务端补上参数后仍永远降级，
+# 必须重启 IDE 才恢复。现在过期自动重试，服务端修好就能自动用回工具。
+TOOLS_RETRY_SECONDS = 300.0
+
+# (chat url, model) -> monotonic deadline while tools stay suppressed.
+_tools_suppressed: Dict[Tuple[str, str], float] = {}
+# (chat url, model) pairs that already produced a chat/notice in this process.
+_notice_shown: Set[Tuple[str, str]] = set()
+
+
+def tools_suppressed(url: str, model: str) -> bool:
+    """True while this endpoint is on probation after rejecting tool definitions."""
+    key = (url, model)
+    until = _tools_suppressed.get(key)
+    if until is None:
+        return False
+    if time.monotonic() >= until:
+        _tools_suppressed.pop(key, None)
+        return False
+    return True
+
+
+def suppress_tools(url: str, model: str) -> None:
+    """Drop tool definitions for a while after the endpoint refused them."""
+    _tools_suppressed[(url, model)] = time.monotonic() + TOOLS_RETRY_SECONDS
+
+
+def accept_tools(url: str, model: str) -> None:
+    """The endpoint took our tool definitions again: clear probation and the notice flag."""
+    key = (url, model)
+    _tools_suppressed.pop(key, None)
+    _notice_shown.discard(key)
+
+
+def take_tools_notice(url: str, model: str) -> bool:
+    """True the first time this process degrades this endpoint to plain chat."""
+    key = (url, model)
+    if key in _notice_shown:
+        return False
+    _notice_shown.add(key)
+    return True
 
 
 def to_openai_messages(messages: List[Message]) -> List[Dict[str, Any]]:

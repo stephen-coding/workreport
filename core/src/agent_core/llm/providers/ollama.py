@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Tuple
 
 import httpx
 
@@ -11,9 +11,13 @@ from agent_core.llm.base import (
     LLMProvider,
     TokenCallback,
     ToolCallCallback,
+    accept_tools,
     is_tool_unsupported,
+    suppress_tools,
+    take_tools_notice,
     to_ollama_messages,
     to_ollama_tools,
+    tools_suppressed,
 )
 from agent_core.llm.streaming import OllamaStreamAccumulator, parse_sse_line
 from agent_core.protocol import ChatConfig, ErrorCode, Message, RpcError, ToolDef
@@ -22,13 +26,10 @@ LOGGER = logging.getLogger(__name__)
 
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
 
-# (url, model) pairs whose model does not support tools ("does not support tools").
-# 记录已知不支持 tools 的 Ollama 模型，后续请求直接不带工具定义。
-_TOOLS_UNSUPPORTED: Set[Tuple[str, str]] = set()
-
 _TOOLS_DISABLED_NOTICE = (
     "当前 Ollama 模型不支持工具调用（tools），本次已按纯对话模式回答："
     "可以对话，但读写文件、执行命令、检索代码等工具不可用。"
+    "换用支持 tools 的模型或重启 IDE 后会重新尝试。"
 )
 
 
@@ -61,7 +62,6 @@ class OllamaProvider(LLMProvider):
     def __init__(self, transport: Optional[httpx.AsyncBaseTransport] = None) -> None:
         # Tests inject a mock transport; production keeps None (real network).
         self._transport = transport
-        self._notified = False
 
     def consume_notice(self) -> Optional[str]:
         """One-shot human readable warning for the Shell (``chat/notice``)."""
@@ -88,19 +88,24 @@ class OllamaProvider(LLMProvider):
             "options": options,
         }
         tools_key = (url, config.model or "")
-        if tools and tools_key not in _TOOLS_UNSUPPORTED:
+        wants_tools = bool(tools) and not tools_suppressed(*tools_key)
+        if wants_tools:
             body["tools"] = to_ollama_tools(tools)
         elif tools:
-            self._warn_once()
+            self._warn_once(tools_key)
 
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, transport=self._transport) as client:
             try:
                 accumulator = await self._stream(client, url, body, on_token)
+                if wants_tools:
+                    # The model accepted tool definitions again: end the probation.
+                    # 模型又接受工具定义：结束假释。
+                    accept_tools(*tools_key)
             except _ToolRejected as rejected:
                 LOGGER.warning("endpoint %s rejects tool definitions (%d): %s",
                                url, rejected.status, rejected.body[:200])
-                _TOOLS_UNSUPPORTED.add(tools_key)
-                self._warn_once()
+                suppress_tools(*tools_key)
+                self._warn_once(tools_key)
                 body.pop("tools", None)
                 accumulator = await self._stream(client, url, body, on_token)
 
@@ -141,7 +146,9 @@ class OllamaProvider(LLMProvider):
                     await on_token(token)
         return accumulator
 
-    def _warn_once(self) -> None:
-        if not self._notified:
-            self._notified = True
+    def _warn_once(self, tools_key: Tuple[str, str]) -> None:
+        # One notice per endpoint per Core process, even though a new provider is
+        # built for every task.
+        # 同一模型在一个 Core 进程内只提示一次（provider 是每个任务新建的）。
+        if take_tools_notice(*tools_key):
             self.notice = _TOOLS_DISABLED_NOTICE
