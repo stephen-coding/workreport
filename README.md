@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-2.4.1-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-2.4.2-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
@@ -25,6 +25,8 @@
 - 🗂️ **多会话并行**：顶部标签页最多 8 个会话同时跑，通知按 taskId 各回各家
 - 🕘 **历史会话**：关掉标签也不丢，随时从「历史」列表重新打开接着聊；会话以 JSON 落盘在本机，重启 IDE / 重启 Core 后仍在；在列表里删除会立即释放磁盘
 - 🔁 **更大的迭代预算**：单个任务默认 40 轮（每轮一次模型调用 + 该轮全部工具），设置页可在 5~300 之间调整
+- 🔤 **文本工具调用兜底**：端点没开 `--tool-call-parser`、模型把 `<tool_call>` 直接写进正文时，插件照样解析并执行，不再把 XML 原样刷到对话区
+- 📄 **不挑文件编码**：`read_file` / `search_code` 自动识别 UTF-8 / UTF-16（BOM）/ GBK，`write_file` / `edit_file` 写回保持原编码；PowerShell 重定向出来的 UTF-16 日志也能读
 - 🔒 **隐私优先**：API Key 加密存储，数据完全可控
 - 📊 **Git 历史分析**：智能提取 Commit 记录，结构化展示
 - 🎨 **友好界面**：集成到 IDEA 工具窗口，操作简便
@@ -109,7 +111,7 @@ powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 加速，�
 | M7 | Subagent 并行池 + 3 个内置子代理 | 完成 |
 | M8 | VS Code Shell + PyInstaller 分发 + CI + 一键验证 | 完成 |
 
-验收基线：Core 单测 **129 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
+验收基线：Core 单测 **139 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
 VS Code 编译与冒烟 PASS、IntelliJ 编译通过，产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
 
 ### 版本演进（v2.0 → v2.4）
@@ -127,6 +129,7 @@ M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用
 | v2.3.2 | `c0bfffb` | 关闭设置页不再重建 Core：模型 / 端点 / MCP 由 `settings/update` 实时下发，只有改了 Core 路径才重建——修掉「打开一次设置页就把所有会话上下文清空」；上下文裁剪改为按「轮」整轮丢弃，不再留下孤立 `tool` 消息被端点 400 |
 | v2.4.0 | `fb5a7c2` | 会话落盘：每个会话一个 JSON（`~/.agent/data/<项目哈希>/sessions/`），Core 重启后自动按需恢复；新增 `session/list` / `session/get` / `session/delete` 三个 RPC 与面板「历史」列表（回放 / 继续聊 / 删除），关标签不等于删历史；迭代预算默认 15 → **40**，IntelliJ 设置页新增「最大迭代轮次」（5~300），VS Code 的 `agentCoder.maxIterations` 同步为 40 |
 | v2.4.1 | `afec4ac` | 删除历史会话立即回收磁盘：先取消该会话在跑的任务，再删 JSON 与同名 `.tmp` 残留并返回释放字节数；被删会话打删除墓碑，任务收尾的 `finally` 不会再把它写回来；打开历史列表时顺带清扫超过 1 小时的 `.tmp`；面板状态行显示「已删除历史会话：X（释放 12.3 KB）」 |
+| v2.4.2 | 本次 | 两处让人误以为「某个模型不行」的硬伤：①正文里的 `<tool_call>` 标记（Hermes / Qwen 格式，含 JSON 形态）会被解析成真实工具调用执行，并在流式输出时屏蔽，不再把 XML 刷到对话区；②`read_file` / `search_code` / `write_file` / `edit_file` 不再假定 UTF-8——按 BOM（UTF-8 / UTF-16 LE / BE）→ 严格 UTF-8 → GBK 依次探测，写回保持原编码，`Input length = 1` 不再出现；`search_code` 的 `path` 允许直接给文件 |
 
 更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
 `bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
@@ -356,8 +359,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-2.4.1.jar` - 插件 JAR
-- `workreport-ai-assistant-2.4.1.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
+- `workreport-intellij-plugin-2.4.2.jar` - 插件 JAR
+- `workreport-ai-assistant-2.4.2.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
 
 ### 运行调试
 

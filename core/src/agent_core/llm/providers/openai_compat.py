@@ -20,6 +20,7 @@ from agent_core.llm.base import (
     tools_suppressed,
 )
 from agent_core.llm.streaming import OpenAIStreamAccumulator, parse_sse_line
+from agent_core.llm.tool_text import TextToolCallFilter, recover_text_tool_calls
 from agent_core.protocol import ChatConfig, ErrorCode, Message, RpcError, ToolDef
 
 LOGGER = logging.getLogger(__name__)
@@ -28,8 +29,8 @@ _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
 
 _TOOLS_DISABLED_NOTICE = (
     "端点未启用函数调用（vLLM 需启动参数 --enable-auto-tool-choice --tool-call-parser <parser>），"
-    "本次已按纯对话模式回答：可以对话，但读写文件、执行命令、检索代码等工具不可用。"
-    "服务端补上参数后插件会自动重试，重启 IDE 可立即生效。"
+    "已改用文本工具调用兼容模式：模型把 <tool_call> 写进正文时仍会执行。"
+    "服务端补上参数后会自动恢复标准模式。"
 )
 
 
@@ -101,9 +102,17 @@ class OpenAICompatProvider(LLMProvider):
         elif tools:
             self._warn_once(tools_key)
 
+        # Hide tool-call markup the model may print into the text channel.
+        # 模型把 <tool_call> 写进正文时，先屏蔽它再交给界面。
+        guard = TextToolCallFilter()
+
+        async def emit(piece: str) -> None:
+            for visible in guard.feed(piece):
+                await on_token(visible)
+
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, transport=self._transport) as client:
             try:
-                accumulator = await self._stream(client, url, headers, body, on_token)
+                accumulator = await self._stream(client, url, headers, body, emit)
                 if wants_tools:
                     # The endpoint took the tool definitions again: end the probation.
                     # 端点又接受工具定义：结束假释，后续请求继续带工具。
@@ -115,13 +124,19 @@ class OpenAICompatProvider(LLMProvider):
                 self._warn_once(tools_key)
                 body.pop("tools", None)
                 body.pop("tool_choice", None)
-                accumulator = await self._stream(client, url, headers, body, on_token)
+                accumulator = await self._stream(client, url, headers, body, emit)
+
+        for visible in guard.flush():
+            await on_token(visible)
 
         calls = accumulator.finalize()
+        content = accumulator.content
+        if not calls:
+            content, calls = recover_text_tool_calls(content)
         for call in calls:
             await on_tool_call(call)
         return ChatResult(
-            content=accumulator.content,
+            content=content,
             tool_calls=calls,
             finish_reason=accumulator.finish_reason,
             usage=accumulator.usage,

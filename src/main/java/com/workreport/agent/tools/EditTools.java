@@ -9,7 +9,6 @@ import com.intellij.openapi.vfs.VirtualFile;
 import com.workreport.agent.ui.DiffConfirmCard;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -38,7 +37,10 @@ public final class EditTools {
         }
         String newContent = args.get("content").getAsString();
         flushDocuments();
-        String oldContent = readOrEmpty(path);
+        // Read through the decoder so a GBK/UTF-16 file is not shown as "new".
+        // 用解码器读取，避免 GBK/UTF-16 文件被当成空文件。
+        FileText.Decoded previous = readDecodedOrNull(path);
+        String oldContent = previous == null ? "" : previous.text();
 
         if (needsApproval && !DiffConfirmCard.confirm(project, path, oldContent, newContent)) {
             return ToolResult.fail("用户拒绝：未写入 " + relative(path));
@@ -49,10 +51,10 @@ public final class EditTools {
             if (path.getParent() != null) {
                 Files.createDirectories(path.getParent());
             }
-            Files.writeString(path, newContent, StandardCharsets.UTF_8);
+            FileText.write(path, newContent, previous);
             refreshVfs(path);
             return ToolResult.ok("已写入 " + relative(path)
-                    + "（" + newContent.length() + " 字符）");
+                    + "（" + newContent.length() + " 字符" + encodingNote(previous) + "）");
         } catch (IOException e) {
             return ToolResult.fail("写入失败: " + e.getMessage());
         }
@@ -77,7 +79,8 @@ public final class EditTools {
         boolean replaceAll = args.has("replace_all") && args.get("replace_all").getAsBoolean();
 
         flushDocuments();
-        String oldContent = readOrEmpty(path);
+        FileText.Decoded previous = readDecodedOrNull(path);
+        String oldContent = previous == null ? "" : previous.text();
         int first = oldContent.indexOf(oldText);
         if (first < 0) {
             return ToolResult.fail("未找到 old_string，请先用 read_file 确认原文（注意缩进与换行）");
@@ -96,10 +99,11 @@ public final class EditTools {
 
         snapshots.capture(path, oldContent);
         try {
-            Files.writeString(path, newContent, StandardCharsets.UTF_8);
+            FileText.write(path, newContent, previous);
             refreshVfs(path);
             return ToolResult.ok("已修改 " + relative(path)
-                    + (replaceAll ? "（替换全部匹配）" : "（1 处）"));
+                    + (replaceAll ? "（替换全部匹配" : "（1 处")
+                    + (previous != null && previous.isPlainUtf8() ? "）" : encodingNote(previous) + "）"));
         } catch (IOException e) {
             return ToolResult.fail("写入失败: " + e.getMessage());
         }
@@ -149,7 +153,9 @@ public final class EditTools {
             if (path.getParent() != null) {
                 Files.createDirectories(path.getParent());
             }
-            Files.writeString(path, previous, StandardCharsets.UTF_8);
+            // edit_file kept the original encoding, so the snapshot can reuse it.
+            // 编辑时已保持原编码，回退直接沿用当前文件的编码。
+            FileText.write(path, previous, readDecodedOrNull(path));
             refreshVfs(path);
             return ToolResult.ok("已回退 " + relative(path) + " 到上一次修改前");
         } catch (IOException e) {
@@ -157,12 +163,21 @@ public final class EditTools {
         }
     }
 
-    private String readOrEmpty(Path path) {
+    private FileText.Decoded readDecodedOrNull(Path path) {
         try {
-            return Files.isRegularFile(path) ? Files.readString(path, StandardCharsets.UTF_8) : "";
+            return Files.isRegularFile(path) ? FileText.read(path) : null;
         } catch (IOException e) {
-            return "";
+            return null;
         }
+    }
+
+    private String encodingNote(FileText.Decoded decoded) {
+        return decoded == null || decoded.isPlainUtf8() ? "" : "，编码 " + decoded.label();
+    }
+
+    private String readOrEmpty(Path path) {
+        FileText.Decoded decoded = readDecodedOrNull(path);
+        return decoded == null ? "" : decoded.text();
     }
 
     // Persist dirty documents so the agent never overwrites unsaved user edits.

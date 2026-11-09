@@ -4,14 +4,12 @@ import com.google.gson.JsonObject;
 import com.intellij.openapi.project.Project;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import java.util.stream.Stream;
@@ -52,8 +50,15 @@ public final class SearchTools {
                 : DEFAULT_MAX_RESULTS;
         Path root = args.has("path") ? fileTools.resolve(args.get("path").getAsString())
                 : fileTools.projectRoot();
-        if (root == null || !Files.isDirectory(root)) {
-            return ToolResult.fail("搜索目录不存在");
+        if (root == null || (!Files.isDirectory(root) && !Files.isRegularFile(root))) {
+            return ToolResult.fail("搜索路径不存在");
+        }
+        if (Files.isRegularFile(root)) {
+            // The model often points at one file; search it instead of failing.
+            // 模型常直接把文件当搜索路径，这里直接搜该文件。
+            List<String> results = new ArrayList<>();
+            scanFile(root, root.getFileName().toString(), regex, max, results);
+            return ToolResult.ok(results.isEmpty() ? "（无匹配结果）" : String.join("\n", results));
         }
 
         List<String> results = new ArrayList<>();
@@ -64,26 +69,31 @@ public final class SearchTools {
                 if (Files.isDirectory(file) || shouldSkip(file)) {
                     continue;
                 }
-                try {
-                    if (Files.size(file) > MAX_SCAN_BYTES) {
-                        continue;
-                    }
-                    List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
-                    for (int i = 0; i < lines.size() && results.size() < max; i++) {
-                        Matcher matcher = regex.matcher(lines.get(i));
-                        if (matcher.find()) {
-                            results.add(root.relativize(file) + ":" + (i + 1) + ": "
-                                    + lines.get(i).trim());
-                        }
-                    }
-                } catch (IOException ignored) {
-                    // unreadable file, skip
-                }
+                scanFile(file, root.relativize(file).toString(), regex, max, results);
             }
         } catch (IOException e) {
             return ToolResult.fail("搜索失败: " + e.getMessage());
         }
         return ToolResult.ok(results.isEmpty() ? "（无匹配结果）" : String.join("\n", results));
+    }
+
+    // Decode through FileText so GBK / UTF-16 logs are searchable too.
+    // 用 FileText 解码，GBK / UTF-16 日志也能搜到。
+    private void scanFile(Path file, String display, Pattern regex, int max, List<String> results) {
+        List<String> lines;
+        try {
+            if (Files.size(file) > MAX_SCAN_BYTES || isBinaryName(file)) {
+                return;
+            }
+            lines = FileText.splitLines(FileText.read(file).text());
+        } catch (IOException ignored) {
+            return; // unreadable file, skip
+        }
+        for (int i = 0; i < lines.size() && results.size() < max; i++) {
+            if (regex.matcher(lines.get(i)).find()) {
+                results.add(display + ":" + (i + 1) + ": " + lines.get(i).trim());
+            }
+        }
     }
 
     private boolean shouldSkip(Path file) {
@@ -92,6 +102,10 @@ public final class SearchTools {
                 return true;
             }
         }
+        return isBinaryName(file);
+    }
+
+    private boolean isBinaryName(Path file) {
         String name = file.getFileName().toString();
         int dot = name.lastIndexOf('.');
         return dot >= 0 && SKIP_EXTENSIONS.contains(name.substring(dot + 1).toLowerCase());

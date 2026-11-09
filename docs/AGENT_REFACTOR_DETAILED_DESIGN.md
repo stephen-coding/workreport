@@ -239,6 +239,15 @@ on_stream_end():
 
 Ollama 流的 `message.tool_calls` 为**整对象**（非增量），但参数可能在多 chunk 中重复携带——按 `name+index` 键合并，`arguments` 为 JSON 对象时深合并、为字符串时累积拼接后统一解析。两种格式都做 `[DONE]` 与 `finish_reason` 终止判定；解析失败的单 chunk 记 warning 不中断流。
 
+**文本态工具调用兜底**（`llm/tool_text.py`，v2.4.2）：
+
+部分端点（vLLM 未开 `--tool-call-parser`、Ollama 模型不支持 tools、或模型 chat template 自己把调用印在正文里）根本不回 `delta.tool_calls`，标记会混在 `content` 里（早期版本直接当普通文字显示，工具不执行）。现在两个 provider 都在 `chat_stream` 里做两件事：
+
+1. `TextToolCallFilter`：流式过滤，识别 `<tool_call>` / `<function=` 标记（最多 hold 10 个字符以处理跨 chunk），标记区间内不向 Shell 发 token，收尾时丢弃未闭合块
+2. `recover_text_tool_calls(content)`：流结束后若没有结构化 `tool_calls`，就从正文中解析 Hermes/Qwen 的 `<function=name><parameter=k>v</parameter></function>` 形态或 `{"name":…,"arguments":{…}}` JSON 形态，生成 `ToolCall(id="txt_…")`，同时从正文里剔掉标记；纯文本回答原样返回
+
+`ChatResult.content` 返回剔除标记后的文本，下一轮 `trim_history` / 上下文预算不受影响。
+
 **上下文预算与压缩**（`llm/context.py`）：
 - 预算分配：system prompt 固定 ≤ 2k → 工具定义 ≤ 2k → 记忆/Skill ≤ 2k → 历史 → 上下文快照 → 预留输出 2k
 - 计数走 `native.tokenizer`（tiktoken-rs）；历史超限触发压缩：保留最近 3 轮，更早的 assistant 工具轮次折叠为 `[工具摘要] 读 X → 改 Y` 一句话（由一次低成本 LLM 调用生成摘要，失败则截断）
@@ -316,6 +325,7 @@ async def read_file(path: str, start_line: int = 1, end_line: int | None = None)
 | `skill_load` / `memory_recall` / `memory_save` / `memory_delete` / `subagent_dispatch` | 内置 | auto/confirm | Core |
 
 - **权限引擎**（`agent/permissions.py`）：`auto` 直通；`preview` 走 `edit/previewDiff` 阻塞确认（会话级"本次自动接受"开关）；`confirm` 走 `agent/confirm`；命令白名单匹配失败即拒。连续 3 次权限拒绝 → 终止循环并汇报。
+- **文本解码**（Shell `tools/FileText.java`，v2.4.2）：`read_file` / `search_code` / `write_file` / `edit_file` / `revert_file` 统一走它——先看 BOM（UTF-8 / UTF-16 LE / BE），再严格 UTF-8，再 GBK，最后有损 UTF-8；写回沿用探测到的编码与 BOM。PowerShell 5 重定向出的 UTF-16 日志不会再报 `Input length = 1`（`MalformedInputException`）
 
 ### 3.5 记忆系统
 
@@ -608,7 +618,7 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **129 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
+- Core 单测 **139 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
@@ -704,3 +714,14 @@ powershell -File scripts/build_plugin.ps1
 - `SessionManager.delete`：从内存移除对象、打 `deleted` 墓碑并 `messages.clear()`；`save()` 遇到墓碑直接返回，任务收尾的 `finally` 不会把删掉的文件写回来
 - `SessionStore.delete`：同时删 `<id>.json` 与 `<id>.json.tmp`，返回真正释放的字节数
 - `session/list`：顺带清扫 mtime 超过 1 小时的 `.tmp`（崩溃残留），新鲜临时文件不动
+
+### 14.4 文本工具调用与文件编码（v2.4.2）
+
+两个被误认为「某个模型不行」的硬伤，均已修：
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 对话区出现 `<tool_call><function=write_file>…`，文件却没改，模型说「调用结果没返回」 | 端点 400 不带 tools → 降级期内模型只能把调用写进正文；Core 只读 `delta.tool_calls` | `llm/tool_text.py`：流式屏蔽标记 + 流尾解析成真实 ToolCall，两种形态（Hermes XML / JSON）都支持 |
+| `read_file` 报「读取失败: Input length = 1」 | `Files.readAllLines(path, UTF_8)` 严格解码，PowerShell 5 重定向的日志是 UTF-16LE（BOM `FF FE`） | Shell `FileText`：BOM → 严格 UTF-8 → GBK → 有损 UTF-8；写回保持原编码 |
+
+验证：`core/tests/test_tool_text.py` 10 例（跨 chunk 拆分、裸 `<function=>`、未闭合块、JSON 形态、provider 端到端）；`FileText` 单独编译后跑真实 `build_core_231.log`（16660 B，`FF FE`）→ `encoding=UTF-16LE (BOM) lines=134`，第 127 行读出 `25208 INFO: Copying bootloader…`，UTF-16 回写 BOM 不变，GBK 与 UTF-8 样本均正常。

@@ -4,7 +4,6 @@ import com.google.gson.JsonObject;
 import com.intellij.openapi.project.Project;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -42,7 +41,10 @@ public final class FileTools {
             if (size > MAX_FILE_BYTES) {
                 return ToolResult.fail("文件过大（" + size + " 字节），请用 start_line/end_line 指定范围");
             }
-            List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+            // Never assume UTF-8: logs written by PowerShell 5 are UTF-16/GBK.
+            // 不假定 UTF-8：PowerShell 5 重定向出来的日志常是 UTF-16/GBK。
+            FileText.Decoded decoded = FileText.read(path);
+            List<String> lines = FileText.splitLines(decoded.text());
             if (lines.isEmpty()) {
                 return ToolResult.ok("（空文件）");
             }
@@ -56,6 +58,9 @@ public final class FileTools {
             StringBuilder sb = new StringBuilder();
             for (int i = start; i <= end; i++) {
                 sb.append(i).append("→").append(lines.get(i - 1)).append('\n');
+            }
+            if (!decoded.isPlainUtf8()) {
+                sb.append("（文件编码 " + decoded.label() + "，已按原编码解码）\n");
             }
             return ToolResult.ok(sb.toString());
         } catch (IOException e) {
@@ -96,6 +101,12 @@ public final class FileTools {
         }
         candidate = candidate.normalize();
         return candidate.startsWith(base) ? candidate : null;
+    }
+
+    // Decoded read used by the write tools so they never lose or re-encode content.
+    // 写工具使用的解码读取：既不丢内容，也不改变原编码。
+    public FileText.Decoded readDecoded(Path path) throws IOException {
+        return FileText.read(path);
     }
 
     public Path projectRoot() {

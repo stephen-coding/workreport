@@ -20,6 +20,7 @@ from agent_core.llm.base import (
     tools_suppressed,
 )
 from agent_core.llm.streaming import OllamaStreamAccumulator, parse_sse_line
+from agent_core.llm.tool_text import TextToolCallFilter, recover_text_tool_calls
 from agent_core.protocol import ChatConfig, ErrorCode, Message, RpcError, ToolDef
 
 LOGGER = logging.getLogger(__name__)
@@ -27,9 +28,8 @@ LOGGER = logging.getLogger(__name__)
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
 
 _TOOLS_DISABLED_NOTICE = (
-    "当前 Ollama 模型不支持工具调用（tools），本次已按纯对话模式回答："
-    "可以对话，但读写文件、执行命令、检索代码等工具不可用。"
-    "换用支持 tools 的模型或重启 IDE 后会重新尝试。"
+    "当前 Ollama 模型不支持工具调用（tools），已改用文本工具调用兼容模式："
+    "模型把 <tool_call> 写进正文时仍会执行。换用支持 tools 的模型后会重新尝试。"
 )
 
 
@@ -94,9 +94,17 @@ class OllamaProvider(LLMProvider):
         elif tools:
             self._warn_once(tools_key)
 
+        # Hide tool-call markup the model may print into the text channel.
+        # 模型把 <tool_call> 写进正文时，先屏蔽它再交给界面。
+        guard = TextToolCallFilter()
+
+        async def emit(piece: str) -> None:
+            for visible in guard.feed(piece):
+                await on_token(visible)
+
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, transport=self._transport) as client:
             try:
-                accumulator = await self._stream(client, url, body, on_token)
+                accumulator = await self._stream(client, url, body, emit)
                 if wants_tools:
                     # The model accepted tool definitions again: end the probation.
                     # 模型又接受工具定义：结束假释。
@@ -107,13 +115,19 @@ class OllamaProvider(LLMProvider):
                 suppress_tools(*tools_key)
                 self._warn_once(tools_key)
                 body.pop("tools", None)
-                accumulator = await self._stream(client, url, body, on_token)
+                accumulator = await self._stream(client, url, body, emit)
+
+        for visible in guard.flush():
+            await on_token(visible)
 
         calls = accumulator.finalize()
+        content = accumulator.content
+        if not calls:
+            content, calls = recover_text_tool_calls(content)
         for call in calls:
             await on_tool_call(call)
         return ChatResult(
-            content=accumulator.content,
+            content=content,
             tool_calls=calls,
             finish_reason="stop" if accumulator.done else None,
             usage=accumulator.usage,
