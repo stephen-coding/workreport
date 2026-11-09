@@ -1,6 +1,6 @@
 # Agent Coding Assistant 使用手册
 
-> 适用版本：**2.4.2** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.2**（`since-build=252`）
+> 适用版本：**2.4.3** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.2**（`since-build=252`）
 >
 > 本手册面向使用者。想了解内部实现（RPC 协议、FIM 补全原理、向量检索细节），
 > 请看 [技术详情文档](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md)。
@@ -61,12 +61,12 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 
 ### 2.2 安装步骤
 
-1. 拿到 `workreport-ai-assistant-2.4.2.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
+1. 拿到 `workreport-ai-assistant-2.4.3.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
 2. IDEA → `Settings` → `Plugins` → ⚙️ → `Install Plugin from Disk...`
 3. 选择该 zip → `Restart IDE`
 4. 重启后底部出现 **AgentCoder** 工具窗口；菜单 `Tools` 下多出 **「模型设置…」** 与 `生成今日日报`
 
-> **升级提醒**：如果版本号没变（例如都是 2.4.2），IDEA 可能仍显示旧缓存。
+> **升级提醒**：如果版本号没变（例如都是 2.4.3），IDEA 可能仍显示旧缓存。
 > 让版本号变化（或先卸载再装）才能确保界面与代码一致。
 
 ---
@@ -82,7 +82,7 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 - Agent 面板输入区工具栏的 **「设置」** 按钮
 
 > 找不到入口时也可以按 **`Ctrl+Shift+A`**，输入 `模型设置` 直接跳转；
-> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `2.4.2` 的 zip。
+> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `2.4.3` 的 zip。
 
 ### 3.2 配置模型（必做）
 
@@ -271,7 +271,7 @@ v2.3.0 起面板顶部是一排会话标签（最多 8 个），**每个会话�
 
 - 历史保存在本机 `~/.agent/data/<项目哈希>/sessions/`，每个会话一个 JSON，不上传
 - 删除会**立即释放磁盘**：JSON 与同名 `.tmp` 残留一并清掉（v2.4.1 起）；打开历史列表时还会顺带清扫超过 1 小时的崩溃残留临时文件
-- 单个会话最多保留最近 240 条消息，保存时会整轮裁剪，不会以孤立的工具结果开头
+- 单个会话最多保留最近 240 条消息，保存时会整轮裁剪，不会以孤立的工具结果开头；上下文超预算时只丢旧对话与本轮较早的工具轮，你这次的问题始终保留（v2.4.3 起）
 - 新会话的标题取自第一条消息开头 40 个字符；没发过消息的空会话不会进列表
 - 列表每行左侧是标题，下面一行是「时间（MM-dd HH:mm）· 消息条数」；鼠标悬停能看到会话的第一句提问
 - 列表查询失败（Core 未就绪）时会在状态行提示，重试即可
@@ -594,6 +594,17 @@ curl http://<网关地址>/v1/models -H "Authorization: Bearer sk-xxx"
 - `write_file` / `edit_file` 写回时**保持原编码**，不会把 UTF-16 日志悄悄改成 UTF-8
 - 想自己确认编码：`powershell -Command "Format-Hex -Path <文件> -Count 4"`，开头是 `FF FE` 即 UTF-16LE，
   `EF BB BF` 是 UTF-8 BOM；没有 BOM 时按 GBK 看到中文即为 GBK
+
+### 11.11 长任务跑到一半报 `400 No user query found in messages.`
+
+这是**请求被裁剪成了“一条 user 都没有”**的样子：vLLM（及部分网关）要求每次请求至少带一条 `user` 消息，
+而 v2.4.2 及更早版本的裁剪是从最旧一条无差别往前丢——单个任务跑十几轮工具后，开头的提问就被丢掉了，
+后面每一轮都是 `assistant` / `tool` 消息，于是每次调用都 400。
+
+- v2.4.3 起：先按“整个旧对话”丢（提问 + 回答一起），仍超预算再丢本轮较早的工具轮，
+  **最新一轮的 user 提问永远保留**；`loop.py` 还会在裁剪后检查一次，真丢了就把本轮输入补回去
+- 临时绕过（旧版本）：报错后在同一个会话里**再发一条消息**（哪怕只写「继续」）——新提问是最后一条，不会被裁剪掉，下一轮就不再 400；根治请升级到 2.4.3
+- 对照证据：会话 JSON（`~/.agent/data/<项目哈希>/sessions/`）里有提问，但报错时的请求只剩 `assistant` / `tool`；`idea.log` 里 `400 Bad Request` 紧跟在十几次 `200 OK` 后面，也是同一个特征
 
 ---
 

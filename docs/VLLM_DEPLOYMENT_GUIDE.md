@@ -1,7 +1,7 @@
 # vLLM 详解与 27B 模型部署指南
 
 > 适用对象：需要在内网/本机部署 Qwen 系 27B 量级模型，并让 Agent Coding Assistant 具备**工具调用**能力的开发者
-> 对应插件版本：**2.4.2**
+> 对应插件版本：**2.4.3**
 > 相关文档：[USER_GUIDE §11.4](../USER_GUIDE.md)（报错排查）、[README §1](../README.md)（插件侧配置）
 
 ---
@@ -466,6 +466,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/v1/chat/completio
 |---|---|---|
 | `"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set` | 没开工具调用 | 启动命令补两个参数并重启（§5.3） |
 | 回答里出现裸的 `<tool_call>` / `<function=...>` 文本，文件没被改 | vLLM 没解析出 `tool_calls`：请求没带工具定义（降级期内），或 `--tool-call-parser` 与模型不匹配 | **v2.4.2 起正文里的标记会被解析成真正的工具调用并执行，同时从气泡里屏蔽**，不再只是显示一段 XML；但结构化 `tool_calls` 仍是首选。仍建议补 `--enable-auto-tool-choice --tool-call-parser`：Qwen2.5/Qwen3 用 `hermes`、Qwen3-Coder 用 `qwen3_coder`，重启 vLLM 后重启 IDE |
+| `No user query found in messages.`（400，跑长任务时出现） | 请求里一条 `user` 消息都没有：vLLM 要求至少一条 | 插件 v2.4.3 起裁剪不再丢提问；旧版本遇到时报错后再发一条消息即可绕过（新提问是最后一条，不会被裁） |
 | `... does not support tools` | 模型或 chat 模板不支持工具 | 换 `hermes` parser，或换支持工具调用的模型 |
 | `ValueError: Unknown tool parser` | parser 名在当前版本不存在 | 升级 vLLM，或退回 `hermes` |
 | `The model's max seq len (...) is larger than max_model_len` | `--max-model-len` 设小了 | 调大或让模型自动取 |

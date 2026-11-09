@@ -53,6 +53,40 @@ class TestTrimHistory(unittest.TestCase):
         trimmed = trim_history(messages, budget=10)
         self.assertEqual([m.role for m in trimmed], [Role.SYSTEM, Role.USER])
 
+    def test_user_prompt_survives_aggressive_trimming(self):
+        # One long turn: every tool round outlives the opening prompt.
+        messages = [Message(role=Role.SYSTEM, content="sys"),
+                    Message(role=Role.USER, content="把整个仓库重构一遍")]
+        for index in range(20):
+            messages.extend(_tool_round(index, 400))
+
+        trimmed = trim_history(messages, budget=200)
+
+        self.assertEqual(trimmed[0].role, Role.SYSTEM)
+        self.assertEqual(trimmed[1].role, Role.USER)
+        self.assertEqual(trimmed[1].content, "把整个仓库重构一遍")
+        self.assertLessEqual(messages_tokens(trimmed), 200)
+        pending = set()
+        for message in trimmed:
+            for call in message.tool_calls or []:
+                pending.add(call.id)
+            if message.role == Role.TOOL:
+                self.assertIn(message.tool_call_id, pending)
+                pending.discard(message.tool_call_id)
+        self.assertEqual(pending, set())
+
+    def test_newest_user_turn_is_kept_while_older_ones_go(self):
+        messages = [Message(role=Role.SYSTEM, content="sys")]
+        for index in range(10):
+            messages.append(Message(role=Role.USER, content="u%d" % index))
+            messages.append(Message(role=Role.ASSISTANT, content="a" * 400))
+
+        trimmed = trim_history(messages, budget=300)
+
+        users = [m.content for m in trimmed if m.role == Role.USER]
+        self.assertEqual(users[-1], "u9")
+        self.assertNotIn("u0", users)
+
 
 if __name__ == "__main__":
     unittest.main()

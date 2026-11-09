@@ -78,6 +78,11 @@ async def run_chat(
     for _ in range(max_iterations):
         messages = [Message(role=Role.SYSTEM, content=system_prompt)] + session.messages
         messages = trim_history(messages)
+        if not any(m.role == Role.USER for m in messages):
+            # vLLM answers 400 "No user query found in messages." when no user role
+            # survives; re-anchor the current input instead of losing the turn.
+            # 兜底：裁剪后如果一条 user 都没有，就把本轮输入补回去，避免 vLLM 直接 400。
+            messages.append(Message(role=Role.USER, content=user_input))
         result = await provider.chat_stream(
             messages,
             tools=tools,

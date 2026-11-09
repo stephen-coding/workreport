@@ -251,6 +251,7 @@ Ollama 流的 `message.tool_calls` 为**整对象**（非增量），但参数�
 **上下文预算与压缩**（`llm/context.py`）：
 - 预算分配：system prompt 固定 ≤ 2k → 工具定义 ≤ 2k → 记忆/Skill ≤ 2k → 历史 → 上下文快照 → 预留输出 2k
 - 计数走 `native.tokenizer`（tiktoken-rs）；历史超限触发压缩：保留最近 3 轮，更早的 assistant 工具轮次折叠为 `[工具摘要] 读 X → 改 Y` 一句话（由一次低成本 LLM 调用生成摘要，失败则截断）
+- **实际落地的裁剪**（`trim_history`，v2.4.3）：两趟——①按整个旧对话丢（提问 + 回答一起），只留最新一轮；②仍超预算再丢本轮较早的 assistant/tool 轮（带 `tool_calls` 的 assistant 与其 `tool` 结果同进同出）。**最新一轮的 user 提问永不被丢**，否则请求会变成“一条 user 都没有”，vLLM 直接 `400 No user query found in messages.`；`loop.py` 在裁剪后还有一层兜底补回
 
 ### 3.3 Agent 引擎
 
@@ -618,7 +619,7 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **139 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
+- Core 单测 **141 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
@@ -725,3 +726,10 @@ powershell -File scripts/build_plugin.ps1
 | `read_file` 报「读取失败: Input length = 1」 | `Files.readAllLines(path, UTF_8)` 严格解码，PowerShell 5 重定向的日志是 UTF-16LE（BOM `FF FE`） | Shell `FileText`：BOM → 严格 UTF-8 → GBK → 有损 UTF-8；写回保持原编码 |
 
 验证：`core/tests/test_tool_text.py` 10 例（跨 chunk 拆分、裸 `<function=>`、未闭合块、JSON 形态、provider 端到端）；`FileText` 单独编译后跑真实 `build_core_231.log`（16660 B，`FF FE`）→ `encoding=UTF-16LE (BOM) lines=134`，第 127 行读出 `25208 INFO: Copying bootloader…`，UTF-16 回写 BOM 不变，GBK 与 UTF-8 样本均正常。
+
+### 14.5 上下文裁剪保留用户提问（v2.4.3）
+
+- 现象：单任务跑到十几轮工具后，每次模型调用都返回 `400 No user query found in messages.`（vLLM / 网关）
+- 根因：`trim_history` 从最旧一条无差别往前丢（只保证工具轮整轮丢弃），历史超 24000 token 后会把开头的 user 提问也丢掉；实测会话 `f2177ea5_f496e20f`：151 条 / 53944 token → 旧规则裁完 27 条、**user = 0**，新规则 29 条、user = 1、22912 token
+- 修法：两趟裁剪——先丢整个旧对话（提问 + 回答），再丢本轮较早的工具轮；删消息统一走 `_drop_at`（带 `tool_calls` 的 assistant 与其 `tool` 结果同进同出）；`loop.py` 裁剪后若仍无 user，则把本轮输入补回去
+- 用例：`test_user_prompt_survives_aggressive_trimming`（单轮 20 次工具仍保留提问且不超预算、工具配对不断）、`test_newest_user_turn_is_kept_while_older_ones_go`（旧对话可丢、最新提问留下）
