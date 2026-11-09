@@ -125,7 +125,7 @@ M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用
 | v2.3.0 | `6605347` | 多会话并行（标签页 + 按 taskId 路由）与 `ProjectWriteGate` 写操作串行；输入区重做（4~14 行自适应 / 分隔条 / 附件 / 拖拽）；Markdown 渲染 + 左右分侧气泡；LLM 协议按端点形状自动判定，端点不支持 tools 时降级为纯对话；设置入口提升到 `Tools` 菜单 |
 | v2.3.1 | `811b7a7` | 端点拒绝 `tools` 后不再「一票否决」：改为 5 分钟假释，服务端补上 `--enable-auto-tool-choice` 后自动重新探测，无需重启 IDE；降级提示改为每个 `(端点, 模型)` 在一个 Core 进程内只出现一次 |
 | v2.3.2 | `c0bfffb` | 关闭设置页不再重建 Core：模型 / 端点 / MCP 由 `settings/update` 实时下发，只有改了 Core 路径才重建——修掉「打开一次设置页就把所有会话上下文清空」；上下文裁剪改为按「轮」整轮丢弃，不再留下孤立 `tool` 消息被端点 400 |
-| v2.4.0 | 本次 | 会话落盘：每个会话一个 JSON（`~/.agent/data/<项目哈希>/sessions/`），Core 重启后自动按需恢复；新增 `session/list` / `session/get` / `session/delete` 三个 RPC 与面板「历史」列表（回放 / 继续聊 / 删除），关标签不等于删历史；迭代预算默认 15 → **40**，IntelliJ 设置页新增「最大迭代轮次」（5~300），VS Code 的 `agentCoder.maxIterations` 同步为 40 |
+| v2.4.0 | `fb5a7c2` | 会话落盘：每个会话一个 JSON（`~/.agent/data/<项目哈希>/sessions/`），Core 重启后自动按需恢复；新增 `session/list` / `session/get` / `session/delete` 三个 RPC 与面板「历史」列表（回放 / 继续聊 / 删除），关标签不等于删历史；迭代预算默认 15 → **40**，IntelliJ 设置页新增「最大迭代轮次」（5~300），VS Code 的 `agentCoder.maxIterations` 同步为 40 |
 
 更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
 `bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
