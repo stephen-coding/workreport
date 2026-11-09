@@ -17,6 +17,25 @@ LOGGER = logging.getLogger(__name__)
 StartCallback = Callable[[ToolCall], Awaitable[None]]
 EndCallback = Callable[[ToolCall, ToolResult], Awaitable[None]]
 
+# How many tool names an "unknown tool" error may advertise.
+# 未知工具报错里最多列出多少个可用工具名。
+MAX_NAME_HINTS = 12
+
+
+def unknown_tool_error(registry: ToolRegistry, name: str) -> str:
+    """Name the tools that do exist.
+
+    A bare "未知工具: bash" leaves the model with nothing to correct against, so it
+    keeps inventing names (bash / Grep / Read ...) until the iteration budget is
+    gone. Listing the real names turns the error into a self-correcting hint.
+    只报“未知工具: bash”等于让模型盲猜；把真实工具名列出来，它才能一次改对。
+    """
+    names = registry.names()
+    hint = ", ".join(names[:MAX_NAME_HINTS])
+    if len(names) > MAX_NAME_HINTS:
+        hint += " 等 %d 个" % len(names)
+    return "未知工具: %s。可用工具: %s" % (name, hint or "无")
+
 
 class ToolScheduler:
     def __init__(self, registry: ToolRegistry, max_concurrency: int = 4) -> None:
@@ -34,7 +53,8 @@ class ToolScheduler:
         async def run_one(call: ToolCall) -> ToolResult:
             tool_def = self.registry.get(call.name)
             if tool_def is None:
-                return ToolResult(tool_call_id=call.id, ok=False, error="未知工具: " + call.name)
+                return ToolResult(tool_call_id=call.id, ok=False,
+                                  error=unknown_tool_error(self.registry, call.name))
             handler = self.registry.handler(call.name)
             if handler is None:
                 return ToolResult(tool_call_id=call.id, ok=False, error="工具未实现: " + call.name)

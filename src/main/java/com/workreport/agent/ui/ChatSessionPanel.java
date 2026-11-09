@@ -80,8 +80,12 @@ public final class ChatSessionPanel extends JPanel {
     }
 
     private void initUI() {
-        transcript.addHint("这是一个独立会话：可以同时开多个会话并行跑任务。"
-                + "拖动上方分隔条能加高输入区，「附件」或直接拖文件进来可把文件一并发给模型。");
+        // Say it out loud: a fresh tab starts empty, it does not inherit another tab's
+        // transcript. Users otherwise expect the new tab to "remember" the last one.
+        // 明确告知：新标签是空上下文，不继承其它标签；要接着上次聊得从「历史」打开。
+        transcript.addHint("这是新会话，不继承其它标签的上下文；要接着上次聊，点右上「历史」打开那条会话。"
+                + "多个会话可以同时并行跑任务；拖动上方分隔条能加高输入区，"
+                + "「附件」或直接拖文件进来可把文件一并发给模型。");
 
         // Transcript above, composer below; the divider is draggable so the input can grow.
         // 上方对话、下方输入区；中间分隔条可拖动，用来放大输入区。

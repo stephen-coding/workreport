@@ -30,11 +30,13 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -68,7 +70,11 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     private final ChatSessionPanel.Owner sessionOwner = new SessionOwner();
     private ChatSessionPanel active;
     private JBPopup historyPopup;
-    private int counter;
+    // Numbers behind the default "会话 N" titles. They are released on close, so the
+    // strip reuses the smallest free number instead of counting up forever.
+    // 「会话 N」里的编号：关闭后归还，复用最小空号，不会一直累加。
+    private final Set<Integer> usedNumbers = new HashSet<>();
+    private final Map<String, Integer> sessionNumbers = new HashMap<>();
 
     public AgentChatPanel(Project project) {
         super(true, true);
@@ -117,16 +123,28 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
             setStatus("最多同时开 " + MAX_SESSIONS + " 个会话，请先关闭一个。");
             return;
         }
-        counter++;
+        int number = nextSessionNumber();
         // A unique suffix per tab (not a counter): a new tab must never inherit the
         // history of an old conversation that happens to reuse the same index.
         // 每个标签用唯一后缀而不是计数器：新标签不能意外继承旧会话的历史。
         String sessionId = coreService.sessionId() + "#"
                 + UUID.randomUUID().toString().substring(0, 8);
-        ChatSessionPanel session = new ChatSessionPanel(project, sessionId, "会话 " + counter, sessionOwner);
+        ChatSessionPanel session = new ChatSessionPanel(project, sessionId, "会话 " + number, sessionOwner);
         sessions.put(sessionId, session);
+        sessionNumbers.put(sessionId, number);
         cards.add(session, sessionId);
         selectSession(session);
+    }
+
+    // Smallest number not used by any open tab (1, 2, 3 …).
+    // 取当前没被占用的最小正整数。
+    private int nextSessionNumber() {
+        int number = 1;
+        while (usedNumbers.contains(number)) {
+            number++;
+        }
+        usedNumbers.add(number);
+        return number;
     }
 
     private void selectSession(ChatSessionPanel session) {
@@ -153,6 +171,12 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         sessions.remove(session.sessionId());
         cards.remove(session);
         byTask.values().remove(session);
+        // Hand the number back so the next "会话 N" reuses it (history tabs have none).
+        // 归还编号，下个新标签优先用最小空号；历史标签没有编号。
+        Integer released = sessionNumbers.remove(session.sessionId());
+        if (released != null) {
+            usedNumbers.remove(released);
+        }
 
         if (active == session) {
             String next = null;

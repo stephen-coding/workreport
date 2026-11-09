@@ -1,6 +1,7 @@
 """Agent main loop: LLM <-> tool execution rounds with parallel tools."""
 
 import logging
+from collections import Counter
 from typing import Awaitable, Callable, Optional
 
 from agent_core.agent.compression import compress_tool_output
@@ -27,6 +28,12 @@ SYSTEM_PROMPT = (
 ToolStartCallback = Callable[[ToolCall], Awaitable[None]]
 ToolEndCallback = Callable[[ToolCall, ToolResult], Awaitable[None]]
 NoticeCallback = Callable[[str], Awaitable[None]]
+
+# Stop the turn once the model kept asking for a tool that does not exist.
+# Without this, a model that insists on "bash" burns the whole iteration budget
+# printing "let me use the correct tool name" over and over.
+# 同一个不存在的工具名连续失败这么多次就结束本轮，避免把轮次预算耗在空转上。
+UNKNOWN_TOOL_LIMIT = 3
 
 
 async def _noop_tool_call(call: ToolCall) -> None:
@@ -70,6 +77,7 @@ async def run_chat(
     max_iterations = max(1, config.max_iterations)
     tracker = PermissionTracker()
     stats = TurnStats()
+    unknown_tools: Counter = Counter()
     system_prompt = base_prompt or SYSTEM_PROMPT
     if memory_overview:
         system_prompt += ("\n\n以下是项目长期记忆索引（需要某条正文时调用 memory_recall）：\n"
@@ -122,8 +130,21 @@ async def run_chat(
             session.append(Message(role=Role.TOOL, tool_call_id=call.id,
                                    name=call.name, content=content))
             stats.record_result(call, tool_result.ok, tool_result.error or "")
+            if not tool_result.ok and (tool_result.error or "").startswith("未知工具"):
+                unknown_tools[call.name] += 1
             if tracker.record_result(tool_result.ok, tool_result.error or ""):
                 denied_too_often = True
+
+        # A chatty model can repeat one invented tool name for dozens of rounds;
+        # stop early with an explanation instead of silently burning the budget.
+        # 模型反复要求不存在的工具时提前停下，并把原因告诉用户。
+        stuck = [name for name, count in unknown_tools.items() if count >= UNKNOWN_TOOL_LIMIT]
+        if stuck:
+            stop_text = ("模型反复要求调用不存在的工具「%s」（已尝试 %d 次），已停止本轮。"
+                         "可用工具里没有它，换一个支持工具调用的模型，或直接告诉我用哪个工具。"
+                         % (stuck[0], unknown_tools[stuck[0]]))
+            session.append(Message(role=Role.ASSISTANT, content=stop_text))
+            return ChatResult(content=stop_text)
 
         if denied_too_often:
             stop_text = "连续多次未获得授权，已停止工具执行。请确认后重新发起请求。"

@@ -619,7 +619,7 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **149 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
+- Core 单测 **153 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
@@ -778,3 +778,29 @@ powershell -File scripts/build_plugin.ps1
 - 修法：`tabsBar.setOpaque(true)` + `setBackground(UIUtil.getPanelBackground())` 保证旧像素被擦；`rebuildTabs()` 末尾同时 `tabsBar.getParent().revalidate()`；`closeSession()` 里补 `cards.revalidate()/repaint()`
 - 顺手修的体验问题：关闭**当前**标签时以前跳回第一个会话，现在按原位置记录 `slot`，优先切到右侧邻居（`order.get(slot+1)`），没有右侧才切到左侧
 - 探针结论：`FlowLayout.doLayout()` 本身会前移（`target/_probe/TabProbe.java`：7 个标签删掉第 1 个后剩下的整体前移；剩 3 个时 x=4/158/312），所以“不往前挪”不是布局算法的问题，而是没触发重排 + 没擦背景
+
+### 14.9 未知工具的自纠正与熔断（v2.4.6）
+
+**现象**：模型在正文里连刷十几行“我的工具调用一直失败，让我尝试用正确的工具名称”，直到轮次预算耗尽。
+
+**根因**：模型喊的是 `bash` / `Grep` / `Read` 这类本插件没有的工具名（它按训练里见过的通用编码 Agent 猜测），而 `scheduler.py` 只回 `未知工具: bash`——既没说“没有这个工具”，也没给出可用名单，模型唯一能做的就是把名字再换一个，于是一直空转。
+
+**修法（两层）**：
+
+| 层 | 位置 | 行为 |
+|---|---|---|
+| 自纠正 | `agent/scheduler.py` | 新增 `unknown_tool_error()`：`未知工具: bash。可用工具: read_file, list_dir, search_code, …`；名单取自 `registry.names()`（含 MCP 动态工具），最多 12 个，超出补“等 N 个” |
+| 熔断 | `agent/loop.py` | `UNKNOWN_TOOL_LIMIT = 3`：同一个不存在的工具名失败 3 次即结束本轮，回复「模型反复要求调用不存在的工具「bash」（已尝试 3 次），已停止本轮…」并写入会话（用户可见） |
+
+- 只对 `error.startswith("未知工具")` 计数：超时、权限拒绝、业务错误都不算，不会误杀正常重试
+- 与状态栏互补：状态栏让它看到“同一个调用已经重复 N 次”，熔断在它仍然不改时才接管
+- 用例（`core/tests/test_unknown_tool.py`，4 个）：报错含真实工具名、scheduler 与直接调用一致、第 3 次失败后停止（不再消耗剩余 37 轮）、每条工具结果都带可用名单
+
+### 14.10 「会话 N」编号归还与新标签上下文提示（v2.4.6）
+
+- 现象①：反复关掉「会话 1」再点 `+`，编号会变成 2、3、4…一直累加
+- 根因：`AgentChatPanel` 用 `private int counter` 自增，关闭时从不回收
+- 修法：改为 `Set<Integer> usedNumbers` + `Map<String,Integer> sessionNumbers`；`nextSessionNumber()` 从 1 开始找最小空号，`closeSession()` 里归还（历史标签没有编号，`remove` 返回 null 时不影响）
+- 现象②：用户在新标签里问“继续上一个任务”，模型回答“这是全新对话”——因为新标签确实是空上下文，但界面只说“这是一个独立会话”
+- 修法：新标签首屏提示改为「这是新会话，不继承其它标签的上下文；要接着上次聊，点右上「历史」打开那条会话。」；历史回放仍保留「以上为历史记录（已保存在本机），可以接着聊。」
+- 从「历史」打开的会话**确实带上下文**：面板用 `entry.id` 作为 sessionId，`chat/start` → `SessionManager.get_or_create` → `SessionStore.load` 恢复整段消息（含工具轮），已有 `test_session_is_restored_after_a_core_restart` 覆盖
