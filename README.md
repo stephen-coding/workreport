@@ -131,7 +131,7 @@ M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用
 | v2.4.0 | `fb5a7c2` | 会话落盘：每个会话一个 JSON（`~/.agent/data/<项目哈希>/sessions/`），Core 重启后自动按需恢复；新增 `session/list` / `session/get` / `session/delete` 三个 RPC 与面板「历史」列表（回放 / 继续聊 / 删除），关标签不等于删历史；迭代预算默认 15 → **40**，IntelliJ 设置页新增「最大迭代轮次」（5~300），VS Code 的 `agentCoder.maxIterations` 同步为 40 |
 | v2.4.1 | `afec4ac` | 删除历史会话立即回收磁盘：先取消该会话在跑的任务，再删 JSON 与同名 `.tmp` 残留并返回释放字节数；被删会话打删除墓碑，任务收尾的 `finally` 不会再把它写回来；打开历史列表时顺带清扫超过 1 小时的 `.tmp`；面板状态行显示「已删除历史会话：X（释放 12.3 KB）」 |
 | v2.4.2 | `eba1945` | 两处让人误以为「某个模型不行」的硬伤：①正文里的 `<tool_call>` 标记（Hermes / Qwen 格式，含 JSON 形态）会被解析成真实工具调用执行，并在流式输出时屏蔽，不再把 XML 刷到对话区；②`read_file` / `search_code` / `write_file` / `edit_file` 不再假定 UTF-8——按 BOM（UTF-8 / UTF-16 LE / BE）→ 严格 UTF-8 → GBK 依次探测，写回保持原编码，`Input length = 1` 不再出现；`search_code` 的 `path` 允许直接给文件 |
-| v2.4.3 | 本次 | 长任务不再被 `400 No user query found in messages.` 打断：历史裁剪以前从最旧一条无差别丢，跑十几轮工具后会把开头的提问一起丢掉，请求里一条 `user` 都不剩；现在先按整个旧对话丢（提问 + 回答），超预算再丢本轮较早的工具轮，**最新一轮的 user 提问永远保留**，`loop.py` 还有一层兜底补回 |
+| v2.4.3 | `ab746c2` | 长任务不再被 `400 No user query found in messages.` 打断：历史裁剪以前从最旧一条无差别丢，跑十几轮工具后会把开头的提问一起丢掉，请求里一条 `user` 都不剩；现在先按整个旧对话丢（提问 + 回答），超预算再丢本轮较早的工具轮，**最新一轮的 user 提问永远保留**，`loop.py` 还有一层兜底补回 |
 
 更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
 `bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
