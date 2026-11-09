@@ -1,7 +1,9 @@
 """Tests for history trimming: rounds must be dropped as a whole."""
 
 import unittest
+from unittest import mock
 
+from agent_core.llm import context as context_module
 from agent_core.llm.context import messages_tokens, trim_history
 from agent_core.protocol import Message, Role, ToolCall
 
@@ -86,6 +88,32 @@ class TestTrimHistory(unittest.TestCase):
         users = [m.content for m in trimmed if m.role == Role.USER]
         self.assertEqual(users[-1], "u9")
         self.assertNotIn("u0", users)
+
+    def test_trim_tokenizes_each_message_once(self):
+        # A long conversation used to be re-counted after every dropped round, so the
+        # cost grew with the square of the history and blocked the Core's event loop
+        # (the Shell then looked frozen whatever model was picked).
+        messages = [Message(role=Role.SYSTEM, content="sys")]
+        for index in range(120):
+            messages.append(Message(role=Role.USER, content="u%d" % index))
+            messages.extend(_tool_round(index, 400))
+            messages.append(Message(role=Role.ASSISTANT, content="a" * 400))
+
+        calls = []
+        real = context_module.estimate_tokens
+
+        def counting(text):
+            calls.append(1)
+            return real(text)
+
+        with mock.patch.object(context_module, "estimate_tokens", counting):
+            trimmed = trim_history(messages, budget=2000)
+
+        # One measurement per message; a tool_calls message costs two more for its name
+        # and arguments. The old loop measured everything once per dropped round.
+        self.assertLessEqual(len(calls), 3 * len(messages) + 5)
+        self.assertEqual(trimmed[0].role, Role.SYSTEM)
+        self.assertLessEqual(messages_tokens(trimmed), 2000)
 
 
 if __name__ == "__main__":

@@ -619,7 +619,7 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **161 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
+- Core 单测 **164 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
@@ -822,3 +822,20 @@ powershell -File scripts/build_plugin.ps1
 - 文案分四档：超时（区分建立连接 / 发送请求 / 获取连接 / 等待模型输出）、`ConnectError`（端点不可达）、`NetworkError`（流中途被断开）、`ProtocolError`（响应不完整），其余兜底为 `LLM 网络错误（类名）`
 - 处理建议统一指向「确认服务端还在运行后，重发一次「继续」」；超时档还提示可调小 `max_tokens` 或减少历史轮次
 - 用例（`core/tests/test_transport_errors.py`，8 个）：读超时文案含阶段 / 时长 / 端点 / 模型、连接超时指向建立连接、断流不为空、连接失败、未知传输错误兜底、两个 provider 端到端不抛空消息、`_error_text` 回退类名
+
+### 14.12 长会话裁剪不再阻塞事件循环（v2.4.8）
+
+**现象**：同一个会话轮次一多，点「发送」后长时间没有任何输出，点「停止」也没反应；换一个模型重发依旧卡死——与具体模型无关。
+
+**根因**：`llm/context.py` 的 `trim_history()` 每丢一轮就调用 `messages_tokens()` 重算整段历史，复杂度 O(n²)。Rust tiktoken 单次计数很快，但次数随轮次平方增长：实测 50 轮工具 4.7 s、150 轮 40.6 s、300 轮约 3 min。而它同步跑在 Core 唯一的 asyncio 事件循环里，阻塞期间 `chat/start`、`settings/update`、心跳全部排队——换模型正是靠 `settings/update` 下发的，所以「换什么模型都发不出去」。
+
+**修法**：
+
+| 位置 | 行为 |
+|---|---|
+| `llm/context.py` | 新增 `_message_tokens()`；`trim_history()` 先对每条消息分词一次，之后只做减法与前缀跳过（保留原语义：整轮丢弃、最新提问不丢、开头不留孤立 `tool`） |
+| `agent/session.py` | 新增 `MAX_SESSION_MESSAGES = 240`（与 `SessionStore.MAX_MESSAGES` 对齐）；`Session.append()` 超上限时按整轮丢弃最旧对话，内存不再无界增长 |
+
+- 复杂度：O(n) 分词 + O(n) 裁剪；同一台机器 150 轮 40.6 s → 0.27 s，300 轮约 3 min → 0.54 s
+- 语义未变：与旧算法在 400 组随机会话（不同预算、含孤立 `tool`、多工具轮）上逐条比对，结果完全一致
+- 用例（`core/tests/test_context.py`、`core/tests/test_session_store.py`，共 3 个新增）：每条消息只分词一次（调用次数上界）、长历史裁剪后仍在预算内、内存上限只整轮丢弃且不留孤立工具结果

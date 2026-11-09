@@ -16,6 +16,13 @@ LOGGER = logging.getLogger(__name__)
 
 TITLE_CHARS = 40
 
+# In-memory ceiling, mirroring ``SessionStore.MAX_MESSAGES``: every request is already
+# trimmed to the token budget, so keeping more than this only makes each send tokenize
+# history that will never be sent (and that is what used to freeze long conversations).
+# 内存消息上限与落盘一致：请求本来只按 token 预算取最近的，留更多只会让每次发送
+# 重新分词永远发不出去的历史。
+MAX_SESSION_MESSAGES = 240
+
 
 def make_title(text: str) -> str:
     """First line of the first user message, trimmed to a readable tab title."""
@@ -55,6 +62,19 @@ class Session:
 
     def append(self, message: Message) -> None:
         self.messages.append(message)
+        self._trim_overflow()
+
+    def _trim_overflow(self) -> None:
+        """Drop the oldest whole turns once the transcript passes the ceiling.
+
+        Whole turns only: an assistant message with ``tool_calls`` must not outlive the
+        tool results that belong to it, and the newest turn is always kept.
+        """
+        while len(self.messages) > MAX_SESSION_MESSAGES:
+            starts = [i for i, m in enumerate(self.messages) if m.role == Role.USER]
+            if len(starts) < 2:
+                return
+            del self.messages[:starts[1]]
 
     def clear(self) -> None:
         self.messages.clear()

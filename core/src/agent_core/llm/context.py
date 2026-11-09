@@ -17,28 +17,15 @@ def estimate_tokens(text: str) -> int:
     return count_tokens(text or "")
 
 
-def messages_tokens(messages: List[Message]) -> int:
-    total = 0
-    for m in messages:
-        total += estimate_tokens(m.content or "")
-        for tc in m.tool_calls or []:
-            total += estimate_tokens(tc.name) + estimate_tokens(str(tc.arguments))
+def _message_tokens(message: Message) -> int:
+    total = estimate_tokens(message.content or "")
+    for call in message.tool_calls or []:
+        total += estimate_tokens(call.name) + estimate_tokens(str(call.arguments))
     return total
 
 
-def _first_non_user(messages: List[Message]) -> int:
-    for index, message in enumerate(messages):
-        if message.role.value != "user":
-            return index
-    return -1
-
-
-def _drop_at(messages: List[Message], index: int) -> None:
-    """Drop one message together with the tool results it owns."""
-    dropped = messages.pop(index)
-    if dropped.tool_calls:
-        while index < len(messages) and messages[index].role.value == "tool":
-            messages.pop(index)
+def messages_tokens(messages: List[Message]) -> int:
+    return sum(_message_tokens(message) for message in messages)
 
 
 def trim_history(messages: List[Message], budget: int = DEFAULT_BUDGET) -> List[Message]:
@@ -56,30 +43,54 @@ def trim_history(messages: List[Message], budget: int = DEFAULT_BUDGET) -> List[
     trimmed away.
     先丢历史、再丢本轮的工具轮，但用户提问本身永不丢弃——整段请求没有 user 角色时
     vLLM 会回 400 ``No user query found in messages.``，长任务里开头的提问被丢就会踩到。
+
+    Token counts are computed once per message and then only subtracted. Recounting
+    the whole history after every dropped round made a long conversation quadratic:
+    150 tool rounds took 40 s inside the event loop, which froze every session (and
+    made changing the model look useless because ``chat/start`` never ran).
+    每条消息只分词一次，之后只做减法和前缀跳过：历史上每丢一轮就重算全量的话，
+    150 轮要 40 秒且同步阻塞事件循环，表现为“聊久了换什么模型都卡死”。
     """
-    if messages_tokens(messages) <= budget:
-        return list(messages)
     system = [m for m in messages if m.role.value == "system"]
     rest = [m for m in messages if m.role.value != "system"]
+    counts = [_message_tokens(message) for message in rest]
+    total = sum(_message_tokens(message) for message in system) + sum(counts)
+    if total <= budget:
+        return list(messages)
+
+    removed = [False] * len(rest)
+    cut = 0
 
     # Pass 1: drop whole old turns (prompt + answers), keeping the newest turn.
-    while messages_tokens(system + rest) > budget:
-        if not rest or rest[0].role.value != "user":
-            break
-        turns = [i for i, m in enumerate(rest) if m.role.value == "user"]
-        if len(turns) < 2:
-            break
-        del rest[0:turns[1]]
+    if rest and rest[0].role.value == "user":
+        turn_starts = [i for i, m in enumerate(rest) if m.role.value == "user"]
+        kept_turns = 0
+        while total > budget and len(turn_starts) - kept_turns >= 2:
+            next_start = turn_starts[kept_turns + 1]
+            for i in range(cut, next_start):
+                removed[i] = True
+                total -= counts[i]
+            cut = next_start
+            kept_turns += 1
 
     # Pass 2: inside the surviving turn drop the oldest tool round, never a prompt.
-    while messages_tokens(system + rest) > budget:
-        index = _first_non_user(rest)
-        if index < 0:
-            break
-        _drop_at(rest, index)
+    index = cut
+    while total > budget and index < len(rest):
+        if removed[index] or rest[index].role.value == "user":
+            index += 1
+            continue
+        end = index + 1
+        if rest[index].tool_calls:
+            while end < len(rest) and rest[end].role.value == "tool":
+                end += 1
+        for i in range(index, end):
+            removed[i] = True
+            total -= counts[i]
+        index = end
 
+    kept = [m for i, m in enumerate(rest) if not removed[i]]
     # Never start with tool results whose assistant message was trimmed away.
     # 不要以孤立的 tool 结果开头。
-    while rest and rest[0].role.value == "tool":
-        rest.pop(0)
-    return system + rest
+    while kept and kept[0].role.value == "tool":
+        kept.pop(0)
+    return system + kept

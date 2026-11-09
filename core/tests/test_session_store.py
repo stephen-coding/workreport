@@ -6,7 +6,7 @@ import time
 import unittest
 
 from agent_core.agent import store as store_module
-from agent_core.agent.session import Session, SessionManager
+from agent_core.agent.session import MAX_SESSION_MESSAGES, Session, SessionManager
 from agent_core.agent.store import SessionStore
 from agent_core.protocol import Message, Role, ToolCall
 
@@ -110,6 +110,41 @@ class TestSessionStore(unittest.TestCase):
 
         self.assertEqual(len(restored.messages), 3)
         self.assertNotEqual(restored.messages[0].role, Role.TOOL)
+
+
+class TestSessionTranscriptCap(unittest.TestCase):
+
+    def test_append_keeps_the_transcript_bounded(self):
+        # Nothing but the last turns can ever be sent, so the live list must not grow
+        # without bound: re-tokenizing it on every send is what froze long chats.
+        session = Session("hash#1")
+        for index in range(MAX_SESSION_MESSAGES):
+            session.append(Message(role=Role.USER, content="问题 %d" % index))
+            session.append(Message(role=Role.ASSISTANT, content="回答 %d" % index))
+
+        self.assertLessEqual(len(session.messages), MAX_SESSION_MESSAGES)
+        self.assertEqual(session.messages[0].role, Role.USER)
+        self.assertEqual(session.messages[-1].content,
+                         "回答 %d" % (MAX_SESSION_MESSAGES - 1))
+
+    def test_cap_never_orphans_a_tool_result(self):
+        session = Session("hash#2")
+        for index in range(MAX_SESSION_MESSAGES):
+            session.append(Message(role=Role.USER, content="u%d" % index))
+            call = ToolCall(id="c%d" % index, name="read_file", arguments={})
+            session.append(Message(role=Role.ASSISTANT, content="", tool_calls=[call]))
+            session.append(Message(role=Role.TOOL, tool_call_id=call.id,
+                                   name=call.name, content="body"))
+
+        self.assertEqual(session.messages[0].role, Role.USER)
+        pending = set()
+        for message in session.messages:
+            for call in message.tool_calls or []:
+                pending.add(call.id)
+            if message.role == Role.TOOL:
+                self.assertIn(message.tool_call_id, pending)
+                pending.discard(message.tool_call_id)
+        self.assertEqual(pending, set())
 
 
 class TestSessionManagerHistory(unittest.TestCase):

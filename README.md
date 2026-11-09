@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-2.4.7-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-2.4.8-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
@@ -32,6 +32,7 @@
 - 🧭 **每轮自检状态栏**：请求末尾追加一行由代码算出的「轮次 / 工具次数 / 重复调用 / 失败 / 已改文件」，模型不用自己数就能发现跑偏；只在末尾追加，system 前缀不变，缓存照旧命中
 - 🧰 **工具名喊错会自己改**：模型喊出不存在的工具（`bash`、`Grep` 这类）时，报错直接列出真实可用的工具名；同一个不存在的名字连喊 3 次就停下本轮，不再把 40 轮预算耗在空转上
 - 🧯 **网络断了会说清楚**：超时、连接被断开时不再只显示半截 `[错误:LLM_ERROR]`，会写明卡在哪一步（等模型输出 / 建立连接）、连的是哪个端点、接下来怎么办
+- 🐢 **聊久了不卡死**：会话再长，每次发送也只分词一遍、线性裁剪；以前每丢一轮就把整段历史重算一遍（150 轮工具 ≈ 40 秒），还同步卡住 Core 的事件循环，表现出来就是「轮次一多，换什么模型都发不出去」
 - 🔒 **隐私优先**：API Key 加密存储，数据完全可控
 - 📊 **Git 历史分析**：智能提取 Commit 记录，结构化展示
 - 🎨 **友好界面**：集成到 IDEA 工具窗口，操作简便
@@ -116,7 +117,7 @@ powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 加速，�
 | M7 | Subagent 并行池 + 3 个内置子代理 | 完成 |
 | M8 | VS Code Shell + PyInstaller 分发 + CI + 一键验证 | 完成 |
 
-验收基线：Core 单测 **161 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
+验收基线：Core 单测 **164 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
 VS Code 编译与冒烟 PASS、IntelliJ 编译通过，产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
 
 ### 版本演进（v2.0 → v2.4）
@@ -140,6 +141,7 @@ M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用
 | v2.4.5 | `72fa5db` | 新增 Agent 自检状态栏：Core 每轮在请求末尾追加 `<agent_status>`（轮次 / 工具调用次数 / 重复调用 / 失败次数与截断错误 / 已改文件），全部由代码统计，不让模型自己数；追加位置在裁剪之后、system 前缀之外。另修关闭会话标签后残留空框：标签条改为不透明并主动重排父容器，关闭当前标签后优先切到右侧邻居 |
 | v2.4.6 | `e92230c` | 三处“看起来像模型不行”的体验问题：①模型喊出不存在的工具（`bash` / `Grep` / `Read`）时，错误只写“未知工具”，它就一遍遍换名字空转——现在报错直接列出真实可用工具名，同一名字连错 **3 次即停止本轮**并告知原因；②新标签首屏提示改为明确说“不继承其它标签上下文，接着上次聊请点历史”；③「会话 N」编号改为关闭后归还、优先复用最小空号，不再一路累加 |
 | v2.4.7 | `43c3785` | 多轮对话跑到一半只冒出一截 `[错误:LLM_ERROR]`、后面空白：`httpcore` 的 `ReadTimeout` / `ReadError` / `ConnectError` **本身不带消息**，`str(exc)` 是空串，Core 又原样塞进 `chat/error`。现在传输层失败一律写明阶段（等待模型输出 / 建立连接 / 传输响应）、端点与模型，并给出「确认服务端在跑后重发继续」的处置建议；Core 兜底分支在异常无文本时改用异常类名，任何路径都不再出现半截报错 |
+| v2.4.8 | `<待回填>` | 同一会话轮次一多就“卡死”，换什么模型都发不出去：`trim_history` 每丢一轮就把整段历史重新分词（O(n²)），150 轮工具要 **40 秒**、300 轮约 3 分钟，而且它是同步跑在 Core 唯一的事件循环里——这段时间 `chat/start`、`settings/update`、心跳全部停摆。现在改为每条消息只分词一次、线性裁剪（同样 150 轮降到 0.27 秒），并给内存会话加上与落盘一致的 240 条上限（只整轮丢弃，不会留孤立工具结果） |
 
 更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
 `bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
@@ -369,8 +371,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-2.4.7.jar` - 插件 JAR
-- `workreport-ai-assistant-2.4.7.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
+- `workreport-intellij-plugin-2.4.8.jar` - 插件 JAR
+- `workreport-ai-assistant-2.4.8.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
 
 ### 运行调试
 
