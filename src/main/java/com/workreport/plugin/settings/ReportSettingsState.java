@@ -58,6 +58,11 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
     // 语义索引使用的 Embedding 模型
     public String embeddingModel = "nomic-embed-text";
 
+    // How many LLM<->tool rounds one message may take before the agent stops.
+    // Long audits (read every doc chapter, edit many files) need more than the old 15.
+    // 单条消息最多跑多少轮「模型 + 工具」：复杂审计/批量改文件远超旧的 15 轮。
+    public int maxIterations = 40;
+
     public static ReportSettingsState getInstance() {
         return ApplicationManager.getApplication().getService(ReportSettingsState.class);
     }
@@ -84,6 +89,9 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
         this.autoAcceptEdits = state.autoAcceptEdits;
         this.inlineCompletionEnabled = state.inlineCompletionEnabled;
         this.embeddingModel = state.embeddingModel != null ? state.embeddingModel : "nomic-embed-text";
+        // Older XML files have no value here (deserializes as 0) — keep the default.
+        // 旧配置文件里没有这一项（读出来是 0），保留默认值。
+        this.maxIterations = state.maxIterations > 0 ? state.maxIterations : 40;
     }
 
     // Reset privacy confirmation when API endpoint changes (require re-confirmation)

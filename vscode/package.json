@@ -84,8 +84,8 @@
         },
         "agentCoder.maxIterations": {
           "type": "number",
-          "default": 15,
-          "description": "单次任务的最大工具循环轮数"
+          "default": 40,
+          "description": "单次任务的最大迭代轮次（每轮一次模型调用 + 该轮全部工具；达到上限后回复「继续」可接着跑）"
         },
         "agentCoder.toolConcurrency": {
           "type": "number",

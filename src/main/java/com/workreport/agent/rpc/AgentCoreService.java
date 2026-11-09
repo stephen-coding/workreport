@@ -132,6 +132,9 @@ public final class AgentCoreService implements Disposable {
         settings.put("base_url", profile.baseUrl);
         settings.put("model", profile.model);
         settings.put("embedding_model", state.embeddingModel);
+        // Round budget: a doc/multi-file audit needs far more than the historical 15.
+        // 单条消息的轮次预算：文档/多文件审计远超历史上的 15 轮。
+        settings.put("max_iterations", state.maxIterations);
         String apiKey = ModelProfiles.apiKey(profile.name);
         if (apiKey != null && !apiKey.isEmpty()) {
             settings.put("api_key", apiKey);

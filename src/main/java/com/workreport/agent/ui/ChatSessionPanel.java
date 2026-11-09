@@ -128,12 +128,58 @@ public final class ChatSessionPanel extends JPanel {
         if (autoTitle != null || text == null) {
             return;
         }
-        String flat = text.replaceAll("\\s+", " ").trim();
+        String flat = shorten(text);
         if (flat.isEmpty()) {
             return;
         }
-        autoTitle = flat.length() <= 14 ? flat : flat.substring(0, 14) + "…";
+        autoTitle = flat;
         owner.onTitleChanged(this);
+    }
+
+    private static String shorten(String text) {
+        String flat = text == null ? "" : text.replaceAll("\\s+", " ").trim();
+        if (flat.isEmpty()) {
+            return "";
+        }
+        return flat.length() <= 14 ? flat : flat.substring(0, 14) + "…";
+    }
+
+    // ------------------------------------------------------------------ history
+
+    // One replayed line: the Core's history store only returns user / assistant text.
+    // 历史回放的一行：Core 的历史接口只返回用户与助手的正文，不含工具流水。
+    public static final class HistoryMessage {
+        public final boolean user;
+        public final String text;
+
+        public HistoryMessage(boolean user, String text) {
+            this.user = user;
+            this.text = text;
+        }
+    }
+
+    // Fill this session with a stored conversation; sending again continues it,
+    // because the Core keys the history by this panel's sessionId.
+    // 用 Core 里的历史记录填充本会话；之后再发送会接着这段历史继续。
+    public void applyHistory(String title, List<HistoryMessage> messages) {
+        String flat = shorten(title);
+        if (!flat.isEmpty()) {
+            autoTitle = flat;
+            owner.onTitleChanged(this);
+        }
+        if (messages == null || messages.isEmpty()) {
+            return;
+        }
+        transcript.clear();
+        for (HistoryMessage message : messages) {
+            if (message.user) {
+                transcript.addUserMessage(message.text);
+            } else {
+                transcript.appendAssistantToken(message.text);
+                transcript.finishAssistant();
+            }
+        }
+        transcript.addHint("以上为历史记录（已保存在本机），可以接着聊。");
     }
 
     // ------------------------------------------------------------------ models

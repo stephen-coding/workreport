@@ -114,6 +114,7 @@ async def run_chat(
             session.append(Message(role=Role.ASSISTANT, content=stop_text))
             return ChatResult(content=stop_text)
 
-    limit_text = "（已达到最大迭代次数 %d，任务可能未完成，可以让我继续。）" % max_iterations
+    limit_text = ("（已达到最大迭代轮次 %d，任务可能未完成，回复「继续」可接着跑。）"
+                  % max_iterations)
     session.append(Message(role=Role.ASSISTANT, content=limit_text))
     return ChatResult(content=limit_text)

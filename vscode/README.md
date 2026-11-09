@@ -31,7 +31,7 @@ npm run smoke        # boots the real Core and runs one chat round
 | `agentCoder.baseUrl` | `http://localhost:11434` | Ollama or OpenAI-compatible endpoint |
 | `agentCoder.model` | `qwen2.5:7b` | Model name |
 | `agentCoder.apiKey` | empty | Cloud API key (prefer `OPENAI_API_KEY`) |
-| `agentCoder.maxIterations` | 15 | Tool loop budget per task |
+| `agentCoder.maxIterations` | 40 | Tool loop budget per task (5~300); the Core keeps a history list that this shell does not render yet |
 | `agentCoder.toolConcurrency` | 4 | Parallel tool calls |
 | `agentCoder.subagentConcurrency` | 3 | Parallel subagents |
 | `agentCoder.autoAcceptEdits` | false | Skip the diff confirmation |

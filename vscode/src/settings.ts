@@ -28,7 +28,7 @@ export function collectSettings(): Record<string, unknown> {
     provider: detectProvider(configured, baseUrl),
     base_url: baseUrl,
     model: config.get<string>("model", "qwen2.5:7b"),
-    max_iterations: config.get<number>("maxIterations", 15),
+    max_iterations: config.get<number>("maxIterations", 40),
     tool_concurrency: config.get<number>("toolConcurrency", 4),
     subagent_concurrency: config.get<number>("subagentConcurrency", 3),
   };

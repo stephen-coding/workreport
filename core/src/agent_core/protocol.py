@@ -70,7 +70,7 @@ class ChatConfig(BaseModel):
     model: str = "qwen2.5:7b"
     temperature: float = 0.2
     max_tokens: int = 4096
-    max_iterations: int = 15
+    max_iterations: int = 40
     tool_concurrency: int = 4
     subagent_concurrency: int = 3
     embedding_model: str = "nomic-embed-text"

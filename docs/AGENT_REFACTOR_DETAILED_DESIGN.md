@@ -80,7 +80,7 @@ workreport-agent/
 ### 2.3 版本协商与心跳
 
 ```
-Core → { "method": "core/hello", "params": {"protocolVersion": "1.0", "coreVersion": "0.1.0", "capabilities": ["mcp", "subagent", "memory", "skill", "parallel-tools"]} }
+Core → { "method": "core/hello", "params": {"protocolVersion": "1.0", "coreVersion": "0.1.0", "capabilities": ["mcp", "subagent", "memory", "skill", "parallel-tools", "session-store"]} }
 IDE  → { "method": "ide/hello", "params": {"protocolVersion": "1.0", "ide": "idea|webstorm|pycharm|vscode", "tools": ["read_file", ...]} }
 心跳：Core → { "method": "agent/ping" }，IDE 回 { "id": ..., "ok": true, "result": {"pong": true} }，3s 间隔，10s 超时判死
 ```
@@ -92,6 +92,9 @@ IDE  → { "method": "ide/hello", "params": {"protocolVersion": "1.0", "ide": "i
 | IDE→Core | `chat/start` | 请求 | `{sessionId, message, contextSnapshot}` → 返回 `{taskId}` |
 | IDE→Core | `chat/cancel` | 通知 | `{taskId?}`（缺省取消全部） |
 | IDE→Core | `settings/update` | 通知 | `{settings}` |
+| IDE→Core | `session/list` | 请求 | `{}` → `{sessions: [{id, title, preview, messageCount, updatedAt}]}`（按 `updatedAt` 倒序，最多 50 条） |
+| IDE→Core | `session/get` | 请求 | `{sessionId}` → `{id, title, updatedAt, messages: [{role, content}]}`（只含 user / assistant 非空正文，供回放） |
+| IDE→Core | `session/delete` | 请求 | `{sessionId}` → `{deleted: bool}`（同时清内存与磁盘） |
 | IDE→Core | `tool/result` | 请求 | `{taskId, toolCallId, ok, result?, error?}` |
 | IDE→Core | `ui/event` | 通知 | `{taskId, event, payload}`（diff 接受/拒绝、确认结果） |
 | Core→IDE | `chat/token` | 通知 | `{taskId, delta}` |
@@ -191,7 +194,7 @@ class ContextSnapshot(BaseModel):              # Shell 传来的上下文
 class ChatConfig(BaseModel):                   # 每次 chat 生效的运行配置
     provider: Literal["openai_compat","ollama"]
     model: str; temperature: float; max_tokens: int
-    max_iterations: int = 15
+    max_iterations: int = 40                  # v2.4.0 起默认 40，设置页可调 5~300
     tool_concurrency: int = 4
     subagent_concurrency: int = 3
     permissions: PermissionsConfig
@@ -509,7 +512,7 @@ vscode/src/
   "apiKeyInPasswordSafe": true,
   "temperature": 0.2,
   "maxTokens": 8192,
-  "maxIterations": 15,
+  "maxIterations": 40,
   "toolConcurrency": 4,
   "subagentConcurrency": 3,
   "pythonPath": "",
@@ -551,7 +554,7 @@ vscode/src/
 ## 9. 错误处理与可靠性
 
 - 所有错误按 §2.5 错误码分类；工具错误首轮注入 LLM 自纠，二次失败终止并汇报
-- Core 崩溃：Shell 监听进程退出 → 自动重启 → 会话快照恢复（最近 50 条消息 + 进行中任务标记为失败）
+- Core 崩溃：Shell 监听进程退出 → 自动重启 → 会话快照按需恢复（每个任务结束时落盘到 `sessions/*.json`，保留最近 240 条消息，截断时按整轮丢弃；进行中任务标为失败）
 - 网络重试：LLM 调用指数退避 2 次，之后切 `router` 故障转移
 - 日志：Core 写数据目录 `logs/core.log`（轮转）；Shell 用 IDEA 日志系统；协议层 debug 开关脱敏记录
 
@@ -605,7 +608,7 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **98 个用例全绿**（`python -m unittest discover -s tests`）
+- Core 单测 **125 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
@@ -674,3 +677,23 @@ powershell -File scripts/build_plugin.ps1
 - 252 以下 IDE 无法加载（inline completion API 不存在）；若需兼容需单独发 LTS 包并移除 EP 与 Kotlin provider。
 - FIM 质量取决于模型：建议用 `qwen2.5-coder` / `codellama` 等支持 suffix 的模型。
 - 语义索引不解析符号引用关系（无 call graph），跨文件“找实现”靠语义相似度而非精确跳转。
+
+---
+
+## 14. v2.4.0 增量：会话落盘与历史会话
+
+### 14.1 落盘
+
+| 层 | 位置 | 说明 |
+|---|---|---|
+| Core | `agent/store.py`（`SessionStore`） | 每个会话一个 JSON：`~/.agent/data/<projectHash>/sessions/<safe-id>.json`；临时文件 + `os.replace` 原子写；`MAX_MESSAGES = 240`（整轮裁剪，不保留行首孤立 `tool`），`MAX_LIST_ITEMS = 50`，`PREVIEW_CHARS = 80` |
+| Core | `agent/session.py` | `Session.title/updated_at/touch()`；`SessionManager(store)` 在首次 `get_or_create` 时从磁盘恢复；`save/list_sessions/detail/delete` 包 try/except，落盘失败不影响聊天 |
+| Core | `rpc/server.py` | `_chat_start` 首条消息定标题并 `touch()`；`_run_task` 的 `finally` 里 `sessions.save(session)`；`session/list` / `session/get` / `session/delete`；capabilities 新增 `session-store` |
+| IntelliJ | `AgentChatPanel` | 「历史」按钮 → `JBPopup` 列表（最多 30 行，行内 `×` 删除并二确认）；打开时 `session/get` 回放；会话 id 改为 `<projectHash>#<UUID 前 8 位>`，避免新标签复用旧历史 |
+| IntelliJ | `ChatSessionPanel` | `applyHistory(title, messages)`：清空展示区后按 user/assistant 重放气泡；回放只含正文，工具事件不重放 |
+
+### 14.2 迭代预算
+
+- `ChatConfig.max_iterations` 默认 15 → 40；`loop.py` 触顶文案改为「已达到最大迭代轮次 N…回复「继续」可接着跑」
+- IntelliJ：`ReportSettingsState.maxIterations`（默认 40，`loadState` 兼容旧 XML 的 0）+ 设置页「最大迭代轮次」（5~300，越界报 `ConfigurationException`）+ `AgentCoreService.pushSettings` 下发 `max_iterations`
+- VS Code：`agentCoder.maxIterations` 默认 40，`settings.ts` 同步

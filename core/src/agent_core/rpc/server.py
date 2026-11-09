@@ -16,7 +16,8 @@ import uuid
 from typing import Any, Dict, Optional
 
 from agent_core.agent.loop import run_chat
-from agent_core.agent.session import Session, SessionManager
+from agent_core.agent.session import Session, SessionManager, make_title
+from agent_core.agent.store import SessionStore
 from agent_core.agent.subagent import SubagentLoader, SubagentService
 from agent_core.codeindex import CodeIndexService
 from agent_core.llm import build_provider
@@ -60,7 +61,7 @@ class RpcServer:
         self.data_dir = data_dir
         self.project_root = os.environ.get("AGENT_PROJECT_ROOT") or None
         self.config = ChatConfig()
-        self.sessions = SessionManager()
+        self.sessions = SessionManager(SessionStore(data_dir))
         self.tools = ToolRegistry()
         self.memory = MemoryService(self.project_root, data_dir)
         self.index = CodeIndexService(self.project_root, data_dir, lambda: self.config)
@@ -132,7 +133,7 @@ class RpcServer:
             "projectId": self.project_id,
             "capabilities": ["chat", "parallel-tools", "tokenizer", "codesoup",
                              "memory", "skill", "mcp", "subagent", "inline",
-                             "code-index"],
+                             "code-index", "session-store"],
             "native": native_info(),
         })
         LOGGER.info("agent core %s started (project=%s)", CORE_VERSION, self.project_id)
@@ -209,6 +210,13 @@ class RpcServer:
             return self._confirm_result(params)
         if method == "index/status":
             return self.index.status()
+        if method == "session/list":
+            return {"sessions": self.sessions.list_sessions()}
+        if method == "session/get":
+            return self.sessions.detail(str(params.get("sessionId") or ""))
+        if method == "session/delete":
+            deleted = self.sessions.delete(str(params.get("sessionId") or ""))
+            return {"deleted": deleted}
         raise RpcError(ErrorCode.PROTOCOL_ERROR, "unknown method: %s" % method)
 
     def _tool_result(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -317,6 +325,11 @@ class RpcServer:
             raise RpcError(ErrorCode.PROTOCOL_ERROR, "empty message")
 
         session = self.sessions.get_or_create(session_id)
+        # The first message names the conversation in the history list.
+        # 第一条消息决定会话在历史列表里的标题。
+        if not session.title:
+            session.title = make_title(user_input)
+        session.touch()
         snapshot = params.get("contextSnapshot")
         if snapshot:
             try:
@@ -408,6 +421,7 @@ class RpcServer:
             })
         finally:
             _current_task.reset(task_token)
+            self.sessions.save(session)
 
     # Forward subagent lifecycle events so the Shell can show progress.
     # 转发子代理生命周期事件，供 Shell 展示进度。

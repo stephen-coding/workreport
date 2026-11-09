@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-2.3.2-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-2.4.0-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
@@ -23,6 +23,8 @@
 - 🤖 **AI 智能润色**：支持本地 Ollama 或云端 LLM API
 - 💬 **多轮对话优化**：支持持续对话，基于上下文理解进行 iterative 优化
 - 🗂️ **多会话并行**：顶部标签页最多 8 个会话同时跑，通知按 taskId 各回各家
+- 🕘 **历史会话**：关掉标签也不丢，随时从「历史」列表重新打开接着聊；会话以 JSON 落盘在本机，重启 IDE / 重启 Core 后仍在
+- 🔁 **更大的迭代预算**：单个任务默认 40 轮（每轮一次模型调用 + 该轮全部工具），设置页可在 5~300 之间调整
 - 🔒 **隐私优先**：API Key 加密存储，数据完全可控
 - 📊 **Git 历史分析**：智能提取 Commit 记录，结构化展示
 - 🎨 **友好界面**：集成到 IDEA 工具窗口，操作简便
@@ -107,10 +109,10 @@ powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 加速，�
 | M7 | Subagent 并行池 + 3 个内置子代理 | 完成 |
 | M8 | VS Code Shell + PyInstaller 分发 + CI + 一键验证 | 完成 |
 
-验收基线：Core 单测 **117 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
+验收基线：Core 单测 **125 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
 VS Code 编译与冒烟 PASS、IntelliJ 编译通过，产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
 
-### 版本演进（v2.0 → v2.3）
+### 版本演进（v2.0 → v2.4）
 
 M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用」，逐版本对应如下（括号内为提交短哈希）：
 
@@ -123,6 +125,7 @@ M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用
 | v2.3.0 | `6605347` | 多会话并行（标签页 + 按 taskId 路由）与 `ProjectWriteGate` 写操作串行；输入区重做（4~14 行自适应 / 分隔条 / 附件 / 拖拽）；Markdown 渲染 + 左右分侧气泡；LLM 协议按端点形状自动判定，端点不支持 tools 时降级为纯对话；设置入口提升到 `Tools` 菜单 |
 | v2.3.1 | `811b7a7` | 端点拒绝 `tools` 后不再「一票否决」：改为 5 分钟假释，服务端补上 `--enable-auto-tool-choice` 后自动重新探测，无需重启 IDE；降级提示改为每个 `(端点, 模型)` 在一个 Core 进程内只出现一次 |
 | v2.3.2 | `c0bfffb` | 关闭设置页不再重建 Core：模型 / 端点 / MCP 由 `settings/update` 实时下发，只有改了 Core 路径才重建——修掉「打开一次设置页就把所有会话上下文清空」；上下文裁剪改为按「轮」整轮丢弃，不再留下孤立 `tool` 消息被端点 400 |
+| v2.4.0 | 本次 | 会话落盘：每个会话一个 JSON（`~/.agent/data/<项目哈希>/sessions/`），Core 重启后自动按需恢复；新增 `session/list` / `session/get` / `session/delete` 三个 RPC 与面板「历史」列表（回放 / 继续聊 / 删除），关标签不等于删历史；迭代预算默认 15 → **40**，IntelliJ 设置页新增「最大迭代轮次」（5~300），VS Code 的 `agentCoder.maxIterations` 同步为 40 |
 
 更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
 `bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
@@ -352,8 +355,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-2.3.2.jar` - 插件 JAR
-- `workreport-ai-assistant-2.3.2.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
+- `workreport-intellij-plugin-2.4.0.jar` - 插件 JAR
+- `workreport-ai-assistant-2.4.0.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
 
 ### 运行调试
 
@@ -369,6 +372,7 @@ powershell -File scripts/build_plugin.ps1
 
 - 流式 token 渲染、停止按钮、状态提示
 - 顶部标签页多会话（`AgentChatPanel` + `ChatSessionPanel`）：每个标签独立 sessionId/taskId，可同时运行，事件按 taskId 路由；状态栏显示在跑的任务数
+- 历史会话（`+` 右侧的「历史」按钮）：按最近更新倒序列出本机保存的会话，点开即回放（只回放用户提问与 Agent 正文，工具调用不展示），可直接接着聊；每行右侧 `×` 删除（带确认）。**关闭标签只是关掉界面，历史仍在本机**，重启 IDE / 重启 Core 后照样在
 - 左右分侧气泡流：用户消息在右、Agent 回答在左（Markdown 标题/列表/表格/代码块）
 - 输入区（`ChatComposer`）：多行自适应（4~14 行）、分隔条可拖动、附件 chip 可增删；附件正文内联进消息，路径写入 `contextSnapshot.open_files`
 - 工具事件（`chat/toolStart` / `chat/toolEnd`）与子代理事件（`chat/subagent`）以状态行展示
@@ -395,6 +399,7 @@ powershell -File scripts/build_plugin.ps1
 - 设置页维护模型列表（名称 / 类型 / 端点 / 模型），每个模型一把 API Key（PasswordSafe 按名称分开存储）
 - 输入区工具栏的 **模型** 下拉框随时切换，切换后下一条消息即用新模型，无需重启 IDE 或 Core
 - **自动执行** 勾选后写文件/删除不再弹确认，直接落盘，适合“改完直接跑”的场景（仍可用 `revert_file` 回退）
+- **最大迭代轮次**（设置页「对话与 Agent」分组，默认 40，可填 5~300）：一轮 = 一次模型调用 + 该轮派发的全部工具；用满后 Agent 会提示已达到上限，回复「继续」即可接着跑
 
 ### 5. 编辑器行内补全（Ghost text）
 

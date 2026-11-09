@@ -35,6 +35,7 @@ public final class ReportSettingsConfigurable implements Configurable {
     private JBTextField pythonField;
     private JCheckBox inlineCompletionBox;
     private JBTextField embeddingModelField;
+    private JBTextField maxIterationsField;
 
     @Nls(capitalization = Nls.Capitalization.Title)
     @Override
@@ -91,6 +92,9 @@ public final class ReportSettingsConfigurable implements Configurable {
         inlineCompletionBox = new JCheckBox("编辑器内行内补全（Ghost text：Tab 接受 / Esc 取消）");
         embeddingModelField = new JBTextField(30);
         embeddingModelField.getEmptyText().setText("nomic-embed-text（本地 Ollama 推荐）或 text-embedding-3-small");
+        maxIterationsField = new JBTextField(8);
+        maxIterationsField.getEmptyText().setText("40");
+        maxIterationsField.setToolTipText("单条消息最多跑多少轮「模型思考 + 工具执行」，范围 5~300，默认 40");
         coreExeField.getEmptyText().setText("留空自动探测：插件内置 agent-core → AGENT_CORE_EXE → core/dist");
         coreHomeField.getEmptyText().setText("回退到 Python 模式时的 core 目录，例如 D:/learn/workreport-intellij-plugin/core");
         pythonField.getEmptyText().setText("回退到 Python 模式时的解释器，例如 python；留空用 AGENT_PYTHON / PATH");
@@ -120,6 +124,11 @@ public final class ReportSettingsConfigurable implements Configurable {
                 .addComponent(new JBLabel("（语义索引使用当前端点的 embedding 接口；切换模型后首次"
                         + "检索会提示重建索引）"))
                 .addSeparator()
+                .addComponent(new JBLabel("对话与 Agent:"))
+                .addLabeledComponent(new JBLabel("最大迭代轮次:"), maxIterationsField, 1, false)
+                .addComponent(new JBLabel("（单条消息最多跑多少轮「模型思考 + 工具执行」；"
+                        + "核对多份文件/多章文档这种长任务建议 40 以上，超了会提示回复「继续」）"))
+                .addSeparator()
                 .addComponent(new JBLabel("Agent Core 运行环境（一般不需要改）:"))
                 .addLabeledComponent(new JBLabel("Core 可执行文件:"), coreExeField, 1, false)
                 .addLabeledComponent(new JBLabel("Core 目录:"), coreHomeField, 1, false)
@@ -143,7 +152,8 @@ public final class ReportSettingsConfigurable implements Configurable {
                 || !coreHomeField.getText().trim().equals(state.coreHomePath)
                 || !pythonField.getText().trim().equals(state.pythonPath)
                 || inlineCompletionBox.isSelected() != state.inlineCompletionEnabled
-                || !embeddingModelField.getText().trim().equals(state.embeddingModel);
+                || !embeddingModelField.getText().trim().equals(state.embeddingModel)
+                || !maxIterationsField.getText().trim().equals(String.valueOf(state.maxIterations));
     }
 
     @Override
@@ -188,6 +198,7 @@ public final class ReportSettingsConfigurable implements Configurable {
         state.coreHomePath = coreHomeField.getText().trim();
         state.pythonPath = pythonField.getText().trim();
         state.inlineCompletionEnabled = inlineCompletionBox.isSelected();
+        state.maxIterations = parseMaxIterations();
         state.embeddingModel = embeddingModelField.getText().trim().isEmpty()
                 ? "nomic-embed-text" : embeddingModelField.getText().trim();
     }
@@ -212,6 +223,26 @@ public final class ReportSettingsConfigurable implements Configurable {
         pythonField.setText(state.pythonPath);
         inlineCompletionBox.setSelected(state.inlineCompletionEnabled);
         embeddingModelField.setText(state.embeddingModel);
+        maxIterationsField.setText(String.valueOf(state.maxIterations));
+    }
+
+    // A typo here silently truncates every task, so out-of-range values fail loudly.
+    // 轮次上限写错会默默截断任务，因此越界直接报错而不是静默纠正。
+    private int parseMaxIterations() throws ConfigurationException {
+        String text = maxIterationsField.getText().trim();
+        if (text.isEmpty()) {
+            return 40;
+        }
+        int value;
+        try {
+            value = Integer.parseInt(text);
+        } catch (NumberFormatException e) {
+            throw new ConfigurationException("最大迭代轮次必须是数字（5~300）");
+        }
+        if (value < 5 || value > 300) {
+            throw new ConfigurationException("最大迭代轮次需在 5~300 之间，当前为 " + value);
+        }
+        return value;
     }
 
     private List<ModelProfile> collectProfiles() {

@@ -1,16 +1,23 @@
 package com.workreport.agent.ui;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
+import com.intellij.openapi.ui.popup.JBPopup;
+import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBLabel;
+import com.intellij.ui.components.JBScrollPane;
 import com.intellij.util.ui.UIUtil;
 import com.workreport.agent.rpc.AgentCoreService;
+import com.workreport.agent.rpc.JsonRpcConnection;
 import com.workreport.plugin.settings.ReportSettingsState;
 
 import javax.swing.*;
@@ -18,10 +25,18 @@ import javax.swing.border.EmptyBorder;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 // Agent chat tool window: a tab strip of parallel chat sessions.
 // Each tab owns its own Core session id and task id, so several agents can run at once;
@@ -51,6 +66,7 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
 
     private final ChatSessionPanel.Owner sessionOwner = new SessionOwner();
     private ChatSessionPanel active;
+    private JBPopup historyPopup;
     private int counter;
 
     public AgentChatPanel(Project project) {
@@ -97,9 +113,11 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
             return;
         }
         counter++;
-        // Distinct suffix on the project hash: the Core keeps one history per session id.
-        // 在项目哈希后加后缀：Core 按它隔离每个会话的历史。
-        String sessionId = coreService.sessionId() + "#" + counter;
+        // A unique suffix per tab (not a counter): a new tab must never inherit the
+        // history of an old conversation that happens to reuse the same index.
+        // 每个标签用唯一后缀而不是计数器：新标签不能意外继承旧会话的历史。
+        String sessionId = coreService.sessionId() + "#"
+                + UUID.randomUUID().toString().substring(0, 8);
         ChatSessionPanel session = new ChatSessionPanel(project, sessionId, "会话 " + counter, sessionOwner);
         sessions.put(sessionId, session);
         cards.add(session, sessionId);
@@ -149,6 +167,14 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         add.setFocusable(false);
         add.addActionListener(e -> openSession());
         tabsBar.add(add);
+
+        JButton history = new JButton("历史");
+        history.setToolTipText("历史会话：关掉标签也会保存在本机，可随时打开接着聊");
+        history.setMargin(new Insets(2, 8, 2, 8));
+        history.setFocusable(false);
+        history.addActionListener(e -> showHistory(history));
+        tabsBar.add(history);
+
         tabsBar.revalidate();
         tabsBar.repaint();
     }
@@ -161,6 +187,302 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
             }
         }
         busyLabel.setText(running <= 1 ? (running == 1 ? "1 个任务运行中" : "") : running + " 个任务并行运行中");
+    }
+
+    // ------------------------------------------------------------- history
+
+    private static final DateTimeFormatter HISTORY_TIME =
+            DateTimeFormatter.ofPattern("MM-dd HH:mm");
+    private static final int MAX_HISTORY_ROWS = 30;
+
+    // One conversation from the Core's session store, decoded from session/list.
+    // Core 会话存储里的一条历史会话（来自 session/list）。
+    private static final class HistoryEntry {
+        private final String id;
+        private final String title;
+        private final String preview;
+        private final long updatedAt;
+        private final int messageCount;
+
+        HistoryEntry(JsonObject json) {
+            this.id = string(json, "id");
+            this.title = string(json, "title");
+            this.preview = string(json, "preview");
+            this.updatedAt = json.has("updatedAt") && !json.get("updatedAt").isJsonNull()
+                    ? json.get("updatedAt").getAsLong() : 0L;
+            this.messageCount = json.has("messageCount") ? json.get("messageCount").getAsInt() : 0;
+        }
+
+        String displayTitle() {
+            return title.isBlank() ? "未命名会话" : title;
+        }
+    }
+
+    private static String string(JsonObject json, String key) {
+        return json.has(key) && !json.get(key).isJsonNull() ? json.get(key).getAsString() : "";
+    }
+
+    private static Map<String, Object> params(String key, String value) {
+        Map<String, Object> params = new HashMap<>();
+        params.put(key, value);
+        return params;
+    }
+
+    // Ask the Core for the stored conversations, then pop the list under the button.
+    // 向 Core 要历史会话列表，再在按钮下方弹出。
+    private void showHistory(Component anchor) {
+        setStatus("读取历史会话...");
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            List<HistoryEntry> entries = new ArrayList<>();
+            try {
+                JsonRpcConnection conn = coreService.connection();
+                JsonObject response = conn.request("session/list", new HashMap<>())
+                        .get(20, TimeUnit.SECONDS);
+                JsonObject result = response.has("result") && response.get("result").isJsonObject()
+                        ? response.getAsJsonObject("result") : new JsonObject();
+                JsonArray array = result.has("sessions") && result.get("sessions").isJsonArray()
+                        ? result.getAsJsonArray("sessions") : new JsonArray();
+                for (JsonElement element : array) {
+                    if (element.isJsonObject()) {
+                        entries.add(new HistoryEntry(element.getAsJsonObject()));
+                    }
+                }
+            } catch (Exception e) {
+                LOG.warn("failed to list sessions", e);
+                setStatus("读取历史会话失败：" + e.getMessage());
+                return;
+            }
+            setStatus("就绪");
+            ApplicationManager.getApplication().invokeLater(() -> showHistoryPopup(anchor, entries));
+        });
+    }
+
+    private void showHistoryPopup(Component anchor, List<HistoryEntry> entries) {
+        JPanel content = new JPanel(new BorderLayout(0, 4));
+        content.setBorder(new EmptyBorder(6, 4, 4, 4));
+
+        JBLabel header = new JBLabel(entries.isEmpty() ? "还没有历史会话" : "历史会话（保存在本机）");
+        header.setForeground(UIUtil.getContextHelpForeground());
+        header.setBorder(new EmptyBorder(0, 6, 0, 0));
+        content.add(header, BorderLayout.NORTH);
+
+        JPanel rows = new JPanel();
+        rows.setLayout(new BoxLayout(rows, BoxLayout.Y_AXIS));
+        rows.setOpaque(false);
+        if (entries.isEmpty()) {
+            rows.add(new JBLabel("发一条消息后就会出现在这里，关掉标签也不会丢。"));
+        }
+        int shown = 0;
+        for (HistoryEntry entry : entries) {
+            if (shown >= MAX_HISTORY_ROWS) {
+                break;
+            }
+            rows.add(new HistoryRow(entry));
+            shown++;
+        }
+
+        JBScrollPane scroll = new JBScrollPane(rows);
+        scroll.setBorder(BorderFactory.createEmptyBorder());
+        scroll.setPreferredSize(new Dimension(400,
+                Math.min(400, Math.max(80, entries.size() * 54 + 20))));
+        content.add(scroll, BorderLayout.CENTER);
+
+        historyPopup = JBPopupFactory.getInstance()
+                .createComponentPopupBuilder(content, null)
+                .setRequestFocus(true)
+                .setResizable(false)
+                .setMovable(false)
+                .setTitle("历史会话")
+                .createPopup();
+        historyPopup.showUnderneathOf(anchor);
+    }
+
+    private void cancelHistoryPopup() {
+        if (historyPopup != null && historyPopup.isVisible()) {
+            historyPopup.cancel();
+        }
+    }
+
+    // Reopen a stored conversation as a tab, replaying its bubbles first.
+    // 把历史会话打开成标签，先把旧气泡回放出来。
+    private void openHistory(HistoryEntry entry) {
+        cancelHistoryPopup();
+        ChatSessionPanel existing = sessions.get(entry.id);
+        if (existing != null) {
+            selectSession(existing);
+            return;
+        }
+        if (sessions.size() >= MAX_SESSIONS) {
+            setStatus("最多同时开 " + MAX_SESSIONS + " 个会话，请先关闭一个。");
+            return;
+        }
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            try {
+                JsonRpcConnection conn = coreService.connection();
+                JsonObject response = conn.request("session/get", params("sessionId", entry.id))
+                        .get(20, TimeUnit.SECONDS);
+                JsonObject result = response.has("result") && response.get("result").isJsonObject()
+                        ? response.getAsJsonObject("result") : new JsonObject();
+                String title = string(result, "title");
+                List<ChatSessionPanel.HistoryMessage> messages = parseHistoryMessages(result);
+                ApplicationManager.getApplication().invokeLater(
+                        () -> addHistoryTab(entry, title, messages));
+            } catch (Exception e) {
+                LOG.warn("failed to load session " + entry.id, e);
+                setStatus("打开历史会话失败：" + e.getMessage());
+            }
+        });
+    }
+
+    private void addHistoryTab(HistoryEntry entry, String title,
+                               List<ChatSessionPanel.HistoryMessage> messages) {
+        if (sessions.containsKey(entry.id)) {
+            selectSession(sessions.get(entry.id));
+            return;
+        }
+        ChatSessionPanel session = new ChatSessionPanel(project, entry.id,
+                entry.displayTitle(), sessionOwner);
+        session.applyHistory(title.isBlank() ? entry.displayTitle() : title, messages);
+        sessions.put(entry.id, session);
+        cards.add(session, entry.id);
+        selectSession(session);
+        setStatus("已打开历史会话：" + session.displayTitle());
+    }
+
+    private void deleteHistory(HistoryEntry entry) {
+        cancelHistoryPopup();
+        int answer = Messages.showYesNoDialog(project,
+                "删除会话「" + entry.displayTitle() + "」的历史记录？\n本机文件会一并删除，无法恢复。",
+                "删除历史会话", "删除", "取消", Messages.getWarningIcon());
+        if (answer != Messages.YES) {
+            return;
+        }
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            try {
+                JsonRpcConnection conn = coreService.connection();
+                conn.request("session/delete", params("sessionId", entry.id)).get(20, TimeUnit.SECONDS);
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    ChatSessionPanel open = sessions.get(entry.id);
+                    if (open != null) {
+                        closeSession(open);
+                    }
+                    setStatus("已删除历史会话：" + entry.displayTitle());
+                });
+            } catch (Exception e) {
+                LOG.warn("failed to delete session " + entry.id, e);
+                setStatus("删除历史会话失败：" + e.getMessage());
+            }
+        });
+    }
+
+    private static List<ChatSessionPanel.HistoryMessage> parseHistoryMessages(JsonObject result) {
+        List<ChatSessionPanel.HistoryMessage> messages = new ArrayList<>();
+        if (!result.has("messages") || !result.get("messages").isJsonArray()) {
+            return messages;
+        }
+        for (JsonElement element : result.getAsJsonArray("messages")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject message = element.getAsJsonObject();
+            String text = string(message, "content");
+            if (text.isBlank()) {
+                continue;
+            }
+            messages.add(new ChatSessionPanel.HistoryMessage(
+                    "user".equals(string(message, "role")), text));
+        }
+        return messages;
+    }
+
+    private static String formatTime(long epochMillis) {
+        if (epochMillis <= 0) {
+            return "";
+        }
+        return HISTORY_TIME.format(Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()));
+    }
+
+    // One history entry: title + time on the left, a delete cross on the right.
+    // 单条历史记录：左边标题与时间，右边删除叉。
+    private final class HistoryRow extends JPanel {
+
+        private boolean hover;
+
+        HistoryRow(HistoryEntry entry) {
+            super(new BorderLayout(6, 0));
+            setOpaque(false);
+            setBorder(new EmptyBorder(5, 8, 5, 6));
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            setMaximumSize(new Dimension(Integer.MAX_VALUE, 54));
+            setToolTipText(entry.preview.isEmpty() ? entry.displayTitle() : entry.preview);
+
+            Font base = UIUtil.getLabelFont() != null ? UIUtil.getLabelFont() : new JLabel().getFont();
+            JPanel text = new JPanel();
+            text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
+            text.setOpaque(false);
+            JLabel title = new JLabel(entry.displayTitle());
+            title.setFont(base.deriveFont(Font.BOLD));
+            JLabel meta = new JLabel(formatTime(entry.updatedAt) + " · " + entry.messageCount + " 条消息");
+            meta.setFont(base.deriveFont(base.getSize2D() - 1f));
+            meta.setForeground(UIUtil.getContextHelpForeground());
+            text.add(title);
+            text.add(meta);
+            add(text, BorderLayout.CENTER);
+
+            JLabel remove = new JLabel("×");
+            remove.setToolTipText("删除这条历史记录");
+            remove.setForeground(UIUtil.getContextHelpForeground());
+            remove.setBorder(new EmptyBorder(0, 4, 0, 2));
+            remove.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    e.consume();
+                    deleteHistory(entry);
+                }
+
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    remove.setForeground(JBColor.RED);
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    remove.setForeground(UIUtil.getContextHelpForeground());
+                }
+            });
+            add(remove, BorderLayout.EAST);
+
+            addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    openHistory(entry);
+                }
+
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    hover = true;
+                    repaint();
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    hover = false;
+                    repaint();
+                }
+            });
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            if (hover) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(new JBColor(new Color(0xEAF1FB), new Color(0x39404A)));
+                g2.fillRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 8, 8);
+                g2.dispose();
+            }
+            super.paintComponent(g);
+        }
     }
 
     // ------------------------------------------------------------- core wiring
