@@ -53,8 +53,11 @@ class MockLLMHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length).decode("utf-8"))
         ROUNDS.append(body)
-        last_role = (body.get("messages") or [{}])[-1].get("role")
-        chunks = FINAL_ROUND if last_role == "tool" else _tool_round()
+        messages = body.get("messages") or []
+        # The self-check status bar is appended as a trailing user message, so the
+        # last role is not a reliable signal — look for any tool result instead.
+        has_tool_result = any(m.get("role") == "tool" for m in messages)
+        chunks = FINAL_ROUND if has_tool_result else _tool_round()
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")

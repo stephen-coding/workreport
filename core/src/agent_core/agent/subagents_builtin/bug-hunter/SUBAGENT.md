@@ -3,6 +3,8 @@ name: bug-hunter
 description: 缺陷排查：根据现象定位根因，给出复现路径与最小修复建议
 tools: [read_file, list_dir, search_code, git_diff, git_log]
 max_iterations: 6
+output: bullets
+timeout_sec: 300
 ---
 # 指令
 

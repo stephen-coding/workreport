@@ -591,7 +591,7 @@ vscode/src/
 - **M4 编辑与记忆**：write/edit/delete + diff 确认卡 + 快照撤销 → 记忆系统（SQLite+FTS+md 文件）→ `memory_*` 工具
 - **M5 Skill 迁移**：SKILL.md 加载器 → 日报 skill 4 件套 → 旧 UI 入口切换
 - **M6 MCP**：manager + bridge + mcp.json → 设置页编辑 → 熔断重启
-- **M7 Subagent 并行**：subagent_dispatch + 池 → 内置 3 定义 → 并行验收
+- **M7 Subagent 并行**：subagent_dispatch + 池 → 内置角色定义（v2.4.9 起 4 个）→ 并行验收
 - **M8 VSCode + 分发**：VSCode Shell → PyInstaller CI → 全家桶兼容矩阵冒烟
 
 ---
@@ -619,7 +619,7 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **164 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
+- Core 单测 **173 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
 - 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
 - VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
 - IntelliJ：`mvn -q -DskipTests compile` 通过
@@ -839,3 +839,33 @@ powershell -File scripts/build_plugin.ps1
 - 复杂度：O(n) 分词 + O(n) 裁剪；同一台机器 150 轮 40.6 s → 0.27 s，300 轮约 3 min → 0.54 s
 - 语义未变：与旧算法在 400 组随机会话（不同预算、含孤立 `tool`、多工具轮）上逐条比对，结果完全一致
 - 用例（`core/tests/test_context.py`、`core/tests/test_session_store.py`，共 3 个新增）：每条消息只分词一次（调用次数上界）、长历史裁剪后仍在预算内、内存上限只整轮丢弃且不留孤立工具结果
+
+### 14.13 子代理从同构副本改为角色化派发（v2.4.9）
+
+**问题**：v2.4.0–v2.4.8 的体系已经是「1 个主代理 + N 个辅助代理」，但辅助代理是**同构副本**——同一段运行逻辑、同一套工具白名单，差异只有 `SUBAGENT.md` 的提示词、`max_iterations` 与工具子集。四个能力缺口：
+
+1. 派发维度只有「一个角色 + 多个目标」，没法一次对话里同时要审查和找 bug；
+2. 角色无法控制模型档位、输出形式与耗时上限（全继承主配置）；
+3. 主代理的 `SYSTEM_PROMPT` 硬编码在 `loop.py`，**并不知道自己可以编排谁**，只能靠 `subagent_list` 临时查；
+4. 汇总观测弱：报告只有 `taskId + ok + summary`，看不出吃了多久、跑在哪个模型。
+
+**修法**：
+
+| 位置 | 行为 |
+|---|---|
+| `SUBAGENT.md` frontmatter | 新增 `model`（留空继承主代理）、`output`（`text` / `bullets` / `json`，非法值 warn 后回落 `text`）、`timeout_sec`（下限 1 s，默认 240 s） |
+| `SubagentDefinition` | `allowed_tools()` 统一过滤：`tools` 为空时取 `DEFAULT_TOOLS`，写工具（`WRITE_TOOLS`）与 `subagent_dispatch` 一律剔除；`system_prompt()` 追加输出契约 |
+| `SUBAGENT_TOOLS` | `subagent_dispatch` 主参数改为 `tasks`（每项 `type` / `goal` / `context` / `tools`），保留 `type` + `goals` 与共享 `context` 兼容旧调用；`required` 置空、超时 900 s |
+| `SubagentService.catalog_text()` | 由加载器生成「角色清单 + 4 条委派策略」，`run_chat(subagent_catalog=…)` 拼进主代理 system prompt（`memory_overview` 之前） |
+| `_run_task` | `asyncio.wait_for` 包住单个子任务；超时返回 `ok=False` 的「子代理超时」报告，并补齐 `role` / `model` / `duration_ms` |
+| `_execute` | `config.model_copy(update={"model": task.model or base.model, …})`：角色可钉在同端点的另一个模型上，端点/密钥继续继承 |
+| `_filtered_registry` | 第三道只读护栏：注册表层再剔一次写工具与递归派发 |
+| `rpc/server.py` | `chat/start` 传入 `catalog_text()`；`chat/subagent` 事件补 `role` / `model` / `durationMs`，Shell 状态行因此能显示 `[子代理] bug-hunter-1·qwen2.5-7b 完成（12.4s）` |
+
+**为什么只读**：子代理的结论要回流给主代理汇总，如果它能自己改文件，「谁改的」就说不清，`ProjectWriteGate` 与 diff 确认也无从审计。改文件一律由主代理执行，子代理只产出结论与依据。
+
+**角色文件**：内置从 3 个扩到 4 个——`code-reviewer` / `bug-hunter`（`output: bullets`）、`test-generator`（`text`）、新增 `general` 兜底（只读工具全集，4 轮），用户在 `.agent/subagents/` 下新增角色不需要改代码，清单会自动进主代理提示词。
+
+- 缓存语义：角色目录在 Core 启动（或 `set_project_root`）时扫描并缓存，新增/修改 `SUBAGENT.md` 后需重启 IDE 或重开项目
+- 向后兼容：`_normalise_requests` 同时接受 `tasks` 与 `type` + `goals`，旧调用与旧测试照旧通过；`SubagentTask` / `SubagentReport` 新字段都有默认值
+- 用例（`core/tests/test_subagent.py`，新增 9 个）：元数据解析与非法值回落、内置角色清单含 `general`、`tasks` 混合派发与每任务 `context` 拼接、显式 `tools` 里的写工具被剔除、角色模型与轮次覆盖、超时转为失败报告、`catalog_text()` 内容、`run_chat` 注入 / 不注入两种情况

@@ -1,6 +1,6 @@
 # Agent Coding Assistant 使用手册
 
-> 适用版本：**2.4.8** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.2**（`since-build=252`）
+> 适用版本：**2.4.9** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.2**（`since-build=252`）
 >
 > 本手册面向使用者。想了解内部实现（RPC 协议、FIM 补全原理、向量检索细节），
 > 请看 [技术详情文档](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md)。
@@ -43,7 +43,7 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 | 报告生成 | 内置日报/周报/季报/年报 4 个 Skill | 对话，或菜单 `Tools` → `生成今日日报` |
 | MCP 接入 | 挂载外部 MCP 服务，工具以 `mcp__服务名__工具名` 暴露 | 设置页 MCP JSON |
 | 记忆 | 跨会话记住偏好与结论（本地 SQLite） | 对话中自动 |
-| 子代理 | code-reviewer / bug-hunter / test-generator 并行跑审查任务 | 对话中自动 |
+| 子代理 | 主代理自动把审查 / 排查 / 补测试拆给 4 个只读角色并行做（角色可自定义模型档位与输出格式） | 对话中自动 |
 
 ---
 
@@ -61,12 +61,12 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 
 ### 2.2 安装步骤
 
-1. 拿到 `workreport-ai-assistant-2.4.8.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
+1. 拿到 `workreport-ai-assistant-2.4.9.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
 2. IDEA → `Settings` → `Plugins` → ⚙️ → `Install Plugin from Disk...`
 3. 选择该 zip → `Restart IDE`
 4. 重启后底部出现 **AgentCoder** 工具窗口；菜单 `Tools` 下多出 **「模型设置…」** 与 `生成今日日报`
 
-> **升级提醒**：如果版本号没变（例如都是 2.4.8），IDEA 可能仍显示旧缓存。
+> **升级提醒**：如果版本号没变（例如都是 2.4.9），IDEA 可能仍显示旧缓存。
 > 让版本号变化（或先卸载再装）才能确保界面与代码一致。
 
 ---
@@ -82,7 +82,7 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 - Agent 面板输入区工具栏的 **「设置」** 按钮
 
 > 找不到入口时也可以按 **`Ctrl+Shift+A`**，输入 `模型设置` 直接跳转；
-> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `2.4.8` 的 zip。
+> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `2.4.9` 的 zip。
 
 ### 3.2 配置模型（必做）
 
@@ -177,7 +177,7 @@ DeepSeek（OpenAI 兼容）：
 | 状态行 | 含义 |
 |---|---|
 | `[工具] xxx 执行中...` / `[工具] 完成：…` / `失败` | 工具调用进度（Core 通知 `chat/toolStart` / `chat/toolEnd`） |
-| `[子代理] xxx 开始：…` / `完成` / `失败` | 子代理并行任务 |
+| `[子代理] xxx 开始：…` / `完成` / `失败` | 子代理并行任务（完成行带模型名与耗时） |
 | `[确认] MCP 服务 … 请求调用 …` + 弹窗 | MCP 工具调用需要你点「允许 / 拒绝」 |
 | `[错误:CODE] 说明` | Core 返回的错误（如 `LLM_ERROR`、`TOOL_TIMEOUT`）；v2.4.7 起网络类错误一定会带说明，不再出现 `[错误:LLM_ERROR]` 后面空白（见 §11.15） |
 | `[提示] …` | 非致命降级提示，例如端点不支持函数调用、已改用「文本工具调用」兼容模式（任务继续；同一端点只提示一次，5 分钟后会自动重试标准模式） |
@@ -478,9 +478,44 @@ v2.3.0 起面板顶部是一排会话标签（最多 8 个），**每个会话�
 
 **子代理**
 
-- 内置 3 个：`code-reviewer`（代码审查）、`bug-hunter`（缺陷排查）、`test-generator`（测试生成）
-- 由 `subagent_dispatch` 并行调度，每个子代理只能访问白名单工具（禁递归派生）
-- 进度以 `[子代理] …` 状态行展示
+主代理是「编排者」，子代理是「只读专家」：改文件、跑工具由主代理统一做；需要从多个角度判断时，主代理把目标拆给角色，拿回结论再汇总。
+
+| 角色 | 职责 | 默认工具 | 输出 |
+|---|---|---|---|
+| `code-reviewer` | 代码审查：逻辑缺陷、边界问题、可维护性风险 | read_file / list_dir / search_code / git_diff / git_log | bullets |
+| `bug-hunter` | 缺陷排查：现象 → 假设 → 取证 → 最小修复 | 同上 | bullets |
+| `test-generator` | 测试生成：正常 / 边界 / 异常矩阵 | read_file / list_dir / search_code | text |
+| `general` | 通用兜底：没有专门角色可用时读代码、汇总结论 | 只读工具全集 | text |
+
+- **一次混合派发（v2.4.9）**：`subagent_dispatch` 可以给 `tasks` 列表（每项 `type` + `goal`，可选 `context` / `tools`），多个角色并行跑；旧的 `type` + `goals` 用法仍然有效
+- **角色级模型档位（v2.4.9）**：`SUBAGENT.md` 写 `model: <模型名>` 就让该角色跑在同一个端点的另一个模型上（例如审查用强模型、其它用便宜模型），留空则继承主代理当前模型
+- **输出契约（v2.4.9）**：`output: text | bullets | json`；`json` 便于主代理程序化合并（字段 `summary` / `findings` / `confidence`）
+- **超时（v2.4.9）**：`timeout_sec`（默认 240 秒）到点即放弃该子任务，并在结果里写明「超时」，不会拖住整轮
+- **严格只读**：子代理的写类工具（`write_file` / `edit_file` / `delete_file` / `revert_file` 等）与递归派发在「定义解析 → 任务构建 → 注册表过滤」三处被剔除
+- **可见**：进度以 `[子代理] <任务 id>[·模型名] 开始 / 完成（耗时）` 状态行展示，最终结论以 `## 子代理结果（角色，成功 N/M）` 汇总进本轮回答
+
+**自定义角色（v2.4.9）**
+
+把自己写的 `SUBAGENT.md` 放进 `<项目>/.agent/subagents/<角色名>/`（只对本项目生效）或 `~/.agent/subagents/<角色名>/`（全局生效），同名会覆盖内置角色：
+
+```markdown
+---
+name: perf-reviewer
+description: 性能审查：找 N+1、重复 IO、无界循环
+tools: [read_file, list_dir, search_code]
+max_iterations: 5
+output: bullets
+model: qwen2.5-7b
+timeout_sec: 180
+---
+# 指令
+1. 只沿性能相关路径阅读：循环、IO、数据库访问、缓存；
+2. 每条给出位置、问题、触发规模与改法；
+3. 没发现问题时直接说“未发现”，不要凑条目。
+```
+
+主代理的提示词里会自动出现「可委派谁、何时委派」的清单与策略，**新增角色不需要改代码**；
+角色目录在 Core 启动时扫描一次并缓存，新建或修改 `SUBAGENT.md` 后需重启 IDE（或重开项目）才生效。
 
 ---
 
@@ -697,6 +732,15 @@ v2.4.7 及更早版本：同一个会话聊得越久，下一次发送前的等�
 - 老版本绕过：会话超过 50 轮就新建一个会话重述目标，否则每发一条都要重新等一遍
 - 确认是否踩到：那段时间 `idea.log` 里没有任何 `chat task` / RPC 日志输出，基本就是这个同步阻塞；升级到 2.4.8 后同一个会话会立即恢复响应
 
+### 11.17 子代理一直没被派发，或者改了角色文件不生效
+
+- **先确认主代理知不知道这些角色**：直接问「你会派发哪些子代理」，它应该能报出 `code-reviewer` / `bug-hunter` / `test-generator` / `general` 以及各自的工具与输出格式——这份清单由加载器生成并写进 system prompt，不是硬编码
+- **小任务不派发是正常的**：v2.4.9 的委派策略写明「单个文件的小改动、一步操作自己动手」，两行改动也拆出去只会更慢；想强制派发就直接点名："用 code-reviewer 审一遍 `Foo.java`"
+- **改了 `SUBAGENT.md` 没反应**：角色目录在 Core 启动时扫描并缓存，需重启 IDE（或重开项目）重新加载；文件名必须是 `SUBAGENT.md`，frontmatter 里的 `name` 才是角色名
+- **输出格式不生效**：`output` 只支持 `text` / `bullets` / `json`，写错会被忽略并回落到 `text`（Core 日志里有一条 `unknown output` 警告）
+- **想省 token / 省钱**：给角色写 `model: <小模型>`，审查类角色固定跑在小模型上，主代理仍用当前选择的模型；`timeout_sec` 调小可避免个别子任务拖长整轮
+- **子代理改不了文件是设计如此**：它只给结论与依据，写文件仍由主代理按你的「自动执行 / diff 确认」设置来做
+
 ---
 
 ## 12. 附录
@@ -718,7 +762,7 @@ v2.4.7 及更早版本：同一个会话聊得越久，下一次发送前的等�
 | `build_index` | 增量/全量重建索引 | 自动 |
 | `memory_recall` / `memory_save` / `memory_delete` | 记忆读写 | 自动 |
 | `skill_list` / `skill_load` | 查看与加载 Skill | 自动 |
-| `subagent_dispatch` / `subagent_list` | 派发与查看子代理 | 自动 |
+| `subagent_dispatch` / `subagent_list` | 派发与查看子代理（`tasks` 可一次混合多个角色；子代理只读） | 自动 |
 | `mcp__<server>__<tool>` | MCP 外部工具 | 逐次确认 |
 
 ### 12.2 文件与配置位置

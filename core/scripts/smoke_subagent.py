@@ -1,9 +1,9 @@
 """End-to-end smoke test for the subagent pool.
 
-The mock LLM answers the main chat with a ``subagent_dispatch`` tool call for two
-goals; requests whose system prompt says "子代理" are answered directly as the
-subagent's conclusion. The script then checks the event stream and the final
-answer.
+The mock LLM answers the main chat with a ``subagent_dispatch`` tool call carrying
+one ``tasks`` list with two different roles; requests whose system prompt is a
+subagent header are answered directly as that subagent's conclusion. The script
+then checks the role catalog injection, the event stream and the final answer.
 
 Usage: ``python core/scripts/smoke_subagent.py``
 """
@@ -28,6 +28,17 @@ def _sse(chunks):
     return chunks
 
 
+def _system_of(body):
+    messages = body.get("messages") or []
+    return (messages[0].get("content") or "") if messages else ""
+
+
+def _is_subagent_request(body) -> bool:
+    # The main agent's prompt also mentions 子代理 (its role catalog), so match the
+    # subagent header instead of the bare word.
+    return _system_of(body).startswith("你现在是一个独立的子代理")
+
+
 def _dispatch_round():
     return [
         {"choices": [{"delta": {"tool_calls": [{
@@ -35,8 +46,10 @@ def _dispatch_round():
             "function": {
                 "name": "subagent_dispatch",
                 "arguments": json.dumps({
-                    "type": "code-reviewer",
-                    "goals": ["审查 A 模块", "审查 B 模块"],
+                    "tasks": [
+                        {"type": "code-reviewer", "goal": "审查 A 模块"},
+                        {"type": "general", "goal": "审查 B 模块"},
+                    ],
                 }, ensure_ascii=False),
             },
         }]}}]},
@@ -56,13 +69,14 @@ class MockLLMHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length).decode("utf-8"))
         REQUESTS.append(body)
         messages = body.get("messages") or []
-        system = messages[0].get("content") or "" if messages else ""
-        last_role = (messages[-1] if messages else {}).get("role")
+        # The status bar is appended as a trailing user message, so "last role" is no
+        # longer a reliable signal — look for any tool result instead.
+        has_tool_result = any(m.get("role") == "tool" for m in messages)
 
-        if "子代理" in system:
+        if _is_subagent_request(body):
             chunks = [{"choices": [{"delta": {"content": "子代理结论：未发现严重问题。"}}]},
                       {"choices": [{"delta": {}, "finish_reason": "stop"}]}]
-        elif last_role == "tool":
+        elif has_tool_result:
             chunks = FINAL_ROUND
         else:
             chunks = _dispatch_round()
@@ -170,14 +184,24 @@ def main() -> int:
             failures.append("expected 2 subagent ends, got %d" % len(ends))
         if any(not e.get("ok") for e in ends):
             failures.append("a subagent reported failure")
+        roles = {e.get("role") for e in starts}
+        if roles != {"code-reviewer", "general"}:
+            failures.append("unexpected subagent roles: %r" % (roles,))
+        if any("durationMs" not in e for e in ends):
+            failures.append("subagent end event has no durationMs")
 
         invoke = wait_for(lambda m: m.get("method") == "tool/invoke", timeout=1)
         if invoke:
             failures.append("subagent_dispatch was forwarded to the shell: %r"
                             % (invoke.get("params", {}).get("toolName"),))
 
-        subagent_requests = [b for b in REQUESTS
-                             if "子代理" in ((b.get("messages") or [{}])[0].get("content") or "")]
+        main_requests = [b for b in REQUESTS if not _is_subagent_request(b)]
+        if not main_requests:
+            failures.append("main agent sent no request")
+        elif "可委派的子代理" not in _system_of(main_requests[0]):
+            failures.append("role catalog was not injected into the main prompt")
+
+        subagent_requests = [b for b in REQUESTS if _is_subagent_request(b)]
         if len(subagent_requests) != 2:
             failures.append("expected 2 subagent LLM requests, got %d" % len(subagent_requests))
         tool_names = set()

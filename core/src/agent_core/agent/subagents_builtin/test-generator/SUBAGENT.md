@@ -3,6 +3,8 @@ name: test-generator
 description: 测试生成：为指定代码设计覆盖正常/边界/异常路径的测试清单与用例代码
 tools: [read_file, list_dir, search_code]
 max_iterations: 5
+output: text
+timeout_sec: 300
 ---
 # 指令
 

@@ -371,16 +371,22 @@ public final class ChatSessionPanel extends JPanel {
             case "chat/subagent": {
                 String kind = params.has("kind") ? params.get("kind").getAsString() : "";
                 String subagentId = params.has("subagentId") ? params.get("subagentId").getAsString() : "?";
+                // A role may run on its own model, so show it next to the task id.
+                // 角色可能跑在独立模型上，提示里带上模型名便于核实。
+                String model = params.has("model") ? params.get("model").getAsString() : "";
+                String label = model.isEmpty() ? subagentId : subagentId + "·" + model;
                 if ("start".equals(kind)) {
                     String goal = params.has("goal") ? params.get("goal").getAsString() : "";
-                    transcript.addToolLine("[子代理] " + subagentId + " 开始：" + goal);
+                    transcript.addToolLine("[子代理] " + label + " 开始：" + goal);
                 } else if ("end".equals(kind)) {
                     boolean ok = params.has("ok") && params.get("ok").getAsBoolean();
+                    long durationMs = params.has("durationMs") ? params.get("durationMs").getAsLong() : 0L;
+                    String cost = durationMs > 0 ? String.format("（%.1fs）", durationMs / 1000.0) : "";
                     String summary = params.has("summary") ? params.get("summary").getAsString() : "";
                     if (summary.length() > 120) {
                         summary = summary.substring(0, 120) + "...";
                     }
-                    transcript.addToolLine("[子代理] " + subagentId + (ok ? " 完成" : " 失败")
+                    transcript.addToolLine("[子代理] " + label + (ok ? " 完成" : " 失败") + cost
                             + (summary.isEmpty() ? "" : "：" + summary));
                 }
                 break;

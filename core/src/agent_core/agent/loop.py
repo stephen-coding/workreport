@@ -70,6 +70,7 @@ async def run_chat(
     memory_overview: Optional[str] = None,
     skill_instruction: Optional[str] = None,
     base_prompt: Optional[str] = None,
+    subagent_catalog: Optional[str] = None,
 ) -> ChatResult:
     session.append(Message(role=Role.USER, content=user_input))
     tools = registry.defs() if registry is not None else None
@@ -79,6 +80,11 @@ async def run_chat(
     stats = TurnStats()
     unknown_tools: Counter = Counter()
     system_prompt = base_prompt or SYSTEM_PROMPT
+    # The roster is generated from the loaded SUBAGENT.md files, so adding a role
+    # never means touching this loop; the main agent just learns it can delegate.
+    # 角色清单由加载器生成后注入：主代理因此知道自己可以编排哪些专家。
+    if subagent_catalog:
+        system_prompt += "\n\n" + subagent_catalog
     if memory_overview:
         system_prompt += ("\n\n以下是项目长期记忆索引（需要某条正文时调用 memory_recall）：\n"
                           + memory_overview)

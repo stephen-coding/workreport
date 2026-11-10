@@ -426,6 +426,7 @@ class RpcServer:
                 on_notice=on_notice,
                 memory_overview=self.memory.overview_text(),
                 skill_instruction=self.skills.instruction_for(user_input, skill_name),
+                subagent_catalog=self.subagents.catalog_text(),
             )
             self._send_notification("chat/finish", {
                 "taskId": task_id,
@@ -459,11 +460,14 @@ class RpcServer:
             "taskId": _current_task.get(),
             "subagentId": task.id,
             "kind": kind,
+            "role": getattr(task, "role", "") or "",
+            "model": getattr(task, "model", "") or "",
             "goal": task.goal[:200],
         }
         if report is not None:
             payload["ok"] = report.ok
             payload["summary"] = report.summary[:300]
+            payload["durationMs"] = getattr(report, "duration_ms", 0)
         self._send_notification("chat/subagent", payload)
 
     async def _invoke_shell_tool(self, call: ToolCall) -> ToolResult:

@@ -9,6 +9,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from agent_core.agent.loop import run_chat  # noqa: E402
+from agent_core.agent.session import Session  # noqa: E402
 from agent_core.agent.subagent import (  # noqa: E402
     SubagentLoader,
     SubagentPool,
@@ -31,6 +33,19 @@ max_iterations: 3
 只输出结论。
 """
 
+SAMPLE_META = """---
+name: meta
+description: 带元数据的子代理
+tools: [read_file, write_file, subagent_dispatch]
+max_iterations: 2
+output: json
+model: tiny-model
+timeout_sec: 90
+---
+# 指令
+输出 JSON。
+"""
+
 
 class FakeProvider:
     """Records the conversation and answers with a fixed text."""
@@ -43,7 +58,8 @@ class FakeProvider:
 
     async def chat_stream(self, messages, tools, config, on_token, on_tool_call):
         self.calls.append({"messages": list(messages), "tools": list(tools or []),
-                           "max_iterations": config.max_iterations})
+                           "max_iterations": config.max_iterations,
+                           "model": config.model})
         await on_token(self.answer)
         return ChatResult(content=self.answer)
 
@@ -73,10 +89,30 @@ class TestLoader(unittest.TestCase):
         self.assertIn("只输出结论", definition.body)
         self.assertIn("demo", definition.system_prompt())
 
+    def test_parse_role_metadata(self):
+        definition = parse_definition(SAMPLE_META, "p", "builtin")
+        self.assertEqual(definition.output, "json")
+        self.assertEqual(definition.model, "tiny-model")
+        self.assertEqual(definition.timeout_sec, 90.0)
+        # 写工具与递归派发一律被剔除
+        self.assertEqual(definition.allowed_tools(), ["read_file"])
+        self.assertIn("JSON", definition.system_prompt())
+
+    def test_unknown_output_and_zero_timeout_fall_back(self):
+        text = SAMPLE.replace("max_iterations: 3",
+                              "max_iterations: 3\noutput: yaml\ntimeout_sec: 0")
+        definition = parse_definition(text, "p", "builtin")
+        self.assertEqual(definition.output, "text")
+        self.assertEqual(definition.timeout_sec, 1.0)
+
     def test_builtin_definitions_are_loaded(self):
         loader = SubagentLoader(self.project, self.global_dir)
         names = {d.name for d in loader.list_definitions()}
-        self.assertTrue({"code-reviewer", "bug-hunter", "test-generator"}.issubset(names))
+        self.assertTrue({"code-reviewer", "bug-hunter", "test-generator",
+                         "general"}.issubset(names))
+        reviewer = loader.get("code-reviewer")
+        self.assertEqual(reviewer.output, "bullets")
+        self.assertGreater(reviewer.timeout_sec, 0)
 
     def test_project_definition_overrides_builtin(self):
         self._write(os.path.join(self.project, ".agent", "subagents"), "code-reviewer",
@@ -208,6 +244,78 @@ class TestService(unittest.TestCase):
         result = asyncio.run(scenario())
         self.assertFalse(result.ok)
 
+    def test_dispatch_mixed_roles_in_one_call(self):
+        async def scenario():
+            return await self.service._dispatch_handler(ToolCall(
+                id="c1", name="subagent_dispatch",
+                arguments={"tasks": [
+                    {"type": "code-reviewer", "goal": "审 a.py"},
+                    {"type": "general", "goal": "查 b.py 的调用方",
+                     "context": "b.py 在 core/src 下"},
+                ]}))
+
+        result = asyncio.run(scenario())
+        self.assertTrue(result.ok)
+        self.assertIn("code-reviewer-1", result.content)
+        self.assertIn("general-1", result.content)
+        self.assertEqual(len(self.provider.calls), 2)
+        goals = [call["messages"][1].content for call in self.provider.calls]
+        self.assertTrue(any("背景与相关线索" in goal for goal in goals))
+
+    def test_dispatch_strips_write_tools_from_override(self):
+        async def scenario():
+            return await self.service._dispatch_handler(ToolCall(
+                id="c1", name="subagent_dispatch",
+                arguments={"tasks": [{"type": "general", "goal": "g",
+                                       "tools": ["read_file", "write_file", "git_diff"]}]}))
+
+        result = asyncio.run(scenario())
+        self.assertTrue(result.ok)
+        sent_tools = {tool.name for tool in self.provider.calls[0]["tools"]}
+        self.assertEqual(sent_tools, {"read_file", "git_diff"})
+
+    def test_role_model_and_iterations_override(self):
+        directory = os.path.join(self.tmp, ".agent", "subagents", "cheap")
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, "SUBAGENT.md"), "w", encoding="utf-8") as handle:
+            handle.write("---\nname: cheap\ndescription: 轻量角色\n"
+                         "tools: [read_file]\nmax_iterations: 2\n"
+                         "model: tiny-model\n---\n只给结论。\n")
+        self.loader.load_all(refresh=True)
+
+        async def scenario():
+            return await self.service._dispatch_handler(
+                ToolCall(id="c1", name="subagent_dispatch",
+                         arguments={"type": "cheap", "goals": ["看 a.py"]}))
+
+        result = asyncio.run(scenario())
+        self.assertTrue(result.ok)
+        self.assertEqual(self.provider.calls[0]["model"], "tiny-model")
+        self.assertEqual(self.provider.calls[0]["max_iterations"], 2)
+        self.assertIn("tiny-model", result.content)
+
+    def test_timeout_becomes_failed_report(self):
+        class SlowProvider(FakeProvider):
+            async def chat_stream(self, messages, tools, config, on_token, on_tool_call):
+                await asyncio.sleep(0.3)
+                return await super().chat_stream(messages, tools, config,
+                                                 on_token, on_tool_call)
+
+        service = SubagentService(self.loader, self.registry,
+                                  get_config=lambda: self.config,
+                                  get_provider=lambda: SlowProvider())
+        task = SubagentTask(id="slow-1", goal="g", role="general", timeout_sec=0.05)
+        report = asyncio.run(service._run_task(task))
+        self.assertFalse(report.ok)
+        self.assertIn("超时", report.summary)
+        self.assertEqual(report.role, "general")
+
+    def test_catalog_lists_roles_and_policy(self):
+        text = self.service.catalog_text()
+        self.assertIn("code-reviewer", text)
+        self.assertIn("只读", text)
+        self.assertIn("何时委派", text)
+
     def test_list_handler(self):
         async def scenario():
             return await self.service._list_handler(
@@ -215,6 +323,38 @@ class TestService(unittest.TestCase):
 
         result = asyncio.run(scenario())
         self.assertIn("code-reviewer", result.content)
+
+
+class TestCatalogInjection(unittest.TestCase):
+    def test_catalog_is_appended_to_system_prompt(self):
+        provider = FakeProvider("你好")
+        session = Session("s1")
+
+        async def emit(_delta):
+            return None
+
+        async def scenario():
+            return await run_chat(session, "hi", ChatConfig(), provider, emit,
+                                  subagent_catalog="ROSTER-ROLES")
+
+        asyncio.run(scenario())
+        system_prompt = provider.calls[0]["messages"][0].content
+        self.assertIn("ROSTER-ROLES", system_prompt)
+        self.assertIn("编码助手", system_prompt)
+
+    def test_without_catalog_prompt_is_unchanged(self):
+        provider = FakeProvider("你好")
+        session = Session("s1")
+
+        async def emit(_delta):
+            return None
+
+        async def scenario():
+            return await run_chat(session, "hi", ChatConfig(), provider, emit)
+
+        asyncio.run(scenario())
+        system_prompt = provider.calls[0]["messages"][0].content
+        self.assertNotIn("ROSTER-ROLES", system_prompt)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@ name: code-reviewer
 description: 代码审查：找逻辑缺陷、边界问题、可维护性风险，按严重度给出可执行建议
 tools: [read_file, list_dir, search_code, git_diff, git_log]
 max_iterations: 6
+output: bullets
+timeout_sec: 240
 ---
 # 指令
 

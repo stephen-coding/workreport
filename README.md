@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 · 基于 Git 历史记录生成 AI 润色的工作报告**
 
-[![Version](https://img.shields.io/badge/version-2.4.8-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-2.4.9-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![Java](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
@@ -33,6 +33,7 @@
 - 🧰 **工具名喊错会自己改**：模型喊出不存在的工具（`bash`、`Grep` 这类）时，报错直接列出真实可用的工具名；同一个不存在的名字连喊 3 次就停下本轮，不再把 40 轮预算耗在空转上
 - 🧯 **网络断了会说清楚**：超时、连接被断开时不再只显示半截 `[错误:LLM_ERROR]`，会写明卡在哪一步（等模型输出 / 建立连接）、连的是哪个端点、接下来怎么办
 - 🐢 **聊久了不卡死**：会话再长，每次发送也只分词一遍、线性裁剪；以前每丢一轮就把整段历史重算一遍（150 轮工具 ≈ 40 秒），还同步卡住 Core 的事件循环，表现出来就是「轮次一多，换什么模型都发不出去」
+- 🎯 **主代理 + 多个专家子代理**：主代理的提示词里直接列出「可委派谁、什么时候委派」；一次调用可混合多个角色（`tasks` 列表），每个角色自带模型档位、输出契约（`text` / `bullets` / `json`）与墙钟超时；子代理一律只读，改文件仍由主代理统一执行
 - 🔒 **隐私优先**：API Key 加密存储，数据完全可控
 - 📊 **Git 历史分析**：智能提取 Commit 记录，结构化展示
 - 🎨 **友好界面**：集成到 IDEA 工具窗口，操作简便
@@ -69,7 +70,7 @@ VS Code 扩展 (TS)     ─┘                              ├─ LLM: OpenAI �
                                                        ├─ 记忆：SQLite FTS5 + Markdown 镜像
                                                        ├─ Skill：SKILL.md（日报/周报/季报/年报已迁移）
                                                        ├─ MCP：stdio / HTTP 客户端 + 工具桥接
-                                                       └─ Subagent：并行池 + 内置 code-reviewer 等
+                                                       └─ Subagent：主代理编排的角色化并行池（只读）
 ```
 
 - Core 只负责思考与调度，**不直接写用户文件**；文件/终端/Git 由 Shell 执行。
@@ -114,10 +115,10 @@ powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 加速，�
 | M4 | 编辑 diff 确认 + 快照回退 + 记忆系统 | 完成 |
 | M5 | Skill 系统 + 日报/周报/月报/季报/年报迁移 | 完成 |
 | M6 | MCP 集成（stdio / HTTP）+ 设置页配置 + confirm 通道 | 完成 |
-| M7 | Subagent 并行池 + 3 个内置子代理 | 完成 |
+| M7 | Subagent 并行池 + 角色化派发（内置 code-reviewer / bug-hunter / test-generator / general，只读） | 完成 |
 | M8 | VS Code Shell + PyInstaller 分发 + CI + 一键验证 | 完成 |
 
-验收基线：Core 单测 **164 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
+验收基线：Core 单测 **173 用例全绿**（跳过 1 个平台相关用例，单轮约 80 s）、4 个协议冒烟 PASS、
 VS Code 编译与冒烟 PASS、IntelliJ 编译通过，产物与验收细节见 [详设 §12](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
 
 ### 版本演进（v2.0 → v2.4）
@@ -142,6 +143,7 @@ M1–M8 解决的是「能跑通」，之后的提交把它推到「日常可用
 | v2.4.6 | `e92230c` | 三处“看起来像模型不行”的体验问题：①模型喊出不存在的工具（`bash` / `Grep` / `Read`）时，错误只写“未知工具”，它就一遍遍换名字空转——现在报错直接列出真实可用工具名，同一名字连错 **3 次即停止本轮**并告知原因；②新标签首屏提示改为明确说“不继承其它标签上下文，接着上次聊请点历史”；③「会话 N」编号改为关闭后归还、优先复用最小空号，不再一路累加 |
 | v2.4.7 | `43c3785` | 多轮对话跑到一半只冒出一截 `[错误:LLM_ERROR]`、后面空白：`httpcore` 的 `ReadTimeout` / `ReadError` / `ConnectError` **本身不带消息**，`str(exc)` 是空串，Core 又原样塞进 `chat/error`。现在传输层失败一律写明阶段（等待模型输出 / 建立连接 / 传输响应）、端点与模型，并给出「确认服务端在跑后重发继续」的处置建议；Core 兜底分支在异常无文本时改用异常类名，任何路径都不再出现半截报错 |
 | v2.4.8 | `9fb339e` | 同一会话轮次一多就“卡死”，换什么模型都发不出去：`trim_history` 每丢一轮就把整段历史重新分词（O(n²)），150 轮工具要 **40 秒**、300 轮约 3 分钟，而且它是同步跑在 Core 唯一的事件循环里——这段时间 `chat/start`、`settings/update`、心跳全部停摆。现在改为每条消息只分词一次、线性裁剪（同样 150 轮降到 0.27 秒），并给内存会话加上与落盘一致的 240 条上限（只整轮丢弃，不会留孤立工具结果） |
+| v2.4.9 | `<待回填>` | 子代理从“同构副本”改成“主代理 + 专家角色”：`SUBAGENT.md` 新增 `model` / `output` / `timeout_sec`，一个角色可以只跑在便宜模型上、按要求回 `bullets` 或 `json`、超时自动跳过；`subagent_dispatch` 支持 `tasks` 列表一次混合派发多个角色（旧 `type` + `goals` 照旧可用）；加载器生成的角色清单与委派策略注入主代理 system prompt，新增角色文件不需要改代码；写工具与递归派发在三层剔除，子代理恒为只读 |
 
 更早的 Agent Core 从零落地（即 M1–M8 对应的实现）集中在 `a49411f` ~ `47eafe6` 这一串提交，
 `bf89f58` 则是重构前最后一个 JetBrains CDN 下载修复。
@@ -371,8 +373,8 @@ powershell -File scripts/build_plugin.ps1
 ```
 
 构建产物位于 `target/` 目录：
-- `workreport-intellij-plugin-2.4.8.jar` - 插件 JAR
-- `workreport-ai-assistant-2.4.8.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
+- `workreport-intellij-plugin-2.4.9.jar` - 插件 JAR
+- `workreport-ai-assistant-2.4.9.zip` - 可安装的 ZIP 包（内置 `agent-core/agent-core.exe`，约 30.5 MB）
 
 ### 运行调试
 
@@ -391,7 +393,7 @@ powershell -File scripts/build_plugin.ps1
 - 历史会话（`+` 右侧的「历史」按钮）：按最近更新倒序列出本机保存的会话，点开即回放（只回放用户提问与 Agent 正文，工具调用不展示），可直接接着聊；每行右侧 `×` 删除（带确认），**删除会先取消该会话在跑的任务、再清掉 JSON 与临时残留，并在状态行显示释放了多少磁盘**。**关闭标签只是关掉界面，历史仍在本机**，重启 IDE / 重启 Core 后照样在
 - 左右分侧气泡流：用户消息在右、Agent 回答在左（Markdown 标题/列表/表格/代码块）
 - 输入区（`ChatComposer`）：多行自适应（4~14 行）、分隔条可拖动、附件 chip 可增删；附件正文内联进消息，路径写入 `contextSnapshot.open_files`
-- 工具事件（`chat/toolStart` / `chat/toolEnd`）与子代理事件（`chat/subagent`）以状态行展示
+- 工具事件（`chat/toolStart` / `chat/toolEnd`）与子代理事件（`chat/subagent`）以状态行展示；子代理行会带任务 id、模型名与耗时，例如 `[子代理] bug-hunter-1·qwen2.5-7b 完成（12.4s）`
 - 工具在 Core 侧并行调度，界面按事件到达顺序追加
 - 写类工具（`write_file` / `edit_file` / `delete_file` / `revert_file`）经 `ProjectWriteGate` 项目级排队，避免并行会话互相覆盖、多个 diff 弹窗撞车
 
@@ -405,7 +407,7 @@ powershell -File scripts/build_plugin.ps1
 - 记忆：SQLite FTS5 检索 + Markdown 镜像，启动时注入 overview
 - Skill：`SKILL.md` 内置日报/周报/月报/季报/年报，按场景自动匹配
 - MCP：stdio / HTTP 服务器接入，工具以 `mcp__server__tool` 暴露，支持设置页 JSON 配置
-- Subagent：`code-reviewer` / `bug-hunter` / `test-generator` 并行子代理，工具白名单隔离
+- Subagent：主代理按需派发 `code-reviewer` / `bug-hunter` / `test-generator` / `general` 四个只读角色，支持 `tasks` 混合派发、角色级模型档位、输出契约（`text` / `bullets` / `json`）与超时；角色清单由加载器生成并注入主代理提示词，工具白名单三层过滤（写工具、递归派发一律剔除）
 
 ### 4. 多模型切换与自动执行
 

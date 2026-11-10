@@ -146,12 +146,17 @@ export class CoreSession {
       }
       case "chat/subagent": {
         const id = String(params.subagentId ?? "?");
+        // A role may run on its own model, so show it next to the task id.
+        const model = String(params.model ?? "");
+        const label = model ? `${id}·${model}` : id;
         if (params.kind === "start") {
-          this.panel.appendSystem(`\n  [子代理] ${id} 开始：${String(params.goal ?? "")}`);
+          this.panel.appendSystem(`\n  [子代理] ${label} 开始：${String(params.goal ?? "")}`);
         } else if (params.kind === "end") {
           const ok = params.ok === true;
+          const ms = Number(params.durationMs ?? 0);
+          const cost = ms > 0 ? `（${(ms / 1000).toFixed(1)}s）` : "";
           const summary = String(params.summary ?? "").slice(0, 120);
-          this.panel.appendSystem(`  [子代理] ${id} ${ok ? "完成" : "失败"}${summary ? `：${summary}` : ""}`);
+          this.panel.appendSystem(`  [子代理] ${label} ${ok ? "完成" : "失败"}${cost}${summary ? `：${summary}` : ""}`);
         }
         break;
       }
