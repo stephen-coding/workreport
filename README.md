@@ -48,7 +48,7 @@
 |---|---|
 | [USER_GUIDE.md](USER_GUIDE.md) | 面向使用者的完整手册：术语、安装、首次配置、面板与状态行、行内补全、语义索引、报告 Skill、MCP、FAQ |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | IntelliJ 版本号规则、兼容区间调整与多版本测试方法 |
-| [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md) | 模块职责、数据流转、扩展点注册、打包分发与关键设计决策 |
+| [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md) | 重构前「日报生成器」的实现（模块职责、数据流转、扩展点、打包与设计决策），保留作历史参考；当前 Agent 架构见上面两行 |
 | [TECHNICAL_ARCHITECTURE.md](TECHNICAL_ARCHITECTURE.md) | 早期架构的实现说明（UI / Git 采集 / AI 润色服务），保留作为历史参考 |
 | [docs/AGENT_REFACTOR_DETAILED_DESIGN.md](docs/AGENT_REFACTOR_DETAILED_DESIGN.md) | Agent 重构详设与 M1–M8 逐项验收 |
 | [docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md) | 行内补全全链路（FIM 报文 / sanitize / 超时降级）与语义索引原理、调试手册 |

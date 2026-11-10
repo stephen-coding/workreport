@@ -5,6 +5,12 @@ Lines RPC protocol as the IntelliJ plugin, so editing, tools, memory, skills,
 MCP servers and subagents all run in the Core while this extension only performs
 IDE-side actions (file IO, git CLI, diffs, terminals).
 
+Subagents are **read-only roles** owned by the Core: a role may pin its own model,
+declare an output contract (`text` / `bullets` / `json`) and a wall-clock timeout,
+and the Core injects the role catalog into the main agent's prompt — adding a
+`SUBAGENT.md` needs no shell change. Progress lines show role, model and duration,
+e.g. `[子代理] bug-hunter-1·qwen2.5-7b 完成（12.4s）`.
+
 ## Requirements
 
 - Python 3.9+ (or a packaged `agent-core` executable, see below)
@@ -33,7 +39,7 @@ npm run smoke        # boots the real Core and runs one chat round
 | `agentCoder.apiKey` | empty | Cloud API key (prefer `OPENAI_API_KEY`) |
 | `agentCoder.maxIterations` | 40 | Tool loop budget per task (5~300); the Core keeps a history list that this shell does not render yet |
 | `agentCoder.toolConcurrency` | 4 | Parallel tool calls |
-| `agentCoder.subagentConcurrency` | 3 | Parallel subagents |
+| `agentCoder.subagentConcurrency` | 3 | Parallel read-only subagents (role-based dispatch) |
 | `agentCoder.autoAcceptEdits` | false | Skip the diff confirmation |
 | `agentCoder.mcpServers` | `[]` | MCP servers (array or name map) |
 

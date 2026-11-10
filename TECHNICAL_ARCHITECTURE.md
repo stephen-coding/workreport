@@ -1,5 +1,9 @@
 # Work Report AI Assistant - 技术架构文档
 
+> **历史文档**：本文件描述的是 v2.0 重构前「日报生成器」的分层实现（UI / Git 采集 / AI 润色服务），
+> 保留用于对照。当前架构（Core / Shell 分离、工具循环、记忆 / Skill / MCP / 子代理）见
+> [README](README.md) 与 [docs/AGENT_REFACTOR_DETAILED_DESIGN.md](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
+
 ## 📚 目录
 
 1. [项目概述](#项目概述)

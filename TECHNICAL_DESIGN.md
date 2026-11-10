@@ -1,5 +1,10 @@
 # Work Report AI Assistant - 技术实现文档
 
+> **历史文档**：本文件描述的是 v2.0 重构前「日报生成器」的实现（`ReportToolWindowPanel` +
+> `ReportPolishService` 时代），保留用于对照。当前架构（Core / Shell 分离、工具循环、
+> 记忆 / Skill / MCP / 子代理）见 [README](README.md) 与
+> [docs/AGENT_REFACTOR_DETAILED_DESIGN.md](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)。
+
 ## 项目概述
 
 Work Report AI Assistant 是一款基于 IntelliJ Platform SDK 开发的 IDEA 插件。其核心思路是：通过调用 git4idea 插件提供的 Git API 采集项目提交历史，将其结构化后生成报告草稿，再通过 OkHttp 调用本地或云端 LLM API 进行 AI 润色，最终以流式打字机效果实时呈现结果。
