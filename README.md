@@ -81,7 +81,7 @@ Shell 与 Core 通过 **JSON Lines RPC（stdio）** 通信：Shell 发请求，C
 **职责边界**（改动代码前请先确认自己站在哪一侧）：
 
 1. **Core 只思考与调度**，不写用户文件；`write_file` / `edit_file` / `delete_file` / `revert_file` 一律 `remote=True`，交给 Shell。
-2. **Shell 只做 IDE 侧动作**：文件 IO、Git、diff 确认、行内补全（终端执行工具仍在路线图中，见 [3.0 路线 §5.1](docs/ROADMAP_TO_3.0.md)）。Shell 不实现 Agent 策略。
+2. **Shell 只做 IDE 侧动作**：文件 IO、Git、diff 确认、终端命令执行、行内补全。Shell 不实现 Agent 策略——终端命令是否弹窗由 Core 判定（白名单免确认、危险命令直接拒绝，见 [3.0 路线 §5.1](docs/ROADMAP_TO_3.0.md)）。
 3. **协议是唯一契约**：新增能力要么加 RPC 方法/通知，要么加工具定义；不在两侧各写一份逻辑（`vscode/src/settings.ts` 复刻的协议判定是唯一例外，用于发送前的即时校验）。
 
 ### RPC 一览

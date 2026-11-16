@@ -516,7 +516,7 @@ ToolDef(
 |---|---|---|
 | `chat/finish` | `usageTotal` | 2.5.0 |
 | `tool/invoke` | `permission` 语义改为“本次生效值” | 2.6.0 |
-| `core/hello` | `version` | 2.4.10 |
+| `core/hello` | `coreVersion` 自动跟随包版本（字段原本已存在） | 2.4.10 |
 | `session/get` | `todos` | 2.6.0 |
 | CLI | `--version`、`--log-file`、`--no-log-file` | 2.4.10 / 2.5.0 |
 
@@ -586,29 +586,29 @@ ToolDef(
 
 ### v2.4.10
 
-- [ ] `ci.yml` 触发分支改为 `[develop, master]`
-- [ ] GitHub About 更新（Description + Topics）
-- [ ] `agent_core.__version__` 支持环境变量注入
-- [ ] `--version` 参数与 `core/hello.version`
-- [ ] `build_core.ps1` 注入版本
-- [ ] README 终端表述与 `__init__.py` 文档字符串修正
+- [x] `ci.yml` 触发分支改为 `[develop, master]`
+- [ ] GitHub About 更新（Description + Topics，仓库设置页手动）
+- [x] `agent_core.__version__` 支持环境变量注入
+- [x] `--version` 参数与 `core/hello.coreVersion`
+- [x] `build_core.ps1` 注入版本
+- [x] README 终端表述与 `__init__.py` 文档字符串修正
 - [ ] 三分支 push（维护者手动）
 
 ### v2.5.0
 
-- [ ] `ChatConfig.context_window` + `budget_for` + 调用点
-- [ ] `usage_total` 聚合与 `usageTotal` 事件
-- [ ] 两端用量展示
-- [ ] 重试退避 + 错误文案
-- [ ] 日志文件与轮转
-- [ ] 设置页四项 + 双端下发对齐
-- [ ] `test_context` / `test_streaming` / `test_transport_errors` 补充用例
+- [x] `ChatConfig.context_window` + `budget_for` + 调用点
+- [x] `usage_total` 聚合与 `usageTotal` 事件
+- [x] 两端用量展示
+- [x] 重试退避 + 错误文案
+- [x] 日志文件与轮转
+- [x] 设置页四项 + 双端下发对齐
+- [x] `test_context` / `test_streaming` / `test_transport_errors` 补充用例
 
 ### v2.6.0
 
-- [ ] `run_command` 定义 + 权限判定 + 两端实现
-- [ ] 危险命令单测 + 白名单单测
-- [ ] `smoke_command.py`
+- [x] `run_command` 定义 + 权限判定 + 两端实现
+- [x] 危险命令单测 + 白名单单测
+- [x] `smoke_command.py`
 - [ ] `diagnostics` 两端实现
 - [ ] `todo_write` + `chat/todos` + 会话落盘 + 两端 UI
 - [ ] `SYSTEM_PROMPT` 计划条目
