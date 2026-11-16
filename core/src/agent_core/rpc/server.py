@@ -13,8 +13,9 @@ import os
 import sys
 import threading
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
+from agent_core.agent import todos as todo_tools
 from agent_core.agent.commands import decide as decide_command
 from agent_core.agent.loop import run_chat
 from agent_core.agent.session import Session, SessionManager, make_title
@@ -86,6 +87,7 @@ class RpcServer:
         self._out_lock = threading.Lock()
         self._closing = False
         self._register_shell_tools()
+        todo_tools.register_tools(self.tools, self._publish_todos)
         self.memory.register_tools(self.tools)
         self.index.register_tools(self.tools)
         self.skills.register_tools(self.tools)
@@ -394,6 +396,9 @@ class RpcServer:
                         skill_name: str = "") -> None:
         provider = build_provider(self.config)
         task_token = _current_task.set(task_id)
+        # todo_write writes into the session of the running chat.
+        # todo_write 写入当前会话的清单，任务结束随会话落盘。
+        todo_token = todo_tools.bind_session(session)
 
         async def emit_token(delta: str) -> None:
             self._send_notification("chat/token", {"taskId": task_id, "delta": delta})
@@ -452,8 +457,16 @@ class RpcServer:
                 "error": {"code": ErrorCode.LLM_ERROR, "message": _error_text(exc)},
             })
         finally:
+            todo_tools.reset_session(todo_token)
             _current_task.reset(task_token)
             self.sessions.save(session)
+
+    def _publish_todos(self, todos: List[Dict[str, str]]) -> None:
+        """Push the checklist to the Shell after every todo_write."""
+        self._send_notification("chat/todos", {
+            "taskId": _current_task.get(),
+            "todos": todos,
+        })
 
     # Forward subagent lifecycle events so the Shell can show progress.
     # 转发子代理生命周期事件，供 Shell 展示进度。

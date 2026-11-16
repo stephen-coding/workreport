@@ -52,6 +52,9 @@ class Session:
         self.session_id = session_id
         self.messages: List[Message] = []
         self.last_context: Optional[ContextSnapshot] = None
+        # Checklist written by todo_write; persisted with the conversation.
+        # todo_write 写入的任务清单，随会话一起落盘。
+        self.todos: List[Dict[str, Any]] = []
         # Title and updated_at are what the history list shows.
         self.title: str = ""
         self.updated_at: int = 0
@@ -163,6 +166,7 @@ class SessionManager:
             "title": session.title or make_title(_first_user_text(session.messages)),
             "updatedAt": session.updated_at,
             "messages": display_messages(session.messages),
+            "todos": list(session.todos),
         }
 
     def delete(self, session_id: str) -> int:

@@ -16,11 +16,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent_core.agent.session import Session, make_title
+from agent_core.agent.todos import normalize_todos
 from agent_core.protocol import Message, Role, ToolCall
 
 LOGGER = logging.getLogger(__name__)
 
-STORE_VERSION = 1
+# v2 adds the task checklist; older files simply have no ``todos`` key.
+# v2 增加任务清单字段；旧文件没有 todos，读出来就是空列表。
+STORE_VERSION = 2
 # Newest messages kept on disk: enough to resume a long conversation, small enough
 # that the file stays a few hundred KB.  Trimming keeps whole rounds (see save()).
 MAX_MESSAGES = 240
@@ -83,6 +86,7 @@ class SessionStore:
         session = Session(session_id)
         session.title = str(data.get("title") or "")
         session.updated_at = int(data.get("updatedAt") or 0)
+        session.todos = normalize_todos(data.get("todos"))
         for raw in data.get("messages") or []:
             message = _decode(raw)
             if message is not None:
@@ -102,6 +106,7 @@ class SessionStore:
             "title": session.title or make_title(_first_user_text(session.messages)),
             "updatedAt": session.updated_at or int(time.time() * 1000),
             "messages": [_encode(message) for message in messages],
+            "todos": session.todos,
         }
         path = self._path(session.session_id)
         tmp = path.with_name(path.name + ".tmp")
