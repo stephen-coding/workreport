@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 + VS Code 扩展 · 由语言无关的 Python Agent Core 驱动**
 
-[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-3.1.0-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![JDK](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
@@ -35,7 +35,7 @@ Shell 与 Core 通过 **JSON Lines RPC（stdio）** 通信：Shell 发请求，C
 
 | 能力 | 说明 | 主要实现 |
 |---|---|---|
-| 流式对话 | token 流式渲染、停止、错误分级；用户消息右侧、Agent 正文左侧，Markdown 渲染 | `ChatTranscript` / `MarkdownRenderer` / `rpc/server.py` |
+| 流式对话 | token 流式渲染、停止、错误分级；用户消息右侧、Agent 正文左侧，Markdown 按块原生绘制（不再经过 HTML 编辑器） | `ChatView` / `ui/markdown/` / `rpc/server.py` |
 | 工具循环 | 一轮 = 一次模型调用 + 该轮全部工具；默认预算 40 轮（5~300 可调） | `agent/loop.py` |
 | 并行会话 | 最多 8 个标签各自独立 `sessionId` / `taskId`，事件按 `taskId` 路由；写操作在项目级串行 | `AgentChatPanel` / `ProjectWriteGate` |
 | 会话持久化 | 每个会话一个 JSON，Core 重启后按需恢复；历史列表可回放、续聊、删除并回收磁盘 | `agent/store.py` / `session/*` RPC |
@@ -88,9 +88,9 @@ Shell 与 Core 通过 **JSON Lines RPC（stdio）** 通信：Shell 发请求，C
 
 | 方向 | 消息 | 方法 |
 |---|---|---|
-| Shell → Core | 请求 | `ping`、`chat/start`、`tool/result`、`agent/confirmResult`、`inline/complete`、`index/build`、`index/status`、`session/list`、`session/get`、`session/delete` |
-| Shell → Core | 通知 | `ide/hello`（握手：协议版本 + IDE 类型）、`settings/update`（模型/端点/MCP 变更即时下发）、`chat/cancel` |
-| Core → Shell | 通知 | `core/hello`、`agent/ping`、`chat/token`、`chat/toolStart`、`chat/toolEnd`、`chat/notice`、`chat/subagent`、`chat/todos`、`chat/finish`、`chat/error`、`index/progress`、`tool/invoke`（Core 请求 Shell 执行工具）、`agent/confirm`（弹确认） |
+| Shell → Core | 请求 | `ping`、`chat/start`、`tool/result`、`agent/confirmResult`、`ask/userAnswer`、`inline/complete`、`index/build`、`index/status`、`session/list`、`session/get`、`session/delete` |
+| Shell → Core | 通知 | `ide/hello`（握手：协议版本 + IDE 类型 + capabilities）、`settings/update`（模型/端点/MCP 变更即时下发）、`chat/cancel` |
+| Core → Shell | 通知 | `core/hello`、`agent/ping`、`chat/token`、`chat/toolStart`、`chat/toolEnd`、`chat/notice`、`chat/subagent`、`chat/todos`、`chat/finish`、`chat/error`、`index/progress`、`tool/invoke`（Core 请求 Shell 执行工具）、`agent/confirm`（弹确认）、`ask/user`（模型提问）/ `ask/withdraw`（撤题） |
 
 帧格式是一行一个 JSON 对象：请求 `{id, method, params, ts}`，响应 `{id, ok, result}` 或
 `{id, ok, error:{code, message}}`；通知省略 `id`。项目根随 `chat/start` 的 `contextSnapshot.projectRoot`
@@ -117,13 +117,13 @@ workreport-intellij-plugin/
 │   │   ├── rpc/server.py                  # JSON Lines 服务端（方法分发 + 事件推送）
 │   │   └── protocol.py                    # 数据模型 / 信封 / 错误码
 │   ├── native/                            # Rust 扩展源码（pyo3 abi3 + tiktoken + tree-sitter）
-│   ├── tests/                             # unittest 套件（173 例）
-│   ├── scripts/                           # 4 个协议冒烟
+│   ├── tests/                             # unittest 套件（258 例）
+│   ├── scripts/                           # 8 个协议冒烟
 │   └── packaging/agent-core.spec          # PyInstaller 配置
 ├── src/main/java/com/workreport/
 │   ├── agent/rpc/                         # CoreProcess / JsonRpcConnection / AgentCoreService / PythonLocator
 │   ├── agent/tools/                       # File / Edit / Search / Git 工具 + 快照 + 写锁
-│   ├── agent/ui/                          # 工具窗口 / 多会话标签 / 输入区 / 气泡 / Markdown / diff 卡
+│   ├── agent/ui/                          # 工具窗口 / 会话标签条 / 输入区 / 设计令牌 / 块渲染 / 弹窗
 │   ├── agent/inline/                      # 行内补全客户端
 │   └── plugin/                            # 模型列表设置页（settings/）+ 旧报告服务（legacy，未注册窗口）
 ├── src/main/kotlin/com/workreport/agent/inline/   # 平台 inline completion provider 实现
@@ -189,14 +189,14 @@ npx @vscode/vsce package && code --install-extension agent-coder-0.1.0.vsix
 ### 4) 一键验证
 
 ```powershell
-powershell -File scripts/verify_all.ps1             # 单测 + 4 个协议冒烟 + Java 编译 + TS 编译/冒烟
+powershell -File scripts/verify_all.ps1             # 单测 + 8 个协议冒烟 + Java 编译 + TS 编译/冒烟
 powershell -File scripts/verify_all.ps1 -SkipJava   # 仅 Core 与 VS Code
 powershell -File scripts/verify_all.ps1 -SkipNode   # 仅 Core 与 IntelliJ
 powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 扩展，并强制断言后端为 rust
 ```
 
 冒烟脚本（`core/scripts/smoke_*.py`）不依赖真实模型：它们在本地起一个模拟 OpenAI 兼容端点，
-按协议跑通工具调用、记忆、MCP、子代理四条链路。改动协议层时优先跑它们。
+按协议跑通工具调用、记忆、MCP、子代理、终端命令、任务清单、v3 会话与模型提问八条链路。改动协议层时优先跑它们。
 
 ---
 
@@ -208,13 +208,14 @@ powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 扩展，�
 - 输入区支持多行（`Enter` 发送 / `Shift+Enter` 换行）、拖动分隔条调高、附件内联文本、模型下拉、自动执行与停止。
 - 工具与子代理进度以状态行插入对话流：`[工具] read_file 执行中…`、`[子代理] bug-hunter-1·qwen2.5-7b 完成（12.4s）`、`[提示] …`（非致命降级）、`[排队] …`（写操作排队）。
 - 多步任务会在对话区上方显示任务清单（模型经 `todo_write` 维护，`☐ / ◐ / ☑`），全部完成后自动折叠；清单随会话落盘，重开历史仍能看到。
+- 模型缺信息时经 `ask_user` 在对话区插一张提问卡（1~3 题、单选/多选 + 自定义答案），阻塞等作答后继续；跳过或界面不可用时带假设继续并标注假设。
 - 「历史」按钮列出本机保存的会话；关闭标签不等于删除历史，删除时才取消在跑任务并回收磁盘。
 
 ### 权限与编辑
 
 | 权限 | 工具 | 行为 |
 |---|---|---|
-| `auto` | `read_file`、`list_dir`、`search_code`、`git_log`、`git_diff`、`revert_file`、`diagnostics`、`todo_write`、白名单内的 `run_command` | 直接执行 |
+| `auto` | `read_file`、`list_dir`、`search_code`、`git_log`、`git_diff`、`revert_file`、`diagnostics`、`todo_write`、`ask_user`、白名单内的 `run_command` | 直接执行 |
 | `preview` | `write_file`、`edit_file` | 先显示 diff 确认卡；勾选「自动执行」后跳过 |
 | `confirm` | `delete_file`、白名单外的 `run_command`、MCP 工具（服务器可配 `auto_approve`） | 每次询问；用户连续拒绝 3 次即终止当前任务 |
 
@@ -301,7 +302,7 @@ timeout_sec: 200
 | `run_command` | 执行终端命令，输出截断到 8000 字符 | 白名单 auto，其余 confirm | 130 s |
 
 **Core 内置（本地执行）**：`semantic_search`、`build_index`、`memory_recall`、`memory_save`、
-`memory_delete`、`skill_list`、`skill_load`、`subagent_list`、`subagent_dispatch`、`todo_write`。
+`memory_delete`、`skill_list`、`skill_load`、`subagent_list`、`subagent_dispatch`、`todo_write`、`ask_user`。
 MCP 工具在运行时以 `mcp__<server>__<tool>` 动态注册。
 
 ---
@@ -323,8 +324,8 @@ powershell -File scripts/build_native.ps1
 
 | 产物 | 路径 | 说明 |
 |---|---|---|
-| 可安装 zip | `target/workreport-ai-assistant-3.0.0.zip` | 内置 `agent-core/agent-core.exe`，用户机器**不需要 Python** |
-| 插件 jar | `target/workreport-intellij-plugin-3.0.0.jar` | 插件本体，不含 Core 可执行文件 |
+| 可安装 zip | `target/workreport-ai-assistant-3.1.0.zip` | 内置 `agent-core/agent-core.exe`，用户机器**不需要 Python** |
+| 插件 jar | `target/workreport-intellij-plugin-3.1.0.jar` | 插件本体，不含 Core 可执行文件 |
 | Core 可执行文件 | `core/dist/agent-core.exe` | 也可单独被 `AGENT_CORE_EXE` 指定 |
 
 只跑 `mvn package` 而不先构建 Core 时，zip 不含可执行文件，插件会回退到开发模式（需要 Python + `AGENT_CORE_HOME`）。
@@ -333,7 +334,7 @@ powershell -File scripts/build_native.ps1
 
 | job | 矩阵 | 内容 |
 |---|---|---|
-| `core` | Ubuntu + Windows × Python 3.9 / 3.12 | 单测 + 7 个协议冒烟（tools / memory / mcp / subagent / command / todos / v3） |
+| `core` | Ubuntu + Windows × Python 3.9 / 3.12 | 单测 + 8 个协议冒烟（tools / memory / mcp / subagent / command / todos / v3 / ask） |
 | `intellij` | Ubuntu + JDK 21 | `mvn -DskipTests compile` |
 | `vscode` | Node 18 + Python 3.11 | 编译 + `npm run smoke` |
 | `native` | Ubuntu / Windows | 编译 Rust 扩展，并以 `AGENT_CORE_EXPECT_RUST=1` 跑单测 |
@@ -345,18 +346,18 @@ powershell -File scripts/build_native.ps1
 
 | 项 | 当前值 |
 |---|---|
-| 插件版本 | 3.0.0 |
+| 插件版本 | 3.1.0 |
 | 目标平台（编译用） | `intellij.version = 261.25134.95`（2026.1） |
 | 安装区间 | `since-build=252` / `until-build=262.*`（2025.2 ~ 2026.2） |
 | Kotlin | `2.3.20-RC2`，必须与目标平台内置版本一致 |
 | VS Code | `^1.85.0` |
-| 验收基线 | Core 单测 **241 例**（跳过 1 个平台相关用例）、7 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过 |
+| 验收基线 | Core 单测 **258 例**（跳过 1 个平台相关用例）、8 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过、渲染器单测 **14 例**（`MarkdownParserTest`） |
 | 性能基线 | 冷启动 343~398 ms、空闲 RSS 97.4~97.7 MB、单轮 20.6~22.1 ms、千条会话列表 105~110 ms（`core/scripts/bench_core.py`） |
 
 升级平台时 `pom.xml` 的 `intellij.version`、`kotlin.version` 与 `plugin.xml` 的 `since-build` /
 `until-build` 必须一起改；版本号规则与多版本测试方法见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
-### 版本演进（v2.0 → v3.0.0）
+### 版本演进（v2.0 → v3.1.0）
 
 | 版本 | 提交 | 主要变更 |
 |---|---|---|
@@ -382,6 +383,7 @@ powershell -File scripts/build_native.ps1
 | v2.6.0 | `e6f3b38` | `run_command` 终端工具（白名单 auto / 其余 confirm / 危险命令拒绝）与 `diagnostics`；`todo_write` + `chat/todos` 两端任务清单 |
 | v2.7.0 | `bba6051` | VS Code：行内补全、设置项补齐与一致性断言、SecretStorage 迁移、历史会话面板 |
 | v3.0.0 | 本次提交 | 记忆候选人工确认、会话全文检索、本地用量统计、性能基线、中英双语 UI、Marketplace `change-notes` |
+| v3.1.0 | 本次提交 | 对话渲染内核重写（块级 Markdown + 增量解析 + 高度缓存）、标签条/输入区/空态/清单全面重绘、历史与记忆共用 `PickerPopup`、MCP 确认改为内联卡片、模型提问工具 `ask_user` + `AskCard`、`-Dagent.ui.classic=true` 一键回退 |
 
 M1–M8 的从零落地集中在 `a49411f` ~ `47eafe6`；更早的 `bf89f58` 是重构前最后一次 CDN 下载修复。
 
@@ -397,6 +399,7 @@ M1–M8 的从零落地集中在 `a49411f` ~ `47eafe6`；更早的 `bf89f58` 是
 | [docs/ROADMAP_TO_3.0.md](docs/ROADMAP_TO_3.0.md) | 升级路线详设：v2.4.10 → v3.0.0 每个版本的改动位置、协议字段、兼容性与验收标准 |
 | [docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md) | 行内补全全链路（FIM 报文 / sanitize / 超时降级）与语义索引原理、调试手册 |
 | [docs/VLLM_DEPLOYMENT_GUIDE.md](docs/VLLM_DEPLOYMENT_GUIDE.md) | vLLM / 昇腾部署 27B 模型与工具调用参数 |
+| [docs/UI_OVERHAUL.md](docs/UI_OVERHAUL.md) | 3.1 界面重做的设计令牌、组件清单与渲染内核说明（供 VS Code 端后续对齐） |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | IDE 版本号规则、兼容区间调整、多版本测试方法 |
 | [vscode/README.md](vscode/README.md) | VS Code 扩展的设置项、命令与打包说明 |
 | [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md) | **历史文档**：v2.0 重构前「日报生成器」的实现，仅作对照 |

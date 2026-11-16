@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.workreport.ai-assistant</id>
     <name>Agent Coding Assistant</name>
-    <version>3.0.0</version>
+    <version>3.1.0</version>
     <vendor>WeeklyReport</vendor>
     <description><![CDATA[
         AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
@@ -31,6 +31,29 @@
     <resource-bundle>messages.AgentBundle</resource-bundle>
 
     <change-notes><![CDATA[
+<h3>3.1.0</h3>
+<ul>
+  <li>New conversation renderer: Markdown is parsed into blocks and painted natively instead of
+      going through an HTML editor pane. Streaming only re-parses the tail block, so long answers
+      (code blocks, tables, lists) no longer stutter or jump the scrollbar.</li>
+  <li>Redesigned panel: tab strip with selection indicator and breathing dot for running sessions,
+      status line moved right above the input, floating composer card with focus ring, drawn
+      attachment chips, empty state with suggestion cards, redrawn checklist with vector marks.</li>
+  <li>One list popup for history and memory: search on top, hover actions, arrow/Enter/Esc
+      navigation; duplicate-memory hints are shown inline instead of in a dialog.</li>
+  <li>MCP tool calls are confirmed by an in-place card (Enter allows, Esc denies) instead of a
+      modal dialog; the dialog is kept as a fallback when the panel is not on screen.</li>
+  <li>Light / dark / high-contrast themes follow the IDE; every colour is resolved at paint time.</li>
+  <li>The agent can now ask before it guesses: a new <code>ask_user</code> tool pauses the turn and
+      shows a question card (single/multi choice plus a free-form answer, Enter to submit, Esc to
+      skip) in the transcript; skipped or unattended questions fall back to stated assumptions.</li>
+  <li>Escape hatch: <code>-Dagent.ui.classic=true</code> brings back the 3.0 HTML transcript.</li>
+</ul>
+<p>中文说明：全新的对话渲染（Markdown 块级原生绘制、流式只重解析尾块）、标签条/输入区/空态/
+任务清单全面重绘、历史与记忆共用同一列表弹窗、MCP 确认改为对话区内联卡片、新增模型提问工具
+<code>ask_user</code>（对话区内提问卡片，Enter 提交 / Esc 跳过），主题与深色模式对齐；
+可用 <code>-Dagent.ui.classic=true</code> 一键回退到 3.0 的 HTML 渲染。</p>
+
 <h3>3.0.0</h3>
 <ul>
   <li>Memory candidates: preferences and corrections found in the chat wait in a review list
@@ -55,6 +78,7 @@
         <!-- 工具窗口：底部 Agent 聊天面板 -->
         <toolWindow id="AgentCoder"
                     anchor="bottom"
+                    icon="/icons/agent.svg"
                     factoryClass="com.workreport.agent.ui.AgentToolWindowFactory"/>
 
         <!-- Settings page: Settings -> Tools -> Agent Coding Assistant (model list / MCP / Embedding) -->

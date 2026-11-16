@@ -34,6 +34,7 @@ jobs:
           python scripts/smoke_command.py
           python scripts/smoke_todos.py
           python scripts/smoke_v3.py
+          python scripts/smoke_ask.py
         shell: bash
 
   intellij:

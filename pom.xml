@@ -6,7 +6,7 @@
 
     <groupId>com.workreport</groupId>
     <artifactId>workreport-intellij-plugin</artifactId>
-    <version>3.0.0</version>
+    <version>3.1.0</version>
     <packaging>jar</packaging>
 
     <name>Work Report AI Assistant</name>
@@ -189,6 +189,16 @@
             <version>${okhttp.version}</version>
             <scope>compile</scope>
         </dependency>
+
+        <!-- ==================== Test dependencies ==================== -->
+        <!-- ==================== 测试依赖 ==================== -->
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -236,6 +246,17 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
                 <version>3.4.2</version>
+            </plugin>
+
+            <!-- Plain JUnit 5 runner: the Markdown parser is pure Java, no IDE runtime needed -->
+            <!-- 纯 JUnit 5 运行器：Markdown 解析器是纯 Java，不依赖 IDE 运行时 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <useModulePath>false</useModulePath>
+                </configuration>
             </plugin>
 
             <!-- Assemble plugin ZIP for distribution -->

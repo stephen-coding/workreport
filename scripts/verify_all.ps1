@@ -42,6 +42,7 @@ try {
     Invoke-Step "smoke command" { python scripts/smoke_command.py }
     Invoke-Step "smoke todos" { python scripts/smoke_todos.py }
     Invoke-Step "smoke v3" { python scripts/smoke_v3.py }
+    Invoke-Step "smoke ask" { python scripts/smoke_ask.py }
 }
 finally {
     Pop-Location
