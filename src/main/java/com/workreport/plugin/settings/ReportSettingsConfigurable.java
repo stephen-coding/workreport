@@ -36,6 +36,11 @@ public final class ReportSettingsConfigurable implements Configurable {
     private JCheckBox inlineCompletionBox;
     private JBTextField embeddingModelField;
     private JBTextField maxIterationsField;
+    private JBTextField contextWindowField;
+    private JBTextField toolConcurrencyField;
+    private JBTextField subagentConcurrencyField;
+    private JBTextField temperatureField;
+    private JBTextField maxTokensField;
 
     @Nls(capitalization = Nls.Capitalization.Title)
     @Override
@@ -95,6 +100,21 @@ public final class ReportSettingsConfigurable implements Configurable {
         maxIterationsField = new JBTextField(8);
         maxIterationsField.getEmptyText().setText("40");
         maxIterationsField.setToolTipText("单条消息最多跑多少轮「模型思考 + 工具执行」，范围 5~300，默认 40");
+        contextWindowField = new JBTextField(8);
+        contextWindowField.getEmptyText().setText("32000");
+        contextWindowField.setToolTipText("模型上下文窗口（tokens），范围 4000~200000；历史预算按 75% 折算");
+        toolConcurrencyField = new JBTextField(6);
+        toolConcurrencyField.getEmptyText().setText("4");
+        toolConcurrencyField.setToolTipText("同时执行的 Shell 工具数量，范围 1~16，默认 4");
+        subagentConcurrencyField = new JBTextField(6);
+        subagentConcurrencyField.getEmptyText().setText("3");
+        subagentConcurrencyField.setToolTipText("同时运行的子代理数量，范围 1~8，默认 3");
+        temperatureField = new JBTextField(6);
+        temperatureField.getEmptyText().setText("0.2");
+        temperatureField.setToolTipText("采样温度，范围 0.1~1.5；越低越稳定，默认 0.2");
+        maxTokensField = new JBTextField(8);
+        maxTokensField.getEmptyText().setText("4096");
+        maxTokensField.setToolTipText("单次回复最大输出 tokens，范围 256~32768，默认 4096");
         coreExeField.getEmptyText().setText("留空自动探测：插件内置 agent-core → AGENT_CORE_EXE → core/dist");
         coreHomeField.getEmptyText().setText("回退到 Python 模式时的 core 目录，例如 D:/learn/workreport-intellij-plugin/core");
         pythonField.getEmptyText().setText("回退到 Python 模式时的解释器，例如 python；留空用 AGENT_PYTHON / PATH");
@@ -128,6 +148,12 @@ public final class ReportSettingsConfigurable implements Configurable {
                 .addLabeledComponent(new JBLabel("最大迭代轮次:"), maxIterationsField, 1, false)
                 .addComponent(new JBLabel("（单条消息最多跑多少轮「模型思考 + 工具执行」；"
                         + "核对多份文件/多章文档这种长任务建议 40 以上，超了会提示回复「继续」）"))
+                .addLabeledComponent(new JBLabel("上下文窗口 (tokens):"), contextWindowField, 1, false)
+                .addLabeledComponent(new JBLabel("工具并发:"), toolConcurrencyField, 1, false)
+                .addLabeledComponent(new JBLabel("子代理并发:"), subagentConcurrencyField, 1, false)
+                .addLabeledComponent(new JBLabel("温度:"), temperatureField, 1, false)
+                .addLabeledComponent(new JBLabel("单轮最大输出:"), maxTokensField, 1, false)
+                .addComponent(new JBLabel("（上下文窗口按 75% 折算历史预算；并发与采样参数随设置下发给 Core，两端一致）"))
                 .addSeparator()
                 .addComponent(new JBLabel("Agent Core 运行环境（一般不需要改）:"))
                 .addLabeledComponent(new JBLabel("Core 可执行文件:"), coreExeField, 1, false)
@@ -153,7 +179,12 @@ public final class ReportSettingsConfigurable implements Configurable {
                 || !pythonField.getText().trim().equals(state.pythonPath)
                 || inlineCompletionBox.isSelected() != state.inlineCompletionEnabled
                 || !embeddingModelField.getText().trim().equals(state.embeddingModel)
-                || !maxIterationsField.getText().trim().equals(String.valueOf(state.maxIterations));
+                || !maxIterationsField.getText().trim().equals(String.valueOf(state.maxIterations))
+                || !contextWindowField.getText().trim().equals(String.valueOf(state.contextWindow))
+                || !toolConcurrencyField.getText().trim().equals(String.valueOf(state.toolConcurrency))
+                || !subagentConcurrencyField.getText().trim().equals(String.valueOf(state.subagentConcurrency))
+                || !temperatureField.getText().trim().equals(String.valueOf(state.temperature))
+                || !maxTokensField.getText().trim().equals(String.valueOf(state.maxTokens));
     }
 
     @Override
@@ -199,6 +230,11 @@ public final class ReportSettingsConfigurable implements Configurable {
         state.pythonPath = pythonField.getText().trim();
         state.inlineCompletionEnabled = inlineCompletionBox.isSelected();
         state.maxIterations = parseMaxIterations();
+        state.contextWindow = parseIntField(contextWindowField, 32000, 4000, 200000, "上下文窗口");
+        state.toolConcurrency = parseIntField(toolConcurrencyField, 4, 1, 16, "工具并发");
+        state.subagentConcurrency = parseIntField(subagentConcurrencyField, 3, 1, 8, "子代理并发");
+        state.temperature = parseTemperature();
+        state.maxTokens = parseIntField(maxTokensField, 4096, 256, 32768, "单轮最大输出");
         state.embeddingModel = embeddingModelField.getText().trim().isEmpty()
                 ? "nomic-embed-text" : embeddingModelField.getText().trim();
     }
@@ -224,6 +260,11 @@ public final class ReportSettingsConfigurable implements Configurable {
         inlineCompletionBox.setSelected(state.inlineCompletionEnabled);
         embeddingModelField.setText(state.embeddingModel);
         maxIterationsField.setText(String.valueOf(state.maxIterations));
+        contextWindowField.setText(String.valueOf(state.contextWindow));
+        toolConcurrencyField.setText(String.valueOf(state.toolConcurrency));
+        subagentConcurrencyField.setText(String.valueOf(state.subagentConcurrency));
+        temperatureField.setText(String.valueOf(state.temperature));
+        maxTokensField.setText(String.valueOf(state.maxTokens));
     }
 
     // A typo here silently truncates every task, so out-of-range values fail loudly.
@@ -243,6 +284,41 @@ public final class ReportSettingsConfigurable implements Configurable {
             throw new ConfigurationException("最大迭代轮次需在 5~300 之间，当前为 " + value);
         }
         return value;
+    }
+
+    private int parseIntField(JBTextField field, int fallback, int min, int max, String label)
+            throws ConfigurationException {
+        String text = field.getText().trim();
+        if (text.isEmpty()) {
+            return fallback;
+        }
+        int value;
+        try {
+            value = Integer.parseInt(text);
+        } catch (NumberFormatException e) {
+            throw new ConfigurationException(label + "必须是数字（" + min + "~" + max + "）");
+        }
+        if (value < min || value > max) {
+            throw new ConfigurationException(label + "需在 " + min + "~" + max + " 之间，当前为 " + value);
+        }
+        return value;
+    }
+
+    private double parseTemperature() throws ConfigurationException {
+        String text = temperatureField.getText().trim();
+        if (text.isEmpty()) {
+            return 0.2;
+        }
+        double value;
+        try {
+            value = Double.parseDouble(text);
+        } catch (NumberFormatException e) {
+            throw new ConfigurationException("温度必须是数字（0.1~1.5）");
+        }
+        if (value < 0.1 || value > 1.5) {
+            throw new ConfigurationException("温度需在 0.1~1.5 之间，当前为 " + value);
+        }
+        return Math.round(value * 100) / 100.0;
     }
 
     private List<ModelProfile> collectProfiles() {

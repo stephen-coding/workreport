@@ -403,6 +403,7 @@ public final class ChatSessionPanel extends JPanel {
                 break;
             case "chat/finish":
                 transcript.finishAssistant();
+                appendUsage(params);
                 finishTask();
                 owner.setStatus("就绪");
                 break;
@@ -471,6 +472,29 @@ public final class ChatSessionPanel extends JPanel {
         currentTaskId = null;
         setBusy(false);
         owner.onTaskCleared(this);
+    }
+
+    // Show the turn's summed token usage; hidden when the endpoint reports none.
+    // 展示本轮累计用量；端点不报用量时不显示。
+    private void appendUsage(JsonObject params) {
+        if (!params.has("usageTotal") || !params.get("usageTotal").isJsonObject()) {
+            return;
+        }
+        JsonObject usage = params.getAsJsonObject("usageTotal");
+        long in = usage.has("in") && !usage.get("in").isJsonNull() ? usage.get("in").getAsLong() : 0;
+        long out = usage.has("out") && !usage.get("out").isJsonNull() ? usage.get("out").getAsLong() : 0;
+        if (in == 0 && out == 0) {
+            return;
+        }
+        transcript.addNotice("本轮用量：" + formatTokens(in) + " 输入 / "
+                + formatTokens(out) + " 输出");
+    }
+
+    private static String formatTokens(long value) {
+        if (value < 1000) {
+            return String.valueOf(value);
+        }
+        return String.format(java.util.Locale.ROOT, "%.1fk", value / 1000.0);
     }
 
     // ------------------------------------------------------------------ ui helpers

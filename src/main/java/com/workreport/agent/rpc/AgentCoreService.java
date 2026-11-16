@@ -135,6 +135,14 @@ public final class AgentCoreService implements Disposable {
         // Round budget: a doc/multi-file audit needs far more than the historical 15.
         // 单条消息的轮次预算：文档/多文件审计远超历史上的 15 轮。
         settings.put("max_iterations", state.maxIterations);
+        // The Shell must not own agent policy, but it does own the user's knobs:
+        // push every one of them so both shells configure the Core identically.
+        // Shell 不决定 Agent 策略，但负责把用户配置完整下发，两端因此行为一致。
+        settings.put("context_window", state.contextWindow);
+        settings.put("tool_concurrency", state.toolConcurrency);
+        settings.put("subagent_concurrency", state.subagentConcurrency);
+        settings.put("temperature", state.temperature);
+        settings.put("max_tokens", state.maxTokens);
         String apiKey = ModelProfiles.apiKey(profile.name);
         if (apiKey != null && !apiKey.isEmpty()) {
             settings.put("api_key", apiKey);

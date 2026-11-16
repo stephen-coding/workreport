@@ -29,6 +29,9 @@ export function collectSettings(): Record<string, unknown> {
     base_url: baseUrl,
     model: config.get<string>("model", "qwen2.5:7b"),
     max_iterations: config.get<number>("maxIterations", 40),
+    context_window: config.get<number>("contextWindow", 32000),
+    temperature: config.get<number>("temperature", 0.2),
+    max_tokens: config.get<number>("maxTokens", 4096),
     tool_concurrency: config.get<number>("toolConcurrency", 4),
     subagent_concurrency: config.get<number>("subagentConcurrency", 3),
   };

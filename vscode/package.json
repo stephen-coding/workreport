@@ -97,6 +97,21 @@
           "default": 3,
           "description": "子代理并行度"
         },
+        "agentCoder.contextWindow": {
+          "type": "number",
+          "default": 32000,
+          "description": "模型上下文窗口（tokens），范围 4000~200000；历史预算按 75% 折算"
+        },
+        "agentCoder.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "description": "采样温度（0.1~1.5，越低越稳定）"
+        },
+        "agentCoder.maxTokens": {
+          "type": "number",
+          "default": 4096,
+          "description": "单次回复最大输出 tokens"
+        },
         "agentCoder.autoAcceptEdits": {
           "type": "boolean",
           "default": false,

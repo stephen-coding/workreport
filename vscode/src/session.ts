@@ -163,6 +163,7 @@ export class CoreSession {
       case "chat/finish":
         this.currentTaskId = null;
         this.panel.finishMessage();
+        this.appendUsage(params.usageTotal);
         this.panel.setBusy(false);
         this.panel.setStatus("就绪");
         break;
@@ -204,6 +205,22 @@ export class CoreSession {
     void this.connection?.request("agent/confirmResult", { confirmId, approved });
   }
 
+  // The Core sums usage over every round; hide the line when none was reported.
+  // 用量由 Core 汇总；端点不报用量时不显示。
+  private appendUsage(raw: unknown): void {
+    if (!raw || typeof raw !== "object") {
+      return;
+    }
+    const usage = raw as Record<string, unknown>;
+    const input = Number(usage.in ?? 0);
+    const output = Number(usage.out ?? 0);
+    if (!input && !output) {
+      return;
+    }
+    this.panel.appendSystem(
+      `\n  本轮用量：${formatTokens(input)} 输入 / ${formatTokens(output)} 输出`);
+  }
+
   private snapshot(): Record<string, unknown> {
     const snapshot: Record<string, unknown> = { project_root: this.projectRoot };
     const editor = vscode.window.activeTextEditor;
@@ -212,4 +229,8 @@ export class CoreSession {
     }
     return snapshot;
   }
+}
+
+function formatTokens(value: number): string {
+  return value < 1000 ? String(value) : `${(value / 1000).toFixed(1)}k`;
 }

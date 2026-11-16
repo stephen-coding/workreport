@@ -63,6 +63,18 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
     // 单条消息最多跑多少轮「模型 + 工具」：复杂审计/批量改文件远超旧的 15 轮。
     public int maxIterations = 40;
 
+    // Model context window in tokens; the Core derives its history budget from it
+    // (75%, clamped to 4000~200000).
+    // 模型上下文窗口（tokens）：Core 据此按 75% 计算历史裁剪预算。
+    public int contextWindow = 32000;
+
+    // Concurrency and sampling knobs pushed to the Core so both shells behave alike.
+    // 并发与采样参数：随设置下发给 Core，保证两端行为一致。
+    public int toolConcurrency = 4;
+    public int subagentConcurrency = 3;
+    public double temperature = 0.2;
+    public int maxTokens = 4096;
+
     public static ReportSettingsState getInstance() {
         return ApplicationManager.getApplication().getService(ReportSettingsState.class);
     }
@@ -92,6 +104,11 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
         // Older XML files have no value here (deserializes as 0) — keep the default.
         // 旧配置文件里没有这一项（读出来是 0），保留默认值。
         this.maxIterations = state.maxIterations > 0 ? state.maxIterations : 40;
+        this.contextWindow = state.contextWindow > 0 ? state.contextWindow : 32000;
+        this.toolConcurrency = state.toolConcurrency > 0 ? state.toolConcurrency : 4;
+        this.subagentConcurrency = state.subagentConcurrency > 0 ? state.subagentConcurrency : 3;
+        this.temperature = state.temperature > 0 ? state.temperature : 0.2;
+        this.maxTokens = state.maxTokens > 0 ? state.maxTokens : 4096;
     }
 
     // Reset privacy confirmation when API endpoint changes (require re-confirmation)
