@@ -10,6 +10,7 @@ import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.util.ui.UIUtil;
+import com.workreport.agent.AgentBundle;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -69,12 +70,12 @@ public final class ChatComposer extends JPanel {
     private final JPanel attachmentStrip = new JPanel(new WrapLayout());
     private final List<Path> attachments = new ArrayList<>();
 
-    private final JButton attachButton = new JButton("附件");
-    private final JButton settingsButton = new JButton("设置");
-    private final JButton stopButton = new JButton("停止");
-    private final JButton sendButton = new JButton("发送");
+    private final JButton attachButton = new JButton(AgentBundle.message("composer.attach"));
+    private final JButton settingsButton = new JButton(AgentBundle.message("composer.settings"));
+    private final JButton stopButton = new JButton(AgentBundle.message("composer.stop"));
+    private final JButton sendButton = new JButton(AgentBundle.message("composer.send"));
     private final JComboBox<String> modelCombo = new JComboBox<>();
-    private final JCheckBox autoCheckBox = new JCheckBox("自动执行");
+    private final JCheckBox autoCheckBox = new JCheckBox(AgentBundle.message("composer.auto"));
     private final JPanel toolbar;
 
     private boolean updatingModels;
@@ -194,9 +195,9 @@ public final class ChatComposer extends JPanel {
 
     private void showAttachMenu() {
         JPopupMenu menu = new JPopupMenu();
-        JMenuItem pick = new JMenuItem("选择文件…");
+        JMenuItem pick = new JMenuItem(AgentBundle.message("composer.pickFile"));
         pick.addActionListener(e -> pickFiles());
-        JMenuItem current = new JMenuItem("添加当前编辑器文件");
+        JMenuItem current = new JMenuItem(AgentBundle.message("composer.currentFile"));
         current.addActionListener(e -> addCurrentEditorFile());
         menu.add(pick);
         menu.add(current);
@@ -209,8 +210,8 @@ public final class ChatComposer extends JPanel {
         }
         FileChooserDescriptor descriptor = FileChooserDescriptorFactory
                 .createMultipleFilesNoJarsDescriptor()
-                .withTitle("添加附件")
-                .withDescription("文本文件会随消息内联发送（单文件 40 KB 内），二进制或超大文件只提供路径");
+                .withTitle(AgentBundle.message("composer.add.title"))
+                .withDescription(AgentBundle.message("composer.add.description"));
         VirtualFile[] files = FileChooserFactory.getInstance()
                 .createFileChooser(descriptor, project, null)
                 .choose(project);
@@ -290,7 +291,7 @@ public final class ChatComposer extends JPanel {
         name.setFont(chipFont.deriveFont(chipFont.getSize2D() - 1f));
 
         JButton remove = new JButton("x");
-        remove.setToolTipText("移除附件");
+        remove.setToolTipText(AgentBundle.message("composer.remove.tip"));
         remove.setFocusable(false);
         remove.setMargin(new Insets(0, 3, 0, 3));
         remove.setBorderPainted(false);
@@ -319,12 +320,12 @@ public final class ChatComposer extends JPanel {
 
         JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         left.setOpaque(false);
-        attachButton.setToolTipText("添加文件作为上下文（可多选）");
+        attachButton.setToolTipText(AgentBundle.message("composer.attach.tip"));
         attachButton.addActionListener(e -> showAttachMenu());
-        modelCombo.setToolTipText("切换模型（在设置页维护列表）");
-        autoCheckBox.setToolTipText("勾选后写文件不再弹 diff 确认，直接落盘（可用 revert_file 回退）");
+        modelCombo.setToolTipText(AgentBundle.message("composer.model.tip"));
+        autoCheckBox.setToolTipText(AgentBundle.message("composer.auto.tip"));
         left.add(attachButton);
-        left.add(new JBLabel("模型:"));
+        left.add(new JBLabel(AgentBundle.message("composer.model")));
         left.add(modelCombo);
         left.add(autoCheckBox);
 
@@ -515,7 +516,7 @@ public final class ChatComposer extends JPanel {
     // 带占位提示的多行输入框：Swing 原生 JTextArea 没有空文本提示，这里自绘。
     private static final class InputArea extends JTextArea {
 
-        private static final String HINT = "向 Agent 描述任务，Enter 发送，Shift+Enter 换行；「附件」或直接拖文件进来";
+        private static final String HINT = AgentBundle.message("composer.hint");
 
         InputArea() {
             setLineWrap(true);
@@ -543,10 +544,10 @@ public final class ChatComposer extends JPanel {
             // 工具窗口太窄时完整提示放不下，逐级降级为短文案。
             String hint = HINT;
             if (metrics.stringWidth(hint) > available) {
-                hint = "向 Agent 描述任务…";
+                hint = AgentBundle.message("composer.hint.short");
             }
             if (metrics.stringWidth(hint) > available) {
-                hint = "描述任务…";
+                hint = AgentBundle.message("composer.hint.tiny");
             }
             g2.setColor(JBColor.namedColor("Component.placeholderForeground",
                     new Color(0x9AA0A6)));

@@ -11,6 +11,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.OnePixelSplitter;
+import com.workreport.agent.AgentBundle;
 import com.workreport.agent.rpc.AgentCoreService;
 import com.workreport.agent.rpc.JsonRpcConnection;
 import com.workreport.agent.tools.ToolDispatcher;
@@ -218,14 +219,14 @@ public final class ChatSessionPanel extends JPanel {
         ReportSettingsState state = ReportSettingsState.getInstance();
         state.activeProfile = name;
         ModelProfile profile = ModelProfiles.active(state);
-        owner.setStatus("已切换模型：" + profile.name + "（" + profile.model + "）");
+        owner.setStatus(AgentBundle.message("session.modelSwitched", profile.name, profile.model));
         coreService.pushSettings();
     }
 
     private void setAutoAccept(boolean value) {
         ReportSettingsState state = ReportSettingsState.getInstance();
         state.autoAcceptEdits = value;
-        owner.setStatus(value ? "自动执行已开启：写文件不再确认" : "自动执行已关闭：写文件需确认");
+        owner.setStatus(value ? AgentBundle.message("session.autoOn") : AgentBundle.message("session.autoOff"));
     }
 
     // ------------------------------------------------------------------ messaging
@@ -266,7 +267,7 @@ public final class ChatSessionPanel extends JPanel {
         composer.reset();
         updateTitleFrom(text);
         setBusy(true);
-        owner.setStatus("思考中...");
+        owner.setStatus(AgentBundle.message("status.thinking"));
 
         String userText = text;
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
@@ -422,7 +423,7 @@ public final class ChatSessionPanel extends JPanel {
                 transcript.finishAssistant();
                 appendUsage(params);
                 finishTask();
-                owner.setStatus("就绪");
+                owner.setStatus(AgentBundle.message("status.ready"));
                 break;
             case "chat/error": {
                 JsonObject error = params.has("error") && params.get("error").isJsonObject()
@@ -432,7 +433,7 @@ public final class ChatSessionPanel extends JPanel {
                 String text = error.has("message") ? error.get("message").getAsString() : "";
                 transcript.addErrorMessage("[错误:" + code + "] " + text);
                 finishTask();
-                owner.setStatus("出错");
+                owner.setStatus(AgentBundle.message("status.error"));
                 break;
             }
             default:
@@ -507,7 +508,7 @@ public final class ChatSessionPanel extends JPanel {
         String text = error.has("message") ? error.get("message").getAsString() : "请求失败";
         transcript.addErrorMessage("[错误] " + text);
         finishTask();
-        owner.setStatus("出错");
+        owner.setStatus(AgentBundle.message("status.error"));
     }
 
     private void finishTask() {

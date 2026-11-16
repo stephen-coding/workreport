@@ -1,6 +1,7 @@
 package com.workreport.agent.ui;
 
 import com.intellij.util.ui.UIUtil;
+import com.workreport.agent.AgentBundle;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -46,7 +47,7 @@ public final class TodoStrip extends JPanel {
         setOpaque(false);
         setBorder(new EmptyBorder(4, 10, 2, 10));
         header.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        header.setToolTipText("点击展开/折叠任务清单");
+        header.setToolTipText(AgentBundle.message("todos.tip"));
         header.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
@@ -103,8 +104,8 @@ public final class TodoStrip extends JPanel {
 
     private void refreshHeader() {
         String caret = collapsed ? "▸ " : "▾ ";
-        String suffix = collapsed && doneCount >= totalCount ? "（已完成）" : "";
-        header.setText(caret + "任务清单 " + doneCount + "/" + totalCount + suffix);
+        String suffix = collapsed && doneCount >= totalCount ? AgentBundle.message("todos.done") : "";
+        header.setText(AgentBundle.message("todos.header", caret, doneCount, totalCount, suffix));
     }
 
     private static boolean isDone(String status) {

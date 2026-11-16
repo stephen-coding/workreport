@@ -4,6 +4,7 @@ import com.intellij.ide.BrowserUtil;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.util.ui.UIUtil;
+import com.workreport.agent.AgentBundle;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -95,7 +96,8 @@ public final class ChatTranscript extends JPanel {
         // Wrapping text area instead of a JLabel: a long attachment list must stay inside
         // the bubble width instead of being clipped.
         // 用可换行的文本域而非 JLabel，否则附件清单一长就会被气泡边界裁掉。
-        JTextArea files = createPlainText("附件：" + String.join("、", attachmentNames), USER_ATTACH_TEXT);
+        JTextArea files = createPlainText(
+                AgentBundle.message("composer.attachments", String.join("、", attachmentNames)), USER_ATTACH_TEXT);
         Font hintFont = baseFont();
         files.setFont(hintFont.deriveFont(hintFont.getSize2D() - 1f));
         files.setBorder(new EmptyBorder(hasText ? 5 : 0, 0, 0, 0));

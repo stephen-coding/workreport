@@ -8,6 +8,7 @@ import com.intellij.ui.components.JBTextArea;
 import com.intellij.ui.components.JBTextField;
 import com.intellij.ui.table.JBTable;
 import com.intellij.util.ui.FormBuilder;
+import com.workreport.agent.AgentBundle;
 import org.jetbrains.annotations.Nls;
 import org.jetbrains.annotations.Nullable;
 
@@ -46,13 +47,17 @@ public final class ReportSettingsConfigurable implements Configurable {
     @Nls(capitalization = Nls.Capitalization.Title)
     @Override
     public String getDisplayName() {
-        return "Agent Coding Assistant";
+        return AgentBundle.message("settings.displayName");
     }
 
     @Override
     public @Nullable JComponent createComponent() {
         profileModel = new DefaultTableModel(
-                new Object[]{"名称", "类型（ollama / openai_compat）", "端点", "模型", "API Key"}, 0) {
+                new Object[]{AgentBundle.message("settings.columns.name"),
+                        AgentBundle.message("settings.columns.type"),
+                        AgentBundle.message("settings.columns.endpoint"),
+                        AgentBundle.message("settings.columns.model"),
+                        AgentBundle.message("settings.columns.key")}, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
                 return true;
@@ -60,7 +65,7 @@ public final class ReportSettingsConfigurable implements Configurable {
         };
         profileTable = new JBTable(profileModel);
         profileTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        profileTable.getEmptyText().setText("至少添加一个模型，例如：本地 Ollama / 云端 DeepSeek");
+        profileTable.getEmptyText().setText(AgentBundle.message("settings.emptyProfiles"));
         profileTable.setRowHeight(24);
         profileTable.getColumnModel().getColumn(0).setPreferredWidth(110);
         profileTable.getColumnModel().getColumn(1).setPreferredWidth(150);
@@ -68,10 +73,11 @@ public final class ReportSettingsConfigurable implements Configurable {
         profileTable.getColumnModel().getColumn(3).setPreferredWidth(140);
         profileTable.getColumnModel().getColumn(4).setPreferredWidth(160);
 
-        JButton addButton = new JButton("添加模型");
-        JButton removeButton = new JButton("删除选中");
+        JButton addButton = new JButton(AgentBundle.message("settings.addModel"));
+        JButton removeButton = new JButton(AgentBundle.message("settings.removeSelected"));
         addButton.addActionListener(e -> profileModel.addRow(
-                new Object[]{"新模型", "ollama", "http://localhost:11434/api/chat", "", ""}));
+                new Object[]{AgentBundle.message("settings.newModel"), "ollama",
+                        "http://localhost:11434/api/chat", "", ""}));
         removeButton.addActionListener(e -> {
             int row = profileTable.getSelectedRow();
             if (row >= 0) {
@@ -95,7 +101,7 @@ public final class ReportSettingsConfigurable implements Configurable {
         coreExeField = new JBTextField(40);
         coreHomeField = new JBTextField(40);
         pythonField = new JBTextField(40);
-        inlineCompletionBox = new JCheckBox("编辑器内行内补全（Ghost text：Tab 接受 / Esc 取消）");
+        inlineCompletionBox = new JCheckBox(AgentBundle.message("settings.inlineCompletion"));
         embeddingModelField = new JBTextField(30);
         embeddingModelField.getEmptyText().setText("nomic-embed-text（本地 Ollama 推荐）或 text-embedding-3-small");
         maxIterationsField = new JBTextField(8);
@@ -127,49 +133,49 @@ public final class ReportSettingsConfigurable implements Configurable {
         pythonField.getEmptyText().setText("回退到 Python 模式时的解释器，例如 python；留空用 AGENT_PYTHON / PATH");
 
         JBLabel keyHint = new JBLabel(
-                "API Key 按模型名加密存储在系统密钥链；表格里显示 " + KEY_MASK + " 表示已保存，留空或保持原样即不修改");
+                AgentBundle.message("settings.keyHint", KEY_MASK));
         keyHint.setForeground(Color.GRAY);
         keyHint.setFont(keyHint.getFont().deriveFont(Font.ITALIC, 11f));
 
         mainPanel = FormBuilder.createFormBuilder()
-                .addComponent(new JBLabel("模型列表（面板下拉框可随时切换）:"))
+                .addComponent(new JBLabel(AgentBundle.message("settings.section.models")))
                 .addComponent(tablePanel)
                 .addComponent(keyHint)
                 .addComponent(new JBLabel("（类型 ollama = 本地 Ollama；openai_compat = 任意 OpenAI 兼容云端服务。"
                         + "类型与端点冲突时以端点为准：含 /v1/chat/completions 按 OpenAI 兼容，含 /api/chat 按 Ollama）"))
                 .addSeparator()
-                .addLabeledComponent(new JBLabel("Git 作者过滤:"), authorFilterField, 1, false)
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.section.git")), authorFilterField, 1, false)
                 .addComponent(new JBLabel("（留空表示包含所有作者的提交记录）"))
                 .addSeparator()
-                .addComponent(new JBLabel("MCP 服务（JSON）:"))
+                .addComponent(new JBLabel(AgentBundle.message("settings.section.mcp")))
                 .addComponent(new JBScrollPane(mcpConfigField))
                 .addComponent(new JBLabel("（支持数组或 name 映射；项目内 .agent/mcp.json 优先）"))
                 .addSeparator()
-                .addComponent(new JBLabel("编辑器增强:"))
+                .addComponent(new JBLabel(AgentBundle.message("settings.section.editor")))
                 .addComponent(inlineCompletionBox)
-                .addLabeledComponent(new JBLabel("Embedding 模型:"), embeddingModelField, 1, false)
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.embedding")), embeddingModelField, 1, false)
                 .addComponent(new JBLabel("（语义索引使用当前端点的 embedding 接口；切换模型后首次"
                         + "检索会提示重建索引）"))
                 .addSeparator()
-                .addComponent(new JBLabel("对话与 Agent:"))
-                .addLabeledComponent(new JBLabel("最大迭代轮次:"), maxIterationsField, 1, false)
+                .addComponent(new JBLabel(AgentBundle.message("settings.section.agent")))
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.maxIterations")), maxIterationsField, 1, false)
                 .addComponent(new JBLabel("（单条消息最多跑多少轮「模型思考 + 工具执行」；"
                         + "核对多份文件/多章文档这种长任务建议 40 以上，超了会提示回复「继续」）"))
-                .addLabeledComponent(new JBLabel("上下文窗口 (tokens):"), contextWindowField, 1, false)
-                .addLabeledComponent(new JBLabel("工具并发:"), toolConcurrencyField, 1, false)
-                .addLabeledComponent(new JBLabel("子代理并发:"), subagentConcurrencyField, 1, false)
-                .addLabeledComponent(new JBLabel("温度:"), temperatureField, 1, false)
-                .addLabeledComponent(new JBLabel("单轮最大输出:"), maxTokensField, 1, false)
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.contextWindow")), contextWindowField, 1, false)
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.toolConcurrency")), toolConcurrencyField, 1, false)
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.subagentConcurrency")), subagentConcurrencyField, 1, false)
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.temperature")), temperatureField, 1, false)
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.maxTokens")), maxTokensField, 1, false)
                 .addComponent(new JBLabel("（上下文窗口按 75% 折算历史预算；并发与采样参数随设置下发给 Core，两端一致）"))
-                .addComponent(new JBLabel("终端命令免确认白名单（每行一个前缀）:"))
+                .addComponent(new JBLabel(AgentBundle.message("settings.section.allowlist")))
                 .addComponent(new JBScrollPane(commandAllowlistField))
                 .addComponent(new JBLabel("（留空 = 内置白名单；不在名单内的命令每次弹窗确认；"
                         + "rm -rf / git push / format 等危险命令直接拒绝，不弹窗）"))
                 .addSeparator()
-                .addComponent(new JBLabel("Agent Core 运行环境（一般不需要改）:"))
-                .addLabeledComponent(new JBLabel("Core 可执行文件:"), coreExeField, 1, false)
-                .addLabeledComponent(new JBLabel("Core 目录:"), coreHomeField, 1, false)
-                .addLabeledComponent(new JBLabel("Python 解释器:"), pythonField, 1, false)
+                .addComponent(new JBLabel(AgentBundle.message("settings.section.env")))
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.coreExe")), coreExeField, 1, false)
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.coreHome")), coreHomeField, 1, false)
+                .addLabeledComponent(new JBLabel(AgentBundle.message("settings.python")), pythonField, 1, false)
                 .addComponent(new JBLabel("（插件 zip 已内置 Core，只有开发调试才需要填这三项）"))
                 .addComponentFillVertically(new JPanel(), 0)
                 .getPanel();
