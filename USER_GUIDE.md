@@ -1,6 +1,6 @@
 # Agent Coding Assistant 使用手册
 
-> 适用版本：**3.1.1** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.3**（`since-build=252` / `until-build=263.*`）
+> 适用版本：**3.1.2** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.3**（`since-build=252` / `until-build=263.*`）
 >
 > 本手册面向使用者。想了解内部实现（RPC 协议、FIM 补全原理、向量检索细节），
 > 请看 [技术详情文档](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md)。
@@ -62,12 +62,12 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 
 ### 2.2 安装步骤
 
-1. 拿到 `workreport-ai-assistant-3.1.1.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
+1. 拿到 `workreport-ai-assistant-3.1.2.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
 2. IDEA → `Settings` → `Plugins` → ⚙️ → `Install Plugin from Disk...`
 3. 选择该 zip → `Restart IDE`
 4. 重启后底部出现 **AgentCoder** 工具窗口；菜单 `Tools` 下多出 **「模型设置…」** 与 `生成今日日报`
 
-> **升级提醒**：如果版本号没变（例如都是 3.1.1），IDEA 可能仍显示旧缓存。
+> **升级提醒**：如果版本号没变（例如都是 3.1.2），IDEA 可能仍显示旧缓存。
 > 让版本号变化（或先卸载再装）才能确保界面与代码一致。
 
 ---
@@ -83,7 +83,7 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 - Agent 面板输入区工具栏的 **「设置」** 按钮
 
 > 找不到入口时也可以按 **`Ctrl+Shift+A`**，输入 `模型设置` 直接跳转；
-> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `3.1.1` 的 zip。
+> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `3.1.2` 的 zip。
 
 ### 3.2 配置模型（必做）
 

@@ -1,6 +1,7 @@
 package com.workreport.agent.ui.design;
 
 import com.intellij.icons.AllIcons;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.util.IconUtil;
 import com.intellij.util.ui.EmptyIcon;
 import org.jetbrains.annotations.NotNull;
@@ -23,14 +24,19 @@ public final class UiIcons {
 
     private static final Map<String, Icon> CACHE = new ConcurrentHashMap<>();
 
+    private static final Logger LOGGER = Logger.getInstance(UiIcons.class);
+
     // Load /icons/<name>.svg from the plugin resources; a missing file degrades to an empty icon
-    // instead of throwing on the EDT.
-    // 从插件资源加载 /icons/<name>.svg；文件缺失时退化为空图标，绝不在 EDT 上抛异常。
+    // instead of throwing on the EDT, but it is logged: silent degradation is how the "new session"
+    // button once turned invisible.
+    // 从插件资源加载 /icons/<name>.svg；文件缺失时退化为空图标，绝不在 EDT 上抛异常，
+    // 但会记一条日志——静默退化曾让「新建会话」按钮整个不可见。
     public static @NotNull Icon icon(@NotNull String name) {
         return CACHE.computeIfAbsent(name, key -> {
             try {
                 return com.intellij.openapi.util.IconLoader.getIcon("/icons/" + key + ".svg", UiIcons.class);
             } catch (Exception e) {
+                LOGGER.warn("missing or unreadable icon /icons/" + key + ".svg", e);
                 return EmptyIcon.create(16);
             }
         });

@@ -3,6 +3,18 @@
 Mirror of `plugin.xml` `<change-notes>`: every released version gets one section here, and the
 Marketplace entry is copied from it. Core, Shell and VS Code Shell share the numbered release.
 
+## 3.1.2
+
+修复标签条上「新建会话」（`+`）与「设置」按钮不显示。
+
+- **图标资源**：`SessionTabsBar` 取的是 `icons/add.svg` 与 `icons/settings.svg`，但包里一直只有
+  `agent` / `attach` / `history` / `memory` 四个图标；`UiIcons.icon()` 在文件缺失时退化成
+  `EmptyIcon`，两个按钮就成了看不见、只能靠悬停底色判断位置的空白。
+- **补齐资源**：新增 `add.svg` / `add_dark.svg`、`settings.svg` / `settings_dark.svg`，与既有图标
+  同一套线宽（1.4~1.6）和明/暗取色（`#6B7178` / `#A9AEB4`）。
+- **防回归**：`UiIcons.icon()` 加载失败时写 `WARN` 日志而不是静默退化；新增 `UiIconsResourceTest`
+  校验面板引用的每个图标都带 `_dark` 变体。
+
 ## 3.1.1
 
 适配 IntelliJ IDEA 2026.3（构建号 `263.*`），无功能变化。

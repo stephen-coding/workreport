@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.workreport.ai-assistant</id>
     <name>Agent Coding Assistant</name>
-    <version>3.1.1</version>
+    <version>3.1.2</version>
     <vendor>WeeklyReport</vendor>
     <description><![CDATA[
         AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
@@ -31,6 +31,16 @@
     <resource-bundle>messages.AgentBundle</resource-bundle>
 
     <change-notes><![CDATA[
+<h3>3.1.2</h3>
+<ul>
+  <li>Fixed the missing "new session" and settings buttons in the tab strip: both icons shipped
+      without their SVG resources, so they silently rendered as empty (blank but clickable) icons.</li>
+  <li>Icon loading now logs a warning instead of degrading silently, and a unit test checks that
+      every icon the panel asks for ships with its dark variant.</li>
+</ul>
+<p>中文说明：修复标签条上「新建会话」（+）与「设置」按钮不显示的问题——两个图标的 SVG 没有随包
+提供，运行期静默退化成空图标；现在加载失败会写日志，并新增单测校验图标资源齐全。</p>
+
 <h3>3.1.1</h3>
 <ul>
   <li>Supports IntelliJ IDEA 2026.3 (build 263.*): compiled against the 2026.3 platform and the
