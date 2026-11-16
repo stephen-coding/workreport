@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.workreport.ai-assistant</id>
     <name>Agent Coding Assistant</name>
-    <version>3.1.0</version>
+    <version>3.1.1</version>
     <vendor>WeeklyReport</vendor>
     <description><![CDATA[
         AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
@@ -12,10 +12,10 @@
         记忆与 Skill。经典的工作报告生成器将迁移为内置 Skill。
     ]]></description>
 
-    <!-- IntelliJ IDEA 2025.2.x - 2026.2.x (build 252.* - 262.*) -->
-    <!-- 兼容 IntelliJ IDEA 2025.2.x 到 2026.2.x（构建号 252.* 到 262.*）；
+    <!-- IntelliJ IDEA 2025.2.x - 2026.3.x (build 252.* - 263.*) -->
+    <!-- 兼容 IntelliJ IDEA 2025.2.x 到 2026.3.x（构建号 252.* 到 263.*）；
          252 起才有 inline completion 扩展点 -->
-    <idea-version since-build="252" until-build="262.*"/>
+    <idea-version since-build="252" until-build="263.*"/>
 
     <!-- Platform dependency -->
     <!-- 平台核心依赖 -->
@@ -31,6 +31,15 @@
     <resource-bundle>messages.AgentBundle</resource-bundle>
 
     <change-notes><![CDATA[
+<h3>3.1.1</h3>
+<ul>
+  <li>Supports IntelliJ IDEA 2026.3 (build 263.*): compiled against the 2026.3 platform and the
+      Kotlin 2.4 runtime it bundles.</li>
+  <li>Install range is now 2025.2 - 2026.3; no feature changes.</li>
+</ul>
+<p>中文说明：适配 IntelliJ IDEA 2026.3（构建号 263.*）——按 2026.3 平台与其内置的 Kotlin 2.4
+运行时重新编译，安装区间放宽到 2025.2 ~ 2026.3；功能无变化。</p>
+
 <h3>3.1.0</h3>
 <ul>
   <li>New conversation renderer: Markdown is parsed into blocks and painted natively instead of

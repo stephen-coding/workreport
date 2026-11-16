@@ -3,6 +3,22 @@
 Mirror of `plugin.xml` `<change-notes>`: every released version gets one section here, and the
 Marketplace entry is copied from it. Core, Shell and VS Code Shell share the numbered release.
 
+## 3.1.1
+
+适配 IntelliJ IDEA 2026.3（构建号 `263.*`），无功能变化。
+
+- **平台基线**：`pom.xml` 的 `intellij.version` 从 `261.25134.95`（2026.1）升到 `263.7307.259`（2026.3），
+  `until-build` 从 `262.*` 提到 `263.*`，安装区间变成 2025.2 ~ 2026.3。
+- **Kotlin**：`kotlin.version` 跟平台内置的 `kotlin-stdlib` 一致，`2.3.20-RC2` → `2.4.21-RC`；
+  `kotlinx-coroutines-core-jvm` 同步到 `1.11.0-intellij-1`，`org.jetbrains:annotations` 同步到 `26.1.0`。
+- **构建工具链**：2026.3 平台的 class 文件版本是 69（Java 25），`mvn compile` 改用 JDK 25（本机可借用 IDE 的
+  JBR 25）；`source/target` 仍是 21，插件字节码不变。`verify_all.ps1` / `build_plugin.ps1` / CI 都加了
+  JDK 25 检查或改用 JDK 25。
+- **Git 依赖**：263 把 Git 插件拆成 frontend / shared / backend，`com.jetbrains.intellij.vcs:git` 只剩插件描述符，
+  新增 `git-backend` / `git-shared` 两个 `provided` 依赖提供 `git4idea.*`。
+- **核心包版本**：`pom.xml`、`plugin.xml` 与内置 Core 可执行文件同步 3.1.1（`agent-core --version` 与
+  `core/hello.coreVersion` 都应是 3.1.1）。
+
 ## 3.1.0
 
 对话渲染与界面视觉重做（`docs/UI_OVERHAUL.md` 记录了设计令牌与组件清单）。

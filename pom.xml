@@ -6,7 +6,7 @@
 
     <groupId>com.workreport</groupId>
     <artifactId>workreport-intellij-plugin</artifactId>
-    <version>3.1.0</version>
+    <version>3.1.1</version>
     <packaging>jar</packaging>
 
     <name>Work Report AI Assistant</name>
@@ -14,15 +14,17 @@
     <!-- IntelliJ IDEA 插件：基于 Git 历史记录生成 AI 润色的日报/周报/季报/年报 -->
 
     <properties>
-        <!-- JDK 21 -->
-        <!-- JDK 21 编译版本 -->
+        <!-- Build with JDK 25 (the 2026.3 platform ships JVM 25 class files),
+             emit Java 21 bytecode so the plugin still loads on 2025.2+ (JBR 21). -->
+        <!-- 用 JDK 25 编译（2026.3 平台的 class 文件版本为 69），产出 Java 21 字节码，
+             这样插件仍可在 2025.2+（JBR 21）上加载 -->
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- IntelliJ Platform SDK version (build number) -->
         <!-- IntelliJ 平台 SDK 版本（构建号） -->
-        <intellij.version>261.25134.95</intellij.version>
+        <intellij.version>263.7307.259</intellij.version>
 
         <!-- Dependency versions -->
         <!-- 依赖版本号 -->
@@ -30,7 +32,7 @@
 
         <!-- Kotlin version must match the one bundled with the target platform -->
         <!-- Kotlin 版本需与目标平台内置的保持一致 -->
-        <kotlin.version>2.3.20-RC2</kotlin.version>
+        <kotlin.version>2.4.21-RC</kotlin.version>
     </properties>
 
     <!-- JetBrains IntelliJ Platform artifact repositories -->
@@ -128,10 +130,23 @@
         </dependency>
 
         <!-- git4idea: GitLineHandler, GitRepositoryManager, GitCommand -->
-        <!-- git4idea：Git 命令执行器、Git 仓库管理器、Git 命令定义 -->
+        <!-- git4idea：Git 命令执行器、Git 仓库管理器、Git 命令定义；
+             263 起 Git 插件拆成 frontend / shared / backend 模块，类在 backend 与 shared 里 -->
         <dependency>
             <groupId>com.jetbrains.intellij.vcs</groupId>
             <artifactId>git</artifactId>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.jetbrains.intellij.vcs</groupId>
+            <artifactId>git-backend</artifactId>
+            <version>${intellij.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.jetbrains.intellij.vcs</groupId>
+            <artifactId>git-shared</artifactId>
             <version>${intellij.version}</version>
             <scope>provided</scope>
         </dependency>
@@ -150,7 +165,7 @@
         <dependency>
             <groupId>org.jetbrains</groupId>
             <artifactId>annotations</artifactId>
-            <version>24.1.0</version>
+            <version>26.1.0</version>
             <scope>provided</scope>
         </dependency>
 
@@ -177,7 +192,7 @@
         <dependency>
             <groupId>org.jetbrains.intellij.deps.kotlinx</groupId>
             <artifactId>kotlinx-coroutines-core-jvm</artifactId>
-            <version>1.10.2-intellij-1</version>
+            <version>1.11.0-intellij-1</version>
             <scope>provided</scope>
         </dependency>
 

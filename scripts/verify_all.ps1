@@ -65,7 +65,25 @@ if (-not $SkipNode) {
 if (-not $SkipJava) {
     Push-Location $root
     try {
-        Invoke-Step "intellij compile" { mvn -q -DskipTests compile }
+        # The 2026.3 platform is built for JVM 25, so an older JDK cannot read its class files.
+        # 2026.3 平台用 Java 25 编译，旧 JDK 读不了它的 class 文件（错误的版本 69.0）。
+        # Check the JDK Maven will actually use: JAVA_HOME first, PATH second.
+        # 检查 Maven 实际会用的 JDK：优先 JAVA_HOME，其次才是 PATH 里的 javac。
+        $javacExe = "javac"
+        if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME "bin/javac.exe"))) {
+            $javacExe = Join-Path $env:JAVA_HOME "bin/javac.exe"
+        }
+        $javacVersion = (& $javacExe -version 2>&1) -join " "
+        $javacMajor = 0
+        if ($javacVersion -match 'javac (\d+)') { $javacMajor = [int]$Matches[1] }
+        if ($javacMajor -lt 25) {
+            Write-Host "SKIPPED: intellij compile needs JDK 25, current: $javacVersion" -ForegroundColor Yellow
+            Write-Host "         set JAVA_HOME to a JDK 25 / JBR 25 before running this script." -ForegroundColor Yellow
+            $failures.Add("intellij compile (needs JDK 25, found $javacVersion)")
+        }
+        else {
+            Invoke-Step "intellij compile" { mvn -q -DskipTests compile }
+        }
     }
     finally {
         Pop-Location

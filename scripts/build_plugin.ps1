@@ -46,6 +46,23 @@ try {
     }
 
     Write-Host "== mvn package =="
+    # The 2026.3 platform ships JVM 25 class files, an older JDK fails with "wrong class file version 69.0".
+    # Check the JDK Maven will actually use: JAVA_HOME first, PATH second.
+    $javacExe = "javac"
+    if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME "bin/javac.exe"))) {
+        $javacExe = Join-Path $env:JAVA_HOME "bin/javac.exe"
+    }
+    $javacVersion = "javac (not found)"
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $javacVersion = (& $javacExe -version 2>&1) -join " "
+    }
+    catch { }
+    finally { $ErrorActionPreference = $prevEap }
+    if ($javacVersion -notmatch 'javac (\d+)' -or [int]$Matches[1] -lt 25) {
+        throw "mvn package needs JDK 25 (found: $javacVersion); point JAVA_HOME at a JDK 25 / JBR 25"
+    }
     & mvn -q -DskipTests package
     if ($LASTEXITCODE -ne 0) { throw "mvn package failed" }
 

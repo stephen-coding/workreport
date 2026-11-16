@@ -45,7 +45,8 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          # The 2026.3 platform ships JVM 25 class files; the plugin still targets Java 21 bytecode.
+          java-version: "25"
       - name: Compile plugin
         run: mvn -q -DskipTests compile
 
@@ -148,7 +149,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "25"
       - name: Package plugin with bundled core
         run: mvn -q -DskipTests package
       - name: Verify bundled core in plugin zip

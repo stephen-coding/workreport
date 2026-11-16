@@ -505,7 +505,7 @@ Maven 默认只认 Java，需要显式加 Kotlin 编译：
 <plugin>
   <groupId>org.jetbrains.kotlin</groupId>
   <artifactId>kotlin-maven-plugin</artifactId>
-  <version>${kotlin.version}</version>   <!-- 必须与平台内置 Kotlin 一致，当前 2.3.20-RC2 -->
+  <version>${kotlin.version}</version>   <!-- 必须与平台内置 Kotlin 一致，当前 2.4.21-RC（平台 263） -->
   <executions>
     <execution>
       <id>compile-kotlin</id>

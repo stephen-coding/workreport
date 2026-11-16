@@ -5,7 +5,7 @@
 ### 支持的版本范围
 
 ```xml
-<idea-version since-build="252" until-build="262.*"/>
+<idea-version since-build="252" until-build="263.*"/>
 ```
 
 **兼容版本**:
@@ -13,7 +13,20 @@
 - ✅ **IntelliJ IDEA 2025.3.x** (build 253.*)
 - ✅ **IntelliJ IDEA 2026.1.x** (build 261.*)
 - ✅ **IntelliJ IDEA 2026.2.x** (build 262.*)
+- ✅ **IntelliJ IDEA 2026.3.x** (build 263.*) — 当前编译基线
 
+> 编译基线（3.1.1 起）：`pom.xml` 的 `intellij.version = 263.7307.259`（2026.3），
+> `kotlin.version = 2.4.21-RC` 与平台内置 `kotlin-stdlib` 一致；
+> `kotlinx-coroutines-core-jvm = 1.11.0-intellij-1`、`org.jetbrains:annotations = 26.1.0` 跟平台同版。
+>
+> **构建 JDK 必须 ≥ 25**：2026.3 平台的 class 文件版本是 69（Java 25），
+> 用 JDK 21 编译会报 `类文件具有错误的版本 69.0，应为 65.0`。`pom.xml` 仍保持
+> `source/target = 21`，产出 Java 21 字节码，所以插件还能跑在 2025.2+ 的 JBR 21 上（CI 也已改用 JDK 25）。
+>
+> **Git 插件坐标拆分（263 起）**：`com.jetbrains.intellij.vcs:git` 变成只含插件描述符的 5 KB 桩，
+> `git4idea.*` 类移到了 `git-backend`（16 MB）与 `git-shared`，三个依赖都要声明，否则
+> 编不过 `git4idea.commands` / `git4idea.repo`。
+>
 > **为什么从 252 开始**：编辑器 ghost text 依赖平台的 inline completion API
 > （`com.intellij.inline.completion.provider` 扩展点 + `ide-codeinsight-inline` 产物），
 > 该 API 的稳定形态从 2025.2（252）开始提供；更早的 233–251 无法编译通过。
@@ -50,6 +63,7 @@ IntelliJ IDEA 使用以下版本号格式：`主版本。次版本。修订号`
 | 2025.3.x | 253.* | 2025 Q4 |
 | 2026.1.x | 261.* | 2026 Q1 |
 | 2026.2.x | 262.* | 2026 Q2 |
+| 2026.3.x | 263.* | 2026 Q4 |
 
 ---
 
@@ -61,7 +75,7 @@ IntelliJ IDEA 使用以下版本号格式：`主版本。次版本。修订号`
 
 ```xml
 <!-- 例如回退到 2025.1.x（必须先移除 ghost text 扩展点） -->
-<idea-version since-build="251" until-build="262.*"/>
+<idea-version since-build="251" until-build="263.*"/>
 ```
 
 **注意**: 需要确保代码没有使用新版本 API，否则在老版本 IDE 上会报错；
@@ -72,7 +86,7 @@ IntelliJ IDEA 使用以下版本号格式：`主版本。次版本。修订号`
 
 ```xml
 <!-- 仅支持最新稳定版 -->
-<idea-version since-build="262" until-build="*"/>
+<idea-version since-build="263" until-build="*"/>
 ```
 
 ### 场景 3: 移除版本限制（不推荐）
@@ -96,6 +110,10 @@ D:/IDEA/
 ├── IntelliJ IDEA 2024.1/
 └── IntelliJ IDEA 2025.3/
 ```
+
+> 编译 2026.3 时必须用 JDK 25（可以借用 IDE 自带的 JBR，例如
+> `$env:JAVA_HOME='D:\IntelliJ IDEA 2025.2.5\jbr'`，其中 `javac -version` 为 25.x）；
+> 换成 JDK 21 会直接报 class 文件版本 69 不兼容。
 
 ### 方法 2: 使用 Maven 多环境构建
 
@@ -297,7 +315,7 @@ public void createToolWindow(Project project) {
 <!-- 插件 ID: workreport-ai-assistant-lts -->
 
 <!-- 标准版本（含编辑器 ghost text 与语义索引） -->
-<idea-version since-build="252" until-build="262.*"/>
+<idea-version since-build="252" until-build="263.*"/>
 <!-- 插件 ID: workreport-ai-assistant -->
 ```
 
@@ -315,7 +333,7 @@ public void createToolWindow(Project project) {
 
 ### 已实施
 
-✅ **收紧后的兼容策略**: 支持 2025.2.x - 2026.2.x（`since-build=252`）
+✅ **收紧后的兼容策略**: 支持 2025.2.x - 2026.3.x（`since-build=252` / `until-build=263.*`）
 
 ### 待验证
 
@@ -323,6 +341,7 @@ public void createToolWindow(Project project) {
 - 在 2025.2.x 上验证 ghost text（inline completion API 最早可用版本）
 - 在 2026.1.x 上验证聊天、工具、语义索引全链路
 - 在 2026.2.x 上验证 diff 确认 / 快照回退等编辑功能
+- 在 2026.3.x 上验证 ghost text（inline completion API）、面板与 Core 全链路
 
 ### 下一步计划
 
@@ -336,7 +355,7 @@ public void createToolWindow(Project project) {
 
 ### 关键要点
 
-1. ✅ **当前配置覆盖 2025.2 及以后的所有稳定版**
+1. ✅ **当前配置覆盖 2025.2 及以后的所有稳定版（截至 2026.3）**
 2. ⚠️ **需要在实际环境中测试各版本兼容性**
 3. 🔄 **根据用户反馈动态调整版本策略**
 4. 📊 **优先保证核心功能的稳定性**

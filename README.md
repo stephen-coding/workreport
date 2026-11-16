@@ -4,10 +4,10 @@
 
 **IntelliJ IDEA 插件 + VS Code 扩展 · 由语言无关的 Python Agent Core 驱动**
 
-[![Version](https://img.shields.io/badge/version-3.1.0-blue.svg)](https://github.com/stephen-coding/workreport)
-[![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
-![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
-[![JDK](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
+[![Version](https://img.shields.io/badge/version-3.1.1-blue.svg)](https://github.com/stephen-coding/workreport)
+[![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.3-green.svg)](https://www.jetbrains.com/idea/)
+![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-263.*-lightgrey.svg)
+[![JDK](https://img.shields.io/badge/JDK-25%20build%20%2F%2021%20bytecode-orange.svg)](https://adoptium.net/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-yellow.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-lightgrey.svg)](LICENSE)
 
@@ -144,9 +144,9 @@ workreport-intellij-plugin/
 | 用途 | 需要 |
 |---|---|
 | 只跑 Core | Python 3.9+，依赖仅 `pydantic>=2.5`、`httpx>=0.27`（`numpy` 可选，用于向量检索加速） |
-| 编译 IntelliJ 插件 | JDK 21 + Maven 3.6+；**本地无需安装 IDEA**，平台依赖由 Maven 从 JetBrains 仓库拉取 |
+| 编译 IntelliJ 插件 | **JDK 25** + Maven 3.6+；**本地无需安装 IDEA**，平台依赖由 Maven 从 JetBrains 仓库拉取。2026.3 平台用 Java 25 编译，旧 JDK 会报 `类文件具有错误的版本 69.0`；插件自身字节码仍是 Java 21（`-source/-target 21`），可跑在 2025.2+ 的 JBR 21 上 |
 | 编译 VS Code 扩展 | Node.js 18+ |
-| 运行插件 | IntelliJ IDEA 2025.2 ~ 2026.2（`since-build=252` / `until-build=262.*`） |
+| 运行插件 | IntelliJ IDEA 2025.2 ~ 2026.3（`since-build=252` / `until-build=263.*`） |
 | 可选加速 | Rust 工具链（cargo）；无 cargo 时自动使用纯 Python 实现 |
 
 ### 1) 启动 Core
@@ -324,8 +324,8 @@ powershell -File scripts/build_native.ps1
 
 | 产物 | 路径 | 说明 |
 |---|---|---|
-| 可安装 zip | `target/workreport-ai-assistant-3.1.0.zip` | 内置 `agent-core/agent-core.exe`，用户机器**不需要 Python** |
-| 插件 jar | `target/workreport-intellij-plugin-3.1.0.jar` | 插件本体，不含 Core 可执行文件 |
+| 可安装 zip | `target/workreport-ai-assistant-3.1.1.zip` | 内置 `agent-core/agent-core.exe`，用户机器**不需要 Python** |
+| 插件 jar | `target/workreport-intellij-plugin-3.1.1.jar` | 插件本体，不含 Core 可执行文件 |
 | Core 可执行文件 | `core/dist/agent-core.exe` | 也可单独被 `AGENT_CORE_EXE` 指定 |
 
 只跑 `mvn package` 而不先构建 Core 时，zip 不含可执行文件，插件会回退到开发模式（需要 Python + `AGENT_CORE_HOME`）。
@@ -335,7 +335,7 @@ powershell -File scripts/build_native.ps1
 | job | 矩阵 | 内容 |
 |---|---|---|
 | `core` | Ubuntu + Windows × Python 3.9 / 3.12 | 单测 + 8 个协议冒烟（tools / memory / mcp / subagent / command / todos / v3 / ask） |
-| `intellij` | Ubuntu + JDK 21 | `mvn -DskipTests compile` |
+| `intellij` | Ubuntu + JDK 25 | `mvn -DskipTests compile` |
 | `vscode` | Node 18 + Python 3.11 | 编译 + `npm run smoke` |
 | `native` | Ubuntu / Windows | 编译 Rust 扩展，并以 `AGENT_CORE_EXPECT_RUST=1` 跑单测 |
 | `core-exe` | Windows | PyInstaller 打包 → `--help` / `--native-info` 自检 → 校验 zip 内确实含 `agent-core.exe` |
@@ -346,10 +346,10 @@ powershell -File scripts/build_native.ps1
 
 | 项 | 当前值 |
 |---|---|
-| 插件版本 | 3.1.0 |
-| 目标平台（编译用） | `intellij.version = 261.25134.95`（2026.1） |
-| 安装区间 | `since-build=252` / `until-build=262.*`（2025.2 ~ 2026.2） |
-| Kotlin | `2.3.20-RC2`，必须与目标平台内置版本一致 |
+| 插件版本 | 3.1.1 |
+| 目标平台（编译用） | `intellij.version = 263.7307.259`（2026.3） |
+| 安装区间 | `since-build=252` / `until-build=263.*`（2025.2 ~ 2026.3） |
+| Kotlin | `2.4.21-RC`（平台内置 `kotlin-stdlib` 版本），必须与目标平台一致 |
 | VS Code | `^1.85.0` |
 | 验收基线 | Core 单测 **258 例**（跳过 1 个平台相关用例）、8 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过、渲染器单测 **14 例**（`MarkdownParserTest`） |
 | 性能基线 | 冷启动 343~398 ms、空闲 RSS 97.4~97.7 MB、单轮 20.6~22.1 ms、千条会话列表 105~110 ms（`core/scripts/bench_core.py`） |
@@ -357,7 +357,7 @@ powershell -File scripts/build_native.ps1
 升级平台时 `pom.xml` 的 `intellij.version`、`kotlin.version` 与 `plugin.xml` 的 `since-build` /
 `until-build` 必须一起改；版本号规则与多版本测试方法见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
-### 版本演进（v2.0 → v3.1.0）
+### 版本演进（v2.0 → v3.1.1）
 
 | 版本 | 提交 | 主要变更 |
 |---|---|---|
@@ -383,7 +383,8 @@ powershell -File scripts/build_native.ps1
 | v2.6.0 | `e6f3b38` | `run_command` 终端工具（白名单 auto / 其余 confirm / 危险命令拒绝）与 `diagnostics`；`todo_write` + `chat/todos` 两端任务清单 |
 | v2.7.0 | `bba6051` | VS Code：行内补全、设置项补齐与一致性断言、SecretStorage 迁移、历史会话面板 |
 | v3.0.0 | 本次提交 | 记忆候选人工确认、会话全文检索、本地用量统计、性能基线、中英双语 UI、Marketplace `change-notes` |
-| v3.1.0 | 本次提交 | 对话渲染内核重写（块级 Markdown + 增量解析 + 高度缓存）、标签条/输入区/空态/清单全面重绘、历史与记忆共用 `PickerPopup`、MCP 确认改为内联卡片、模型提问工具 `ask_user` + `AskCard`、`-Dagent.ui.classic=true` 一键回退 |
+| v3.1.0 | `e296136` | 对话渲染内核重写（块级 Markdown + 增量解析 + 高度缓存）、标签条/输入区/空态/清单全面重绘、历史与记忆共用 `PickerPopup`、MCP 确认改为内联卡片、模型提问工具 `ask_user` + `AskCard`、`-Dagent.ui.classic=true` 一键回退 |
+| v3.1.1 | 本次提交 | 适配 IntelliJ IDEA 2026.3（平台 263.7307.259 + Kotlin 2.4.21-RC），`until-build` 提到 `263.*`；功能无变化 |
 
 M1–M8 的从零落地集中在 `a49411f` ~ `47eafe6`；更早的 `bf89f58` 是重构前最后一次 CDN 下载修复。
 
