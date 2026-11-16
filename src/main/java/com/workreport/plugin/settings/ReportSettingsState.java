@@ -75,6 +75,11 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
     public double temperature = 0.2;
     public int maxTokens = 4096;
 
+    // Commands the agent may run without asking (one prefix per line).
+    // Leave blank to use the Core's built-in list (mvn / npm / pytest / git status ...).
+    // 免确认的命令前缀（每行一个）；留空使用 Core 内置白名单。
+    public String commandAllowlist = "";
+
     public static ReportSettingsState getInstance() {
         return ApplicationManager.getApplication().getService(ReportSettingsState.class);
     }
@@ -109,6 +114,7 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
         this.subagentConcurrency = state.subagentConcurrency > 0 ? state.subagentConcurrency : 3;
         this.temperature = state.temperature > 0 ? state.temperature : 0.2;
         this.maxTokens = state.maxTokens > 0 ? state.maxTokens : 4096;
+        this.commandAllowlist = state.commandAllowlist != null ? state.commandAllowlist : "";
     }
 
     // Reset privacy confirmation when API endpoint changes (require re-confirmation)

@@ -53,7 +53,12 @@ public final class FileText {
     }
 
     public static Decoded read(Path path) throws IOException {
-        byte[] bytes = Files.readAllBytes(path);
+        return decode(Files.readAllBytes(path));
+    }
+
+    // Same detection for files and for captured command output (cmd/Maven emit GBK).
+    // 文件与命令输出的编码探测共用一套规则（cmd / Maven 输出常常是 GBK）。
+    public static Decoded decode(byte[] bytes) {
         int len = bytes.length;
         if (startsWith(bytes, 0xEF, 0xBB, 0xBF)) {
             return new Decoded(new String(bytes, 3, len - 3, StandardCharsets.UTF_8),

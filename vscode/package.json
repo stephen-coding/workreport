@@ -117,6 +117,14 @@
           "default": false,
           "description": "自动接受文件修改（跳过 diff 确认）"
         },
+        "agentCoder.commandAllowlist": {
+          "type": "array",
+          "default": [],
+          "description": "免确认的终端命令前缀；留空使用内置白名单（mvn / npm / pytest / git status ...）。不在名单内的命令每次确认，危险命令一律拒绝",
+          "items": {
+            "type": "string"
+          }
+        },
         "agentCoder.mcpServers": {
           "type": "array",
           "default": [],

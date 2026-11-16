@@ -1,7 +1,7 @@
 // Shell-side tool implementations for tool/invoke (files, search, git, edits).
 // tool/invoke 的 Shell 侧工具实现（文件、搜索、Git、编辑）。
 
-import { execFile } from "child_process";
+import { execFile, spawn } from "child_process";
 import { promises as fs } from "fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "path";
 import { promisify } from "util";
@@ -14,12 +14,22 @@ const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LIST_ENTRIES = 300;
 const MAX_SEARCH_RESULTS = 50;
 const MAX_DIFF_CHARS = 20000;
+const DEFAULT_COMMAND_TIMEOUT_SEC = 120;
+const MAX_COMMAND_TIMEOUT_SEC = 600;
+// Keep the tail of long output: failures sit at the end.
+// 长输出保留尾部：失败信息都在末尾。
+const MAX_OUTPUT_CHARS = 8000;
+const HEAD_OUTPUT_CHARS = 3200;
+const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "target", "dist", "out", "build", ".idea"]);
 
 interface ToolRequest {
   toolCallId?: string;
   toolName?: string;
   params?: Record<string, unknown>;
+  // Effective permission for this call, computed by the Core (auto/confirm/deny).
+  // Core 为本次调用计算出的生效权限；run_command 会按它决定是否弹窗。
+  permission?: string;
 }
 
 export class ToolRunner {
@@ -33,7 +43,7 @@ export class ToolRunner {
     const args = request.params ?? {};
     let content: string;
     try {
-      content = await this.run(toolName, args);
+      content = await this.run(toolName, args, request.permission ?? "auto");
       connection.notify("tool/result", { toolCallId, ok: true, result: content });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -41,7 +51,11 @@ export class ToolRunner {
     }
   }
 
-  private async run(toolName: string, args: Record<string, unknown>): Promise<string> {
+  private async run(
+    toolName: string,
+    args: Record<string, unknown>,
+    permission: string,
+  ): Promise<string> {
     switch (toolName) {
       case "read_file":
         return this.readFile(args);
@@ -61,6 +75,8 @@ export class ToolRunner {
         return this.deleteFile(args);
       case "revert_file":
         return this.revertFile(args);
+      case "run_command":
+        return this.runCommand(args, permission);
       default:
         throw new Error(`未知工具: ${toolName}`);
     }
@@ -346,4 +362,101 @@ export class ToolRunner {
     await this.persist(path, previous);
     return `已回退 ${this.relativeLabel(path)} 到上一次修改前`;
   }
+
+  // ---------------------------------------------------------------- terminal
+
+  private async runCommand(args: Record<string, unknown>, permission: string): Promise<string> {
+    const command = this.stringArg(args, "command").trim();
+    if (!command) {
+      throw new Error("缺少参数 command");
+    }
+    const cwd = args.cwd ? this.resolvePath(args.cwd) : resolve(this.projectRoot);
+    const stat = await fs.stat(cwd).catch(() => null);
+    if (!stat?.isDirectory()) {
+      throw new Error(`工作目录不存在: ${this.relativeLabel(cwd)}`);
+    }
+    const requested = this.numberArg(args, "timeout_sec") ?? DEFAULT_COMMAND_TIMEOUT_SEC;
+    const timeoutSec = Math.min(
+      MAX_COMMAND_TIMEOUT_SEC,
+      Math.max(1, Math.floor(requested)),
+    );
+    // Only allowlisted commands arrive as "auto"; everything else asks first.
+    // 只有白名单内的命令会是 auto，其余都会先弹窗确认。
+    if (permission !== "auto") {
+      const approved = await confirmAction(
+        `Agent 请求在 ${this.relativeLabel(cwd)} 执行命令：\n\n${command}\n\n允许后才会运行。`,
+      );
+      if (!approved) {
+        throw new Error(`用户拒绝：未执行命令 ${command}`);
+      }
+    }
+    return this.exec(command, cwd, timeoutSec);
+  }
+
+  private exec(command: string, cwd: string, timeoutSec: number): Promise<string> {
+    // Windows goes through cmd with a UTF-8 code page so Chinese output is readable;
+    // the command string itself is passed verbatim, never rewritten.
+    // Windows 先切 UTF-8 代码页，中文输出才不会乱码；命令本身原样传入。
+    const line = process.platform === "win32" ? `chcp 65001>nul & ${command}` : command;
+    return new Promise<string>((done, fail) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutSec * 1000);
+      const child = spawn(line, {
+        cwd,
+        shell: true,
+        windowsHide: true,
+        signal: controller.signal,
+      });
+      let captured = "";
+      let settled = false;
+      const collect = (chunk: Buffer): void => {
+        if (captured.length >= MAX_CAPTURE_BYTES) {
+          return;
+        }
+        captured += chunk.toString("utf-8");
+      };
+      child.stdout?.on("data", collect);
+      child.stderr?.on("data", collect);
+      child.on("error", (error: NodeJS.ErrnoException) => {
+        clearTimeout(timer);
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (error.name === "AbortError") {
+          const body = captured.trim() ? `\n${truncateOutput(captured.trim())}` : "，无输出";
+          done(`已终止（超时 ${timeoutSec} 秒）${body}`);
+          return;
+        }
+        fail(new Error(`执行失败: ${error.message}`));
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (settled) {
+          return;
+        }
+        settled = true;
+        const body = captured.trim() === "" ? "（无输出）" : truncateOutput(captured.trim());
+        const status = code === null ? "已终止" : `退出码: ${code}`;
+        const hint = code === null || code === 0
+          ? ""
+          : "（命令未成功，请根据上面的输出定位原因）";
+        done(`${body}\n${status}${hint}`);
+      });
+    });
+  }
+}
+
+// Compact long output: keep the head (command echo) and the tail (failure).
+// 长输出压缩：保留头部（命令回显）与尾部（失败信息）。
+function truncateOutput(text: string): string {
+  if (text.length <= MAX_OUTPUT_CHARS) {
+    return text;
+  }
+  const tailChars = MAX_OUTPUT_CHARS - HEAD_OUTPUT_CHARS;
+  const head = text.slice(0, HEAD_OUTPUT_CHARS);
+  const tail = text.slice(text.length - tailChars);
+  const omitted = text.slice(HEAD_OUTPUT_CHARS, text.length - tailChars).split(/\r?\n/).length;
+  const total = text.split(/\r?\n/).length;
+  return `${head}\n...（中间省略 ${omitted} 行，共 ${total} 行）...\n${tail}`;
 }

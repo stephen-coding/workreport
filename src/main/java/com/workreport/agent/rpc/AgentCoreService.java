@@ -17,7 +17,9 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
@@ -143,6 +145,9 @@ public final class AgentCoreService implements Disposable {
         settings.put("subagent_concurrency", state.subagentConcurrency);
         settings.put("temperature", state.temperature);
         settings.put("max_tokens", state.maxTokens);
+        // Empty allowlist means "use the Core's built-in defaults".
+        // 白名单留空时下空数组，Core 会回退到内置默认值。
+        settings.put("command_allowlist", splitAllowlist(state.commandAllowlist));
         String apiKey = ModelProfiles.apiKey(profile.name);
         if (apiKey != null && !apiKey.isEmpty()) {
             settings.put("api_key", apiKey);
@@ -171,6 +176,20 @@ public final class AgentCoreService implements Disposable {
         hello.put("protocolVersion", "1.0");
         hello.put("ide", "intellij");
         conn.notify("ide/hello", hello);
+    }
+
+    private static List<String> splitAllowlist(String text) {
+        List<String> entries = new ArrayList<>();
+        if (text == null) {
+            return entries;
+        }
+        for (String line : text.split("\\R")) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty() && !trimmed.startsWith("#")) {
+                entries.add(trimmed);
+            }
+        }
+        return entries;
     }
 
     // Parse the MCP server JSON typed in the settings page (array or name map).

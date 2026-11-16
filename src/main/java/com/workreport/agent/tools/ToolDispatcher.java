@@ -29,6 +29,7 @@ public final class ToolDispatcher {
     private final SearchTools searchTools;
     private final GitTools gitTools;
     private final EditTools editTools;
+    private final CommandTools commandTools;
 
     public ToolDispatcher(Project project) {
         this.writeGate = ProjectWriteGate.getInstance(project);
@@ -36,6 +37,7 @@ public final class ToolDispatcher {
         this.searchTools = new SearchTools(project, fileTools);
         this.gitTools = new GitTools(project);
         this.editTools = new EditTools(project, fileTools);
+        this.commandTools = new CommandTools(project, fileTools);
     }
 
     public void onToolInvoke(JsonObject params, JsonRpcConnection connection) {
@@ -55,11 +57,14 @@ public final class ToolDispatcher {
 
         // Tool execution is blocking -> run on the pooled thread, never on EDT.
         // 工具执行是阻塞操作 -> 放到后台线程池，绝不在 EDT 上执行。
-        // Auto mode (panel checkbox) skips the diff confirmation for file mutations.
-        // 面板勾选「自动执行」时，文件写操作不再弹 diff 确认。
+        // Auto mode (panel checkbox) skips the diff confirmation for file mutations;
+        // terminal commands always follow the permission the Core computed for the
+        // call, so a dangerous command can never run on auto-accept alone.
+        // 面板勾选「自动执行」时文件写操作不再弹 diff 确认；
+        // 终端命令始终按 Core 本次下发的权限处理，不会因自动接受而免确认。
         boolean autoAccept = ReportSettingsState.getInstance().autoAcceptEdits;
-        boolean needsApproval = !"auto".equals(permission) && !autoAccept;
         boolean writeOp = WRITE_TOOLS.contains(toolName);
+        boolean needsApproval = !"auto".equals(permission) && !(writeOp && autoAccept);
         String label = sessionLabel == null || sessionLabel.isBlank() ? "会话" : sessionLabel;
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             if (writeOp) {
@@ -108,6 +113,8 @@ public final class ToolDispatcher {
                 return editTools.deleteFile(args, needsApproval);
             case "revert_file":
                 return editTools.revertFile(args);
+            case "run_command":
+                return commandTools.runCommand(args, needsApproval);
             default:
                 return ToolResult.fail("未知工具: " + toolName);
         }

@@ -41,6 +41,7 @@ public final class ReportSettingsConfigurable implements Configurable {
     private JBTextField subagentConcurrencyField;
     private JBTextField temperatureField;
     private JBTextField maxTokensField;
+    private JBTextArea commandAllowlistField;
 
     @Nls(capitalization = Nls.Capitalization.Title)
     @Override
@@ -115,6 +116,12 @@ public final class ReportSettingsConfigurable implements Configurable {
         maxTokensField = new JBTextField(8);
         maxTokensField.getEmptyText().setText("4096");
         maxTokensField.setToolTipText("单次回复最大输出 tokens，范围 256~32768，默认 4096");
+        commandAllowlistField = new JBTextArea(5, 60);
+        commandAllowlistField.setLineWrap(true);
+        commandAllowlistField.getEmptyText().setText(
+                "留空使用内置白名单（每行一个前缀，例如：\nmvn\nnpm run\npython -m unittest\ngit status）");
+        commandAllowlistField.setToolTipText(
+                "这些前缀开头的命令由 Agent 直接执行；其余命令每次确认；删除/推送等危险命令一律拒绝");
         coreExeField.getEmptyText().setText("留空自动探测：插件内置 agent-core → AGENT_CORE_EXE → core/dist");
         coreHomeField.getEmptyText().setText("回退到 Python 模式时的 core 目录，例如 D:/learn/workreport-intellij-plugin/core");
         pythonField.getEmptyText().setText("回退到 Python 模式时的解释器，例如 python；留空用 AGENT_PYTHON / PATH");
@@ -154,6 +161,10 @@ public final class ReportSettingsConfigurable implements Configurable {
                 .addLabeledComponent(new JBLabel("温度:"), temperatureField, 1, false)
                 .addLabeledComponent(new JBLabel("单轮最大输出:"), maxTokensField, 1, false)
                 .addComponent(new JBLabel("（上下文窗口按 75% 折算历史预算；并发与采样参数随设置下发给 Core，两端一致）"))
+                .addComponent(new JBLabel("终端命令免确认白名单（每行一个前缀）:"))
+                .addComponent(new JBScrollPane(commandAllowlistField))
+                .addComponent(new JBLabel("（留空 = 内置白名单；不在名单内的命令每次弹窗确认；"
+                        + "rm -rf / git push / format 等危险命令直接拒绝，不弹窗）"))
                 .addSeparator()
                 .addComponent(new JBLabel("Agent Core 运行环境（一般不需要改）:"))
                 .addLabeledComponent(new JBLabel("Core 可执行文件:"), coreExeField, 1, false)
@@ -184,7 +195,8 @@ public final class ReportSettingsConfigurable implements Configurable {
                 || !toolConcurrencyField.getText().trim().equals(String.valueOf(state.toolConcurrency))
                 || !subagentConcurrencyField.getText().trim().equals(String.valueOf(state.subagentConcurrency))
                 || !temperatureField.getText().trim().equals(String.valueOf(state.temperature))
-                || !maxTokensField.getText().trim().equals(String.valueOf(state.maxTokens));
+                || !maxTokensField.getText().trim().equals(String.valueOf(state.maxTokens))
+                || !commandAllowlistField.getText().trim().equals(state.commandAllowlist);
     }
 
     @Override
@@ -235,6 +247,7 @@ public final class ReportSettingsConfigurable implements Configurable {
         state.subagentConcurrency = parseIntField(subagentConcurrencyField, 3, 1, 8, "子代理并发");
         state.temperature = parseTemperature();
         state.maxTokens = parseIntField(maxTokensField, 4096, 256, 32768, "单轮最大输出");
+        state.commandAllowlist = commandAllowlistField.getText().trim();
         state.embeddingModel = embeddingModelField.getText().trim().isEmpty()
                 ? "nomic-embed-text" : embeddingModelField.getText().trim();
     }
@@ -265,6 +278,7 @@ public final class ReportSettingsConfigurable implements Configurable {
         subagentConcurrencyField.setText(String.valueOf(state.subagentConcurrency));
         temperatureField.setText(String.valueOf(state.temperature));
         maxTokensField.setText(String.valueOf(state.maxTokens));
+        commandAllowlistField.setText(state.commandAllowlist);
     }
 
     // A typo here silently truncates every task, so out-of-range values fail loudly.

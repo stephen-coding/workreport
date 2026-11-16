@@ -45,6 +45,15 @@ export function collectSettings(): Record<string, unknown> {
   if (Array.isArray(mcpServers) && mcpServers.length > 0) {
     settings.mcp_servers = mcpServers;
   }
+
+  // Non-empty overrides the Core's built-in list; empty keeps the defaults.
+  // 非空列表覆盖 Core 内置白名单，空列表继续用默认值。
+  const allowlist = config.get<string[]>("commandAllowlist", []);
+  if (Array.isArray(allowlist)) {
+    settings.command_allowlist = allowlist
+      .map((entry) => String(entry).trim())
+      .filter((entry) => entry.length > 0);
+  }
   return settings;
 }
 
