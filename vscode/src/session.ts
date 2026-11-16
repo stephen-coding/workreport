@@ -6,7 +6,7 @@ import { homedir } from "os";
 import { join } from "path";
 import * as vscode from "vscode";
 import { locateCoreExe, locateCoreHome, locatePython } from "./locator";
-import { ChatPanel, HistoryEntry, TodoItem } from "./panel";
+import { ChatPanel, HistoryEntry, PendingMemory, TodoItem } from "./panel";
 import { RpcConnection, RpcMessage } from "./rpc";
 import { collectSettings } from "./settings";
 import { ensureApiKey } from "./secrets";
@@ -40,6 +40,9 @@ export class CoreSession {
       onHistoryList: () => void this.loadHistory(),
       onHistoryOpen: (id) => void this.openSession(id),
       onHistoryDelete: (id) => void this.deleteSession(id),
+      onHistorySearch: (query) => void this.searchHistory(query),
+      onMemoryList: () => void this.loadMemories(),
+      onMemoryResolve: (id, approve, content) => void this.resolveMemory(id, approve, content),
       onNewSession: () => this.newSession(),
     });
   }
@@ -242,6 +245,71 @@ export class CoreSession {
     }
   }
 
+  // Empty query falls back to the plain list so clearing the box restores it.
+  // 查询为空时退回完整列表：清空搜索框就能恢复。
+  private async searchHistory(query: string): Promise<void> {
+    if (!query.trim()) {
+      await this.loadHistory();
+      return;
+    }
+    const connection = await this.connected();
+    if (!connection) {
+      return;
+    }
+    try {
+      const response = await connection.request("session/search", { query, limit: 20 });
+      this.panel.showHistorySearch(toSearchEntries(response.result?.results), query);
+    } catch (error) {
+      this.panel.appendSystem(`[错误] 搜索历史失败：${describe(error)}`);
+    }
+  }
+
+  // ---------------------------------------------------------------- memory
+
+  private async loadMemories(): Promise<void> {
+    const connection = await this.connected();
+    if (!connection) {
+      return;
+    }
+    try {
+      const response = await connection.request("memory/pending", {});
+      this.panel.showMemories(toMemories(response.result?.items));
+    } catch (error) {
+      this.panel.appendSystem(`[错误] 读取记忆候选失败：${describe(error)}`);
+    }
+  }
+
+  // Re-read after every decision so the list matches the Core.
+  // 每次处理完重新拉一次，保证列表与 Core 一致。
+  private async resolveMemory(id: string, approve: boolean, content?: string): Promise<void> {
+    if (!id) {
+      return;
+    }
+    const connection = await this.connected();
+    if (!connection) {
+      return;
+    }
+    try {
+      if (approve) {
+        const params: Record<string, unknown> = { id };
+        if (content) {
+          params.content = content;
+        }
+        const response = await connection.request("memory/promote", params);
+        const result = response.result ?? {};
+        const duplicate = result.duplicate as Record<string, unknown> | undefined;
+        this.panel.setStatus(`已记住：${String(result.title ?? "")}`
+          + (duplicate ? `（与已有记忆 #${String(duplicate.id)} 相似，建议整理）` : ""));
+      } else {
+        await connection.request("memory/discard", { id });
+        this.panel.setStatus("已忽略这条记忆候选");
+      }
+      await this.loadMemories();
+    } catch (error) {
+      this.panel.appendSystem(`[错误] 记忆操作失败：${describe(error)}`);
+    }
+  }
+
   // Shared "start if needed, then hand over the connection" step.
   // 历史操作共用：必要时启动 Core，再把连接交给调用方。
   private async connected(): Promise<RpcConnection | undefined> {
@@ -275,6 +343,18 @@ export class CoreSession {
         this.panel.setStatus("就绪");
         this.pushSettings();
         break;
+      case "session/indexProgress":
+        this.panel.setStatus(params.finished === true
+          ? "就绪"
+          : "正在建立会话索引，稍后可在「历史」里搜索...");
+        break;
+      case "memory/pendingChanged": {
+        const count = Number(params.count ?? 0);
+        if (count > 0) {
+          this.panel.setStatus(`有 ${count} 条新的记忆候选，点「记忆」确认`);
+        }
+        break;
+      }
       case "chat/token":
         this.panel.appendToken(String(params.delta ?? ""));
         break;
@@ -413,6 +493,33 @@ function toEntries(value: unknown): HistoryEntry[] {
       updatedAt: Number(item.updatedAt ?? 0),
     }))
     .filter((entry) => entry.id.length > 0);
+}
+
+// session/search returns sessionId/snippet instead of id/preview.
+// session/search 返回 sessionId 与 snippet，而不是 id 与 preview。
+function toSearchEntries(value: unknown): HistoryEntry[] {
+  return asArray(value)
+    .map((item) => ({
+      id: String(item.sessionId ?? ""),
+      title: String(item.title ?? ""),
+      preview: "",
+      messageCount: 0,
+      updatedAt: Number(item.updatedAt ?? 0),
+      snippet: String(item.snippet ?? ""),
+    }))
+    .filter((entry) => entry.id.length > 0);
+}
+
+function toMemories(value: unknown): PendingMemory[] {
+  return asArray(value)
+    .map((item) => ({
+      id: String(item.id ?? ""),
+      title: String(item.title ?? ""),
+      content: String(item.content ?? ""),
+      category: String(item.category ?? ""),
+      source: String(item.source ?? ""),
+    }))
+    .filter((item) => item.id.length > 0);
 }
 
 function formatSize(bytes: number): string {
