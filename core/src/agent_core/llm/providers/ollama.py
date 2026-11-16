@@ -21,7 +21,13 @@ from agent_core.llm.base import (
 )
 from agent_core.llm.streaming import OllamaStreamAccumulator, parse_sse_line
 from agent_core.llm.tool_text import TextToolCallFilter, recover_text_tool_calls
-from agent_core.llm.transport import HTTP_TIMEOUT, describe_transport_error
+from agent_core.llm.transport import (
+    HTTP_TIMEOUT,
+    RETRYABLE_STATUS,
+    RetryableStatus,
+    describe_failure,
+    run_with_retries,
+)
 from agent_core.protocol import ChatConfig, ErrorCode, Message, RpcError, ToolDef
 
 LOGGER = logging.getLogger(__name__)
@@ -96,30 +102,39 @@ class OllamaProvider(LLMProvider):
         # Hide tool-call markup the model may print into the text channel.
         # 模型把 <tool_call> 写进正文时，先屏蔽它再交给界面。
         guard = TextToolCallFilter()
+        delivered = False
 
         async def emit(piece: str) -> None:
+            nonlocal delivered
+            delivered = True
             for visible in guard.feed(piece):
                 await on_token(visible)
 
-        try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, transport=self._transport) as client:
+        async def attempt() -> OllamaStreamAccumulator:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT,
+                                         transport=self._transport) as client:
                 try:
                     accumulator = await self._stream(client, url, body, emit)
                     if wants_tools:
                         # The model accepted tool definitions again: end the probation.
                         # 模型又接受工具定义：结束假释。
                         accept_tools(*tools_key)
+                    return accumulator
                 except _ToolRejected as rejected:
                     LOGGER.warning("endpoint %s rejects tool definitions (%d): %s",
                                    url, rejected.status, rejected.body[:200])
                     suppress_tools(*tools_key)
                     self._warn_once(tools_key)
                     body.pop("tools", None)
-                    accumulator = await self._stream(client, url, body, emit)
-        except httpx.TransportError as exc:
-            # httpcore drops the text on timeouts/resets; give the Shell a real message.
-            # httpcore 的超时/断连异常没有文本，这里补上阶段、端点与处置建议。
-            raise describe_transport_error(exc, url, config.model) from exc
+                    return await self._stream(client, url, body, emit)
+
+        # Connect failures and 429/5xx are retried only before the first token.
+        # 只在首个 token 之前重试连接失败与 429/5xx。
+        accumulator = await run_with_retries(
+            attempt,
+            lambda: delivered,
+            lambda exc, retries: describe_failure(exc, url, config.model, retries),
+        )
 
         for visible in guard.flush():
             await on_token(visible)
@@ -145,6 +160,8 @@ class OllamaProvider(LLMProvider):
                 raw = (await response.aread()).decode("utf-8", "replace")
                 if is_tool_unsupported(response.status_code, raw):
                     raise _ToolRejected(response.status_code, raw)
+                if response.status_code in RETRYABLE_STATUS:
+                    raise RetryableStatus(response.status_code, raw)
                 raise RpcError(
                     ErrorCode.LLM_ERROR,
                     "Ollama 请求失败(%d) %s: %s" % (response.status_code, url, raw[:500]),

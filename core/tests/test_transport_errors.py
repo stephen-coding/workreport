@@ -9,11 +9,13 @@ import asyncio
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import httpx  # noqa: E402
 
+from agent_core.llm import transport as transport_module  # noqa: E402
 from agent_core.llm.providers.ollama import OllamaProvider  # noqa: E402
 from agent_core.llm.providers.openai_compat import OpenAICompatProvider  # noqa: E402
 from agent_core.llm.transport import READ_TIMEOUT, describe_transport_error  # noqa: E402
@@ -77,8 +79,11 @@ class TestProvidersSurfaceTransportErrors(unittest.TestCase):
         async def scenario():
             return await provider.chat_stream([], None, self._config(), noop, noop)
 
-        with self.assertRaises(RpcError) as raised:
-            asyncio.run(scenario())
+        # Transient failures now retry; keep the test fast by removing the backoff.
+        # 可重试错误现在会退避重试，测试里把等待时间置零。
+        with mock.patch.object(transport_module, "BACKOFF_SEC", (0, 0)):
+            with self.assertRaises(RpcError) as raised:
+                asyncio.run(scenario())
         return raised.exception
 
     def test_openai_provider_never_reports_an_empty_message(self):
@@ -90,6 +95,91 @@ class TestProvidersSurfaceTransportErrors(unittest.TestCase):
         error = self._run(OllamaProvider(transport=_FailingTransport(httpx.ReadTimeout(""))))
         self.assertEqual(error.code, ErrorCode.LLM_ERROR)
         self.assertIn("超时", str(error))
+
+
+class TestRetries(unittest.TestCase):
+
+    def _config(self):
+        return ChatConfig(provider="openai_compat", model=MODEL, base_url=URL)
+
+    def _run(self, provider):
+        async def noop(_token):
+            return None
+
+        async def scenario():
+            return await provider.chat_stream([], None, self._config(), noop, noop)
+
+        with mock.patch.object(transport_module, "BACKOFF_SEC", (0, 0)):
+            with self.assertRaises(RpcError) as raised:
+                asyncio.run(scenario())
+        return raised.exception
+
+    def test_transient_503_is_retried_before_any_token(self):
+        attempts = []
+
+        def handler(request):
+            attempts.append(1)
+            if len(attempts) < 3:
+                return httpx.Response(503, content=b'{"error":"overloaded"}')
+            body = ('data: {"choices":[{"delta":{"content":"ok"},'
+                    '"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+            return httpx.Response(200, content=body.encode("utf-8"))
+
+        provider = OpenAICompatProvider(transport=httpx.MockTransport(handler))
+
+        async def noop(_token):
+            return None
+
+        async def scenario():
+            return await provider.chat_stream([], None, self._config(), noop, noop)
+
+        with mock.patch.object(transport_module, "BACKOFF_SEC", (0, 0)):
+            result = asyncio.run(scenario())
+
+        self.assertEqual(result.content, "ok")
+        self.assertEqual(len(attempts), 3)
+
+    def test_exhausted_retries_are_named_in_the_error(self):
+        attempts = []
+
+        def handler(request):
+            attempts.append(1)
+            return httpx.Response(429, content=b'{"error":"rate limited"}')
+
+        error = self._run(OpenAICompatProvider(transport=httpx.MockTransport(handler)))
+
+        self.assertEqual(len(attempts), 3)
+        self.assertIn("429", str(error))
+        self.assertIn("已自动重试 2 次", str(error))
+
+    def test_started_output_disables_retries(self):
+        calls = []
+
+        async def attempt():
+            calls.append(1)
+            raise transport_module.RetryableStatus(503)
+
+        async def scenario():
+            await transport_module.run_with_retries(
+                attempt, lambda: True,
+                lambda exc, retries: transport_module.describe_failure(
+                    exc, URL, MODEL, retries))
+
+        with self.assertRaises(RpcError):
+            asyncio.run(scenario())
+        self.assertEqual(len(calls), 1)
+
+    def test_auth_failure_is_not_replayed(self):
+        attempts = []
+
+        def handler(request):
+            attempts.append(1)
+            return httpx.Response(401, content=b'{"error":"bad key"}')
+
+        error = self._run(OpenAICompatProvider(transport=httpx.MockTransport(handler)))
+
+        self.assertEqual(len(attempts), 1)
+        self.assertIn("401", str(error))
 
 
 class TestServerErrorText(unittest.TestCase):

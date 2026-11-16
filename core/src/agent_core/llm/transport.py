@@ -1,10 +1,13 @@
-"""Shared HTTP transport settings and user-facing failure text.
+"""Shared HTTP transport settings, bounded retries and user-facing failure text.
 
 httpcore builds ``ReadTimeout`` / ``ReadError`` / ``ConnectError`` without a
 message, so a stalled or dropped stream used to reach the Shell as a bare
 ``[错误:LLM_ERROR] `` line with nothing after it.  Every transport failure must
 name the phase, the endpoint and what to try next.
 """
+
+import asyncio
+from typing import Awaitable, Callable, TypeVar
 
 import httpx
 
@@ -65,3 +68,68 @@ def describe_transport_error(exc: Exception, url: str, model: str) -> RpcError:
             type(exc).__name__, target, "；" + detail if detail else "；" + _RETRY_HINT)
 
     return RpcError(ErrorCode.LLM_ERROR, text)
+
+
+# --- bounded retries ---------------------------------------------------------
+# A 429/5xx or a connect failure is safe to replay only while nothing has been
+# rendered. After the first token the Shell already shows text and a replayed
+# round would duplicate tool side effects.
+# 只在尚未输出内容时重放；已渲染 token 或工具已产生副作用时不重试。
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+MAX_RETRIES = 2
+BACKOFF_SEC = (0.5, 1.5)
+
+T = TypeVar("T")
+
+
+class RetryableStatus(Exception):
+    """An HTTP status worth retrying (429 / 5xx)."""
+
+    def __init__(self, status: int, body: str = "") -> None:
+        super().__init__("%d: %s" % (status, (body or "")[:200]))
+        self.status = status
+        self.body = body
+
+
+def is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, RetryableStatus):
+        return True
+    # Connect failures and pool/read timeouts happen before any answer byte.
+    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout,
+                            httpx.PoolTimeout, httpx.ReadTimeout))
+
+
+def describe_failure(exc: Exception, url: str, model: str, retries: int) -> RpcError:
+    """Build the final error, noting how many automatic retries were spent."""
+    if isinstance(exc, RetryableStatus):
+        suffix = "，已自动重试 %d 次" % retries if retries else ""
+        text = ("LLM 端点暂时不可用：%s（模型 %s）返回 HTTP %d%s。"
+                "服务端重启、限流或过载都会这样；稍后重发一次「继续」即可。"
+                % (url or "未配置端点", model or "-", exc.status, suffix))
+        return RpcError(ErrorCode.LLM_ERROR, text)
+    error = describe_transport_error(exc, url, model)
+    if retries:
+        return RpcError(error.code, str(error) + "（已自动重试 %d 次）" % retries)
+    return error
+
+
+async def run_with_retries(attempt: Callable[[], Awaitable[T]],
+                           started: Callable[[], bool],
+                           describe: Callable[[Exception, int], RpcError]) -> T:
+    """Run one streaming attempt, retrying only failures that produced no output."""
+    retries = 0
+    while True:
+        try:
+            return await attempt()
+        except Exception as exc:
+            if not is_retryable(exc):
+                # Transport errors that are not safe to replay still owe the user an
+                # explanation (httpcore's message is empty).
+                # 不可重试的传输错误也要给出可读文案：httpcore 的异常信息是空的。
+                if isinstance(exc, httpx.TransportError):
+                    raise describe(exc, 0) from exc
+                raise
+            if started() or retries >= MAX_RETRIES:
+                raise describe(exc, retries) from exc
+            await asyncio.sleep(BACKOFF_SEC[retries])
+            retries += 1

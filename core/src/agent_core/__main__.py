@@ -6,6 +6,9 @@ import json
 import logging
 import os
 import sys
+import time
+from logging.handlers import RotatingFileHandler
+from typing import List
 
 from agent_core import __version__
 from agent_core.rpc.server import RpcServer
@@ -20,6 +23,33 @@ def _configure_streams() -> None:
             pass
 
 
+def _default_log_file() -> str:
+    return os.path.join(os.path.expanduser("~"), ".agent", "logs",
+                        "core-%s.log" % time.strftime("%Y%m%d"))
+
+
+def _configure_logging(level: str, log_file: str) -> None:
+    """Keep stderr for the IDE console and mirror it into a rotating file.
+
+    The IDE console scrolls away, which used to make it impossible to review a
+    failure after the fact. The file is capped so a long-running session cannot
+    fill the disk.
+    控制台会滚走，失败细节事后无法回溯；文件按月分日、每段5MB、最多5份。
+    """
+    handlers: List[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    if log_file:
+        directory = os.path.dirname(log_file)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        handlers.append(RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024,
+                                            backupCount=5, encoding="utf-8"))
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        handlers=handlers,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agent_core")
     parser.add_argument("--project-id", default="default")
@@ -28,6 +58,16 @@ def main() -> None:
         default=os.path.join(os.path.expanduser("~"), ".agent", "data"),
     )
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="append logs to this file (default ~/.agent/logs/core-YYYYMMDD.log)",
+    )
+    parser.add_argument(
+        "--no-log-file",
+        action="store_true",
+        help="do not write a log file",
+    )
     parser.add_argument(
         "--version",
         action="version",
@@ -48,11 +88,8 @@ def main() -> None:
         return
 
     _configure_streams()
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        stream=sys.stderr,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    log_file = "" if args.no_log_file else (args.log_file or _default_log_file())
+    _configure_logging(args.log_level, log_file)
 
     server = RpcServer(project_id=args.project_id, data_dir=args.data_dir)
     try:
