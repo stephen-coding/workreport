@@ -1,4 +1,4 @@
-"""Protocol models and envelope helpers (JSON-RPC 2.0 over JSON Lines).
+"""Protocol models and envelope helpers (JSON-RPC-style envelope over JSON Lines).
 
 All wire messages are plain dicts; the dataclasses below are the typed views used
 inside the Core. Python 3.9 compatible (no PEP 604 unions).
@@ -11,6 +11,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+from agent_core import __version__
 
 
 # ---------------------------------------------------------------------------
@@ -150,5 +152,8 @@ def dumps(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+# Resolved once in agent_core/__init__.py so the CLI, the hello frame and the
+# MCP clientInfo always report the same number.
+# 版本号只在包初始化时解析一次，命令行、hello 帧与 MCP clientInfo 因此不会互相矛盾。
 PROTOCOL_VERSION = "1.0"
-CORE_VERSION = "0.1.0"
+CORE_VERSION = __version__

@@ -7,6 +7,7 @@
 # or with the helper script:
 #   powershell -File scripts/build_core.ps1
 
+import json
 import os
 
 from PyInstaller.utils.hooks import collect_submodules
@@ -14,12 +15,21 @@ from PyInstaller.utils.hooks import collect_submodules
 PROJECT_ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 SRC = os.path.join(PROJECT_ROOT, "src")
 
+# Stamp the version into the bundle: the exe must report the same number as the
+# plugin even when no environment variable exists at runtime.
+# 把版本号写进包内：即使运行时没有环境变量，exe 也要与插件报告同一个版本。
+_build_info = os.path.join(PROJECT_ROOT, "build", "core-build-info.json")
+os.makedirs(os.path.dirname(_build_info), exist_ok=True)
+with open(_build_info, "w", encoding="utf-8") as _fh:
+    json.dump({"version": os.environ.get("AGENT_CORE_VERSION", "").strip()}, _fh)
+
 # Bundled markdown (skills / subagents) is read from disk at runtime.
 datas = [
     (os.path.join(SRC, "agent_core", "skills", "builtin"),
      os.path.join("agent_core", "skills", "builtin")),
     (os.path.join(SRC, "agent_core", "agent", "subagents_builtin"),
      os.path.join("agent_core", "agent", "subagents_builtin")),
+    (_build_info, "."),
 ]
 
 hiddenimports = (

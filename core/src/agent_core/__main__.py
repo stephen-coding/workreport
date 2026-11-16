@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 
+from agent_core import __version__
 from agent_core.rpc.server import RpcServer
 
 
@@ -27,6 +28,12 @@ def main() -> None:
         default=os.path.join(os.path.expanduser("~"), ".agent", "data"),
     )
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="agent-core %s" % __version__,
+        help="print the Core version and exit",
+    )
     parser.add_argument(
         "--native-info",
         action="store_true",

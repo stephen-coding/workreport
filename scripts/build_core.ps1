@@ -9,6 +9,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+
+# The Core and the plugin must report one version, so take it from pom.xml.
+# Read as explicit UTF-8: Windows PowerShell 5.1 otherwise mangles non-ASCII
+# comments in the POM.
+# Core 与插件必须同一个版本号：显式按 UTF-8 读取 pom.xml，避免 5.1 误判编码。
+$pomPath = Join-Path $root "pom.xml"
+[xml]$pom = [System.IO.File]::ReadAllText($pomPath, [System.Text.Encoding]::UTF8)
+$env:AGENT_CORE_VERSION = [string]$pom.project.version
+Write-Host "Core version: $env:AGENT_CORE_VERSION"
+
 Push-Location (Join-Path $root "core")
 try {
     & $Python -m pip install --upgrade "pyinstaller>=6.3"
