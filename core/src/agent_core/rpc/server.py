@@ -432,6 +432,7 @@ class RpcServer:
                 "taskId": task_id,
                 "fullText": result.content,
                 "usage": result.usage,
+                "usageTotal": result.usage_total,
             })
         except asyncio.CancelledError:
             self._send_notification("chat/error", {

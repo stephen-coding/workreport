@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from agent_core.llm import context as context_module
-from agent_core.llm.context import messages_tokens, trim_history
+from agent_core.llm.context import DEFAULT_BUDGET, budget_for, messages_tokens, trim_history
 from agent_core.protocol import Message, Role, ToolCall
 
 
@@ -114,6 +114,21 @@ class TestTrimHistory(unittest.TestCase):
         self.assertLessEqual(len(calls), 3 * len(messages) + 5)
         self.assertEqual(trimmed[0].role, Role.SYSTEM)
         self.assertLessEqual(messages_tokens(trimmed), 2000)
+
+
+class TestBudgetFor(unittest.TestCase):
+
+    def test_zero_window_falls_back_to_default(self):
+        self.assertEqual(budget_for(0), DEFAULT_BUDGET)
+        self.assertEqual(budget_for(None), DEFAULT_BUDGET)
+
+    def test_window_scales_with_ratio(self):
+        self.assertEqual(budget_for(32000), 24000)
+        self.assertEqual(budget_for(8000), 6000)
+
+    def test_clamped_at_both_ends(self):
+        self.assertEqual(budget_for(1000), 4000)
+        self.assertEqual(budget_for(1000000), 200000)
 
 
 if __name__ == "__main__":

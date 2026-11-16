@@ -73,6 +73,7 @@ class ChatConfig(BaseModel):
     temperature: float = 0.2
     max_tokens: int = 4096
     max_iterations: int = 40
+    context_window: int = 32000  # model window in tokens; 0 falls back to DEFAULT_BUDGET
     tool_concurrency: int = 4
     subagent_concurrency: int = 3
     embedding_model: str = "nomic-embed-text"

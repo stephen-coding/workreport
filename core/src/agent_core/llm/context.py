@@ -11,6 +11,26 @@ from agent_core.native import count_tokens
 from agent_core.protocol import Message
 
 DEFAULT_BUDGET = 24000  # conservative budget for 8k-32k window models
+BUDGET_RATIO = 0.75      # keep 25% of the window for the reply and tool output
+MIN_BUDGET = 4000
+MAX_BUDGET = 200000
+
+
+def budget_for(context_window: int) -> int:
+    """History budget derived from the model's context window.
+
+    A hardcoded 24000 wasted a 128k window and overflowed an 8k one. The clamp
+    keeps a misconfigured value from starving the prompt or asking an endpoint
+    for more than it can hold.
+    预算随模型窗口缩放，并做上下限夹紧：写错配置也不会把提示词饿死或超出端点容量。
+    """
+    try:
+        window = int(context_window or 0)
+    except (TypeError, ValueError):
+        return DEFAULT_BUDGET
+    if window <= 0:
+        return DEFAULT_BUDGET
+    return max(MIN_BUDGET, min(int(window * BUDGET_RATIO), MAX_BUDGET))
 
 
 def estimate_tokens(text: str) -> int:

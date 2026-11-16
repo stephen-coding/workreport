@@ -10,7 +10,7 @@ from agent_core.agent.scheduler import ToolScheduler
 from agent_core.agent.session import Session
 from agent_core.agent.status import TurnStats
 from agent_core.llm.base import ChatResult, TokenCallback
-from agent_core.llm.context import trim_history
+from agent_core.llm.context import budget_for, trim_history
 from agent_core.protocol import ChatConfig, Message, Role, ToolCall, ToolResult
 from agent_core.tools.registry import ToolRegistry
 
@@ -57,6 +57,32 @@ async def _flush_notice(provider, on_notice: Optional[NoticeCallback]) -> None:
         await on_notice(text)
 
 
+def _int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _add_usage(total: dict, usage: Optional[dict]) -> None:
+    """Accumulate one round; providers report a subset of the keys."""
+    if not isinstance(usage, dict):
+        return
+    in_tokens = _int(usage.get("in"))
+    out_tokens = _int(usage.get("out"))
+    total["in"] += in_tokens
+    total["out"] += out_tokens
+    total["total"] += _int(usage.get("total")) or (in_tokens + out_tokens)
+
+
+def _usage_snapshot(total: dict) -> Optional[dict]:
+    # None lets the Shell hide the line when the endpoint never reports usage.
+    # 端点不报用量时返回 None，界面就可以不显示这一行。
+    if not (total["in"] or total["out"] or total["total"]):
+        return None
+    return dict(total)
+
+
 async def run_chat(
     session: Session,
     user_input: str,
@@ -78,6 +104,7 @@ async def run_chat(
     max_iterations = max(1, config.max_iterations)
     tracker = PermissionTracker()
     stats = TurnStats()
+    usage_total = {"in": 0, "out": 0, "total": 0}
     unknown_tools: Counter = Counter()
     system_prompt = base_prompt or SYSTEM_PROMPT
     # The roster is generated from the loaded SUBAGENT.md files, so adding a role
@@ -94,7 +121,7 @@ async def run_chat(
     for _ in range(max_iterations):
         stats.begin_round()
         messages = [Message(role=Role.SYSTEM, content=system_prompt)] + session.messages
-        messages = trim_history(messages)
+        messages = trim_history(messages, budget_for(config.context_window))
         if not any(m.role == Role.USER for m in messages):
             # vLLM answers 400 "No user query found in messages." when no user role
             # survives; re-anchor the current input instead of losing the turn.
@@ -114,9 +141,11 @@ async def run_chat(
             on_tool_call=_noop_tool_call,
         )
         await _flush_notice(provider, on_notice)
+        _add_usage(usage_total, result.usage)
 
         if not result.tool_calls:
             session.append(Message(role=Role.ASSISTANT, content=result.content))
+            result.usage_total = _usage_snapshot(usage_total)
             return result
 
         # One tool round: keep the assistant message with calls, then the results.
@@ -150,14 +179,16 @@ async def run_chat(
                          "可用工具里没有它，换一个支持工具调用的模型，或直接告诉我用哪个工具。"
                          % (stuck[0], unknown_tools[stuck[0]]))
             session.append(Message(role=Role.ASSISTANT, content=stop_text))
-            return ChatResult(content=stop_text)
+            return ChatResult(content=stop_text,
+                              usage_total=_usage_snapshot(usage_total))
 
         if denied_too_often:
             stop_text = "连续多次未获得授权，已停止工具执行。请确认后重新发起请求。"
             session.append(Message(role=Role.ASSISTANT, content=stop_text))
-            return ChatResult(content=stop_text)
+            return ChatResult(content=stop_text,
+                              usage_total=_usage_snapshot(usage_total))
 
     limit_text = ("（已达到最大迭代轮次 %d，任务可能未完成，回复「继续」可接着跑。）"
                   % max_iterations)
     session.append(Message(role=Role.ASSISTANT, content=limit_text))
-    return ChatResult(content=limit_text)
+    return ChatResult(content=limit_text, usage_total=_usage_snapshot(usage_total))

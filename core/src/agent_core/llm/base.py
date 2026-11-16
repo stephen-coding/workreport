@@ -31,6 +31,10 @@ class ChatResult(BaseModel):
     tool_calls: List[ToolCall] = Field(default_factory=list)
     finish_reason: Optional[str] = None
     usage: Optional[Dict[str, Any]] = None
+    # Sum over every model round of the turn. ``usage`` stays the last round so a
+    # Shell that has not been updated yet keeps working.
+    # 一轮任务里所有模型请求的用量合计；``usage`` 保留最后一轮，旧 Shell 不受影响。
+    usage_total: Optional[Dict[str, Any]] = None
 
 
 class LLMProvider(Protocol):
