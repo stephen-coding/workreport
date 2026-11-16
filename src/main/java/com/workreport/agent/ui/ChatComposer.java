@@ -5,12 +5,17 @@ import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
 import com.intellij.openapi.fileChooser.FileChooserFactory;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.openapi.vfs.VirtualFile;
-import com.intellij.ui.JBColor;
-import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
+import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.UIUtil;
 import com.workreport.agent.AgentBundle;
+import com.workreport.agent.ui.design.UiAnim;
+import com.workreport.agent.ui.design.UiButton;
+import com.workreport.agent.ui.design.UiIcons;
+import com.workreport.agent.ui.design.UiMetrics;
+import com.workreport.agent.ui.design.UiTheme;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -22,7 +27,12 @@ import java.awt.datatransfer.DataFlavor;
 import java.awt.event.ActionEvent;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
+import java.awt.event.FocusAdapter;
+import java.awt.event.FocusEvent;
 import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.awt.geom.RoundRectangle2D;
 import java.io.File;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -58,9 +68,6 @@ public final class ChatComposer extends JPanel {
     private static final int MIN_ROWS = 4;
     private static final int MAX_ROWS = 14;
 
-    private static final Color CHIP_BG = new JBColor(new Color(0xE9EEF6), new Color(0x3A3F4B));
-    private static final Color CHIP_TEXT = new JBColor(new Color(0x2A3550), new Color(0xE4E8F0));
-
     private final Project project;
     private final Listener listener;
     private final HeightSink heightSink;
@@ -70,26 +77,29 @@ public final class ChatComposer extends JPanel {
     private final JPanel attachmentStrip = new JPanel(new WrapLayout());
     private final List<Path> attachments = new ArrayList<>();
 
-    private final JButton attachButton = new JButton(AgentBundle.message("composer.attach"));
-    private final JButton settingsButton = new JButton(AgentBundle.message("composer.settings"));
-    private final JButton stopButton = new JButton(AgentBundle.message("composer.stop"));
-    private final JButton sendButton = new JButton(AgentBundle.message("composer.send"));
-    private final JComboBox<String> modelCombo = new JComboBox<>();
-    private final JCheckBox autoCheckBox = new JCheckBox(AgentBundle.message("composer.auto"));
+    private final UiButton attachButton;
+    private final UiButton settingsButton;
+    private final UiButton stopButton;
+    private final UiButton sendButton;
+    private final UiButton modelButton;
+    private final UiButton autoButton;
+    private final ComposerBox box;
     private final JPanel toolbar;
 
-    private boolean updatingModels;
+    private List<String> models = List.of();
+    private String activeModel = "";
+    private boolean busy;
     private boolean collapseAfterSend;
     private int lastNotifiedHeight;
 
     public ChatComposer(Project project, Listener listener, HeightSink heightSink) {
-        super(new BorderLayout(0, 6));
+        super(new BorderLayout(0, UiMetrics.s()));
         this.project = project;
         this.listener = listener;
         this.heightSink = heightSink;
 
         setOpaque(false);
-        setBorder(new EmptyBorder(6, 0, 2, 0));
+        setBorder(new EmptyBorder(UiMetrics.s(), 0, JBUI.scale(2), 0));
 
         attachmentStrip.setOpaque(false);
         attachmentStrip.setVisible(false);
@@ -99,12 +109,48 @@ public final class ChatComposer extends JPanel {
         inputScroll.setOpaque(false);
         inputScroll.getViewport().setOpaque(false);
         inputScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-        inputScroll.getVerticalScrollBar().setUnitIncrement(16);
+        inputScroll.getVerticalScrollBar().setUnitIncrement(JBUI.scale(16));
+
+        attachButton = new UiButton(null, UiIcons.icon("attach"), UiButton.Kind.ICON);
+        attachButton.setToolTipText(AgentBundle.message("composer.attach.tip"));
+        attachButton.setPadding(5, 5);
+        attachButton.addActionListener(e -> showAttachMenu());
+
+        settingsButton = new UiButton(null, UiIcons.settings(), UiButton.Kind.ICON);
+        settingsButton.setToolTipText(AgentBundle.message("composer.settings"));
+        settingsButton.setPadding(5, 5);
+        settingsButton.addActionListener(e -> listener.onOpenSettings());
+
+        stopButton = new UiButton(AgentBundle.message("composer.stop"), UiButton.Kind.GHOST);
+        stopButton.setToolTipText(AgentBundle.message("ui.composer.stop.tip"));
+        stopButton.setEnabled(false);
+        stopButton.addActionListener(e -> listener.onStop());
+
+        sendButton = new UiButton(null, new ArrowIcon(JBUI.scale(14)), UiButton.Kind.SOLID);
+        sendButton.setCircular(true);
+        sendButton.setPadding(7, 7);
+        sendButton.setToolTipText(AgentBundle.message("ui.composer.send.tip"));
+        sendButton.addActionListener(e -> triggerSend());
+
+        modelButton = new UiButton("", new ChevronIcon(JBUI.scale(9)), UiButton.Kind.GHOST);
+        modelButton.setPadding(5, 3);
+        modelButton.setToolTipText(AgentBundle.message("composer.model.tip"));
+        modelButton.addActionListener(e -> showModelMenu());
+
+        autoButton = new UiButton(AgentBundle.message("composer.auto"), UiButton.Kind.OUTLINE);
+        autoButton.setPadding(7, 3);
+        autoButton.setToolTipText(AgentBundle.message("composer.auto.tip"));
+        autoButton.addActionListener(e -> {
+            boolean next = !autoButton.isSelected();
+            autoButton.setSelected(next);
+            listener.onAutoAcceptChanged(next);
+        });
 
         toolbar = buildToolbar();
+        box = new ComposerBox(inputScroll);
 
         add(attachmentStrip, BorderLayout.NORTH);
-        add(new ComposerBox(inputScroll), BorderLayout.CENTER);
+        add(box, BorderLayout.CENTER);
         add(toolbar, BorderLayout.SOUTH);
 
         installInputBindings();
@@ -136,26 +182,28 @@ public final class ChatComposer extends JPanel {
 
     // ------------------------------------------------------------------ public API
 
+    // Model list changed: keep the compact button showing the active name.
+    // 模型列表变化：紧凑按钮显示当前生效的模型名。
     public void setModels(List<String> names, String active) {
-        updatingModels = true;
-        try {
-            modelCombo.removeAllItems();
-            for (String name : names) {
-                modelCombo.addItem(name);
-            }
-            modelCombo.setSelectedItem(active);
-        } finally {
-            updatingModels = false;
-        }
+        models = names == null ? List.of() : List.copyOf(names);
+        activeModel = active == null ? "" : active;
+        modelButton.setText(activeModel.isEmpty()
+                ? AgentBundle.message("ui.composer.model.pick")
+                : activeModel);
+        modelButton.setEnabled(!models.isEmpty());
+        modelButton.revalidate();
+        modelButton.repaint();
     }
 
     public void setAutoAccept(boolean value) {
-        autoCheckBox.setSelected(value);
+        autoButton.setSelected(value);
     }
 
     public void setBusy(boolean busy) {
+        this.busy = busy;
         sendButton.setEnabled(!busy);
         stopButton.setEnabled(busy);
+        box.repaint();
     }
 
     public void setText(String text) {
@@ -170,7 +218,7 @@ public final class ChatComposer extends JPanel {
     // Send whatever is in the composer (used by the daily-report action).
     // 发送当前输入内容（供日报 action 复用）。
     public void triggerSend() {
-        if (!sendButton.isEnabled()) {
+        if (busy) {
             return;
         }
         String text = input.getText().trim();
@@ -274,37 +322,15 @@ public final class ChatComposer extends JPanel {
     private void refreshAttachments() {
         attachmentStrip.removeAll();
         for (Path path : attachments) {
-            attachmentStrip.add(createChip(path));
+            attachmentStrip.add(new ChipView(path, () -> {
+                attachments.remove(path);
+                refreshAttachments();
+            }));
         }
         attachmentStrip.setVisible(!attachments.isEmpty());
         attachmentStrip.revalidate();
         attachmentStrip.repaint();
         refreshHeight();
-    }
-
-    private JComponent createChip(Path path) {
-        Chip chip = new Chip();
-        JLabel name = new JLabel(shortName(path));
-        name.setToolTipText(path.toString());
-        name.setForeground(CHIP_TEXT);
-        Font chipFont = baseFont();
-        name.setFont(chipFont.deriveFont(chipFont.getSize2D() - 1f));
-
-        JButton remove = new JButton("x");
-        remove.setToolTipText(AgentBundle.message("composer.remove.tip"));
-        remove.setFocusable(false);
-        remove.setMargin(new Insets(0, 3, 0, 3));
-        remove.setBorderPainted(false);
-        remove.setContentAreaFilled(false);
-        remove.setForeground(CHIP_TEXT);
-        remove.addActionListener(e -> {
-            attachments.remove(path);
-            refreshAttachments();
-        });
-
-        chip.add(name);
-        chip.add(remove);
-        return chip;
     }
 
     // ------------------------------------------------------------------ layout helpers
@@ -315,46 +341,47 @@ public final class ChatComposer extends JPanel {
     }
 
     private JPanel buildToolbar() {
-        JPanel bar = new JPanel(new BorderLayout(6, 0));
+        JPanel bar = new JPanel(new BorderLayout(UiMetrics.s(), 0));
         bar.setOpaque(false);
+        bar.setBorder(new EmptyBorder(UiMetrics.xs(), 0, 0, 0));
 
-        JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, UiMetrics.xs(), 0));
         left.setOpaque(false);
-        attachButton.setToolTipText(AgentBundle.message("composer.attach.tip"));
-        attachButton.addActionListener(e -> showAttachMenu());
-        modelCombo.setToolTipText(AgentBundle.message("composer.model.tip"));
-        autoCheckBox.setToolTipText(AgentBundle.message("composer.auto.tip"));
         left.add(attachButton);
-        left.add(new JBLabel(AgentBundle.message("composer.model")));
-        left.add(modelCombo);
-        left.add(autoCheckBox);
+        left.add(modelButton);
+        left.add(autoButton);
 
-        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, UiMetrics.xs(), 0));
         right.setOpaque(false);
-        stopButton.setEnabled(false);
-        sendButton.setFont(baseFont().deriveFont(Font.BOLD));
-        sendButton.setMargin(new Insets(4, 18, 4, 18));
         right.add(settingsButton);
         right.add(stopButton);
         right.add(sendButton);
 
         bar.add(left, BorderLayout.WEST);
         bar.add(right, BorderLayout.EAST);
-
-        sendButton.addActionListener(e -> triggerSend());
-        stopButton.addActionListener(e -> listener.onStop());
-        settingsButton.addActionListener(e -> listener.onOpenSettings());
-        modelCombo.addActionListener(e -> {
-            if (updatingModels) {
-                return;
-            }
-            Object selected = modelCombo.getSelectedItem();
-            if (selected != null) {
-                listener.onModelChanged(selected.toString());
-            }
-        });
-        autoCheckBox.addActionListener(e -> listener.onAutoAcceptChanged(autoCheckBox.isSelected()));
         return bar;
+    }
+
+    // Compact model picker: a list popup under the button, no default combo chrome.
+    // 紧凑模型选择：按钮下方弹出列表，不使用默认下拉框外观。
+    private void showModelMenu() {
+        if (models.isEmpty()) {
+            return;
+        }
+        JBPopupFactory.getInstance()
+                .createPopupChooserBuilder(new ArrayList<>(models))
+                .setTitle(AgentBundle.message("composer.model"))
+                .setSelectedValue(activeModel, true)
+                .setItemChosenCallback(name -> {
+                    if (name == null || name.equals(activeModel)) {
+                        return;
+                    }
+                    activeModel = name;
+                    modelButton.setText(name);
+                    listener.onModelChanged(name);
+                })
+                .createPopup()
+                .showUnderneathOf(modelButton);
     }
 
     // Enter sends, Shift+Enter breaks the line (Ctrl+Enter also sends).
@@ -371,7 +398,7 @@ public final class ChatComposer extends JPanel {
         input.getActionMap().put("chat-send", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                if (!sendButton.isEnabled()) {
+                if (busy) {
                     // Nothing can go out while the agent is running, so fall back to a newline
                     // instead of swallowing the key.
                     // 任务在跑时发不出去，把回车让给换行，避免按键没反应。
@@ -385,13 +412,14 @@ public final class ChatComposer extends JPanel {
 
     private int lineHeight() {
         FontMetrics metrics = input.getFontMetrics(input.getFont());
-        return metrics == null ? 16 : metrics.getHeight();
+        return metrics == null ? JBUI.scale(16) : metrics.getHeight();
     }
 
     private int chromeHeight() {
         Insets outer = getInsets();
-        int strip = attachmentStrip.isVisible() ? attachmentStrip.getPreferredSize().height + 6 : 0;
-        return outer.top + outer.bottom + strip + toolbar.getPreferredSize().height + 6 + 18;
+        int strip = attachmentStrip.isVisible() ? attachmentStrip.getPreferredSize().height + UiMetrics.s() : 0;
+        return outer.top + outer.bottom + strip + toolbar.getPreferredSize().height + UiMetrics.s()
+                + JBUI.scale(18);
     }
 
     // Grow the input with its content and tell the owner how tall the composer wants to be.
@@ -399,14 +427,14 @@ public final class ChatComposer extends JPanel {
     private void refreshHeight() {
         int width = input.getWidth();
         if (width <= 0) {
-            width = Math.max(160, getWidth() - 46);
+            width = Math.max(JBUI.scale(160), getWidth() - JBUI.scale(46));
         }
         input.setSize(width, Short.MAX_VALUE);
         int content = input.getPreferredSize().height;
         int min = lineHeight() * MIN_ROWS;
         int max = lineHeight() * MAX_ROWS;
         int visible = Math.max(min, Math.min(max, content));
-        inputScroll.setPreferredSize(new Dimension(10, visible + 4));
+        inputScroll.setPreferredSize(new Dimension(JBUI.scale(10), visible + JBUI.scale(4)));
         revalidate();
         boolean force = collapseAfterSend;
         collapseAfterSend = false;
@@ -427,28 +455,78 @@ public final class ChatComposer extends JPanel {
 
     // ------------------------------------------------------------------ inner pieces
 
-    // Rounded input surface that follows the IDE theme.
-    // 圆角输入框底板，配色跟随 IDE 主题。
-    private static final class ComposerBox extends JPanel {
+    // Floating card behind the text area: raised surface, 1 px border and a 2 px focus ring.
+    // 输入框底板：抬高底色 + 1 px 描边，聚焦时加 2 px 焦点环。
+    private final class ComposerBox extends JPanel {
+
+        private float focus;
+
         ComposerBox(JComponent content) {
             super(new BorderLayout());
             setOpaque(false);
-            setBorder(new EmptyBorder(10, 12, 10, 12));
+            setBorder(new EmptyBorder(UiMetrics.m(), UiMetrics.l(), UiMetrics.m(), UiMetrics.l()));
             add(content, BorderLayout.CENTER);
+            input.addFocusListener(new FocusAdapter() {
+                @Override
+                public void focusGained(FocusEvent e) {
+                    animateFocus(1f);
+                }
+
+                @Override
+                public void focusLost(FocusEvent e) {
+                    animateFocus(0f);
+                }
+            });
+        }
+
+        private void animateFocus(float target) {
+            UiAnim.fade(focus, target, 120, value -> {
+                focus = value;
+                repaint();
+            });
         }
 
         @Override
         protected void paintComponent(Graphics g) {
             Graphics2D g2 = (Graphics2D) g.create();
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            int width = getWidth() - 1;
-            int height = getHeight() - 1;
-            g2.setColor(JBColor.namedColor("TextField.background", new Color(0xF7F8FA)));
-            g2.fillRoundRect(0, 0, width, height, 12, 12);
-            g2.setColor(JBColor.namedColor("Component.borderColor", new Color(0xC9CDD3)));
-            g2.drawRoundRect(0, 0, width, height, 12, 12);
+            int arc = UiMetrics.radiusInput();
+            int width = getWidth();
+            int height = getHeight();
+            g2.setColor(UiTheme.RAISED);
+            g2.fill(new RoundRectangle2D.Float(0, 0, width, height, arc, arc));
+            g2.setColor(UiTheme.BORDER);
+            g2.setStroke(new BasicStroke(1f));
+            g2.draw(new RoundRectangle2D.Float(0.5f, 0.5f, width - 1f, height - 1f, arc, arc));
+            if (focus > 0.01f) {
+                g2.setColor(UiTheme.withAlpha(UiTheme.ACCENT, Math.round(90 * focus)));
+                g2.setStroke(new BasicStroke(JBUI.scale(2f)));
+                g2.draw(new RoundRectangle2D.Float(1f, 1f, width - 2f, height - 2f, arc, arc));
+            }
+            paintKeyHint(g2);
             g2.dispose();
             super.paintComponent(g);
+        }
+
+        // Bottom-right shortcut reminder, only while the box is empty.
+        // 右下角的快捷键提示，只在空输入时显示。
+        private void paintKeyHint(Graphics2D g2) {
+            if (busy || !input.getText().isEmpty()) {
+                return;
+            }
+            Font font = UiTheme.small();
+            FontMetrics metrics = UiMetrics.metrics(font);
+            String hint = AgentBundle.message("ui.composer.keys");
+            int x = getWidth() - getInsets().right - metrics.stringWidth(hint);
+            int y = getHeight() - getInsets().bottom + metrics.getAscent() + JBUI.scale(1);
+            if (x < getInsets().left || y > getHeight()) {
+                return;
+            }
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
+                    RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            g2.setFont(font);
+            g2.setColor(UiTheme.muted());
+            g2.drawString(hint, x, y);
         }
     }
 
@@ -457,7 +535,7 @@ public final class ChatComposer extends JPanel {
     // FlowLayout 计算偏好尺寸时假设单行（只有布局时才换行），会导致 chip 第二行被裁切，这里按宽度算行数。
     private static final class WrapLayout extends FlowLayout {
         WrapLayout() {
-            super(FlowLayout.LEFT, 6, 2);
+            super(FlowLayout.LEFT, UiMetrics.xs(), JBUI.scale(4));
         }
 
         @Override
@@ -494,21 +572,104 @@ public final class ChatComposer extends JPanel {
         }
     }
 
-    private static final class Chip extends JPanel {
-        Chip() {
-            super(new FlowLayout(FlowLayout.LEFT, 4, 0));
+    // Attachment chip: paperclip, elided file name and a close cross that only shows on hover.
+    // 附件 chip：回形针 + 省略的文件名，关闭叉只在悬停时出现。
+    private final class ChipView extends JComponent {
+
+        private final Path path;
+        private final Runnable onRemove;
+        private final String label;
+        private boolean hover;
+        private boolean overClose;
+
+        ChipView(Path path, Runnable onRemove) {
+            this.path = path;
+            this.onRemove = onRemove;
+            this.label = shortName(path);
             setOpaque(false);
-            setBorder(new EmptyBorder(2, 8, 2, 4));
+            setFont(UiTheme.small());
+            setToolTipText(path.toString());
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    hover = true;
+                    repaint();
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    hover = false;
+                    overClose = false;
+                    repaint();
+                }
+
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    if (SwingUtilities.isLeftMouseButton(e) && closeBounds().contains(e.getPoint())) {
+                        onRemove.run();
+                    }
+                }
+            });
+            addMouseMotionListener(new MouseAdapter() {
+                @Override
+                public void mouseMoved(MouseEvent e) {
+                    boolean next = closeBounds().contains(e.getPoint());
+                    if (next != overClose) {
+                        overClose = next;
+                        repaint();
+                    }
+                }
+            });
+        }
+
+        private Rectangle closeBounds() {
+            int size = JBUI.scale(12);
+            return new Rectangle(getWidth() - size - JBUI.scale(4),
+                    (getHeight() - size) / 2, size, size);
+        }
+
+        @Override
+        public Dimension getPreferredSize() {
+            FontMetrics metrics = UiMetrics.metrics(getFont());
+            int width = UiMetrics.m() + JBUI.scale(10) + JBUI.scale(5) + metrics.stringWidth(label)
+                    + JBUI.scale(6) + JBUI.scale(12) + UiMetrics.xs();
+            return new Dimension(width, Math.max(JBUI.scale(20), metrics.getHeight() + JBUI.scale(6)));
+        }
+
+        @Override
+        public Dimension getMaximumSize() {
+            return getPreferredSize();
         }
 
         @Override
         protected void paintComponent(Graphics g) {
             Graphics2D g2 = (Graphics2D) g.create();
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            g2.setColor(CHIP_BG);
-            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 10, 10);
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
+                    RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            int arc = UiMetrics.radiusChip();
+            int width = getWidth();
+            int height = getHeight();
+            g2.setColor(hover ? UiTheme.HOVER : UiTheme.SUBTLE);
+            g2.fill(new RoundRectangle2D.Float(0, 0, width, height, arc, arc));
+
+            int left = UiMetrics.m();
+            int glyph = JBUI.scale(10);
+            UiIcons.paintPaperclip(g2, new Rectangle(left, (height - glyph) / 2, glyph, glyph),
+                    UiTheme.muted());
+            left += glyph + JBUI.scale(5);
+
+            FontMetrics metrics = UiMetrics.metrics(getFont());
+            g2.setFont(getFont());
+            g2.setColor(UiTheme.text());
+            int baseline = (height - metrics.getHeight()) / 2 + metrics.getAscent();
+            g2.drawString(label, left, baseline);
+
+            if (hover) {
+                UiIcons.paintClose(g2, closeBounds(), overClose ? UiTheme.ERROR : UiTheme.muted());
+            }
             g2.dispose();
-            super.paintComponent(g);
         }
     }
 
@@ -549,10 +710,67 @@ public final class ChatComposer extends JPanel {
             if (metrics.stringWidth(hint) > available) {
                 hint = AgentBundle.message("composer.hint.tiny");
             }
-            g2.setColor(JBColor.namedColor("Component.placeholderForeground",
-                    new Color(0x9AA0A6)));
+            g2.setColor(UiTheme.muted());
             Insets insets = getInsets();
             g2.drawString(hint, insets.left, insets.top + metrics.getAscent());
+            g2.dispose();
+        }
+    }
+
+    // Up arrow inside the round send button.
+    // 圆形发送按钮里的向上箭头。
+    private static final class ArrowIcon implements Icon {
+
+        private final int size;
+
+        ArrowIcon(int size) {
+            this.size = size;
+        }
+
+        @Override
+        public int getIconWidth() {
+            return size;
+        }
+
+        @Override
+        public int getIconHeight() {
+            return size;
+        }
+
+        @Override
+        public void paintIcon(Component c, Graphics g, int x, int y) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.translate(x, y);
+            UiIcons.paintUpArrow(g2, new Rectangle(0, 0, size, size), Color.WHITE);
+            g2.dispose();
+        }
+    }
+
+    // Down chevron that marks the compact model picker.
+    // 紧凑模型选择按钮上的下拉折角。
+    private static final class ChevronIcon implements Icon {
+
+        private final int size;
+
+        ChevronIcon(int size) {
+            this.size = size;
+        }
+
+        @Override
+        public int getIconWidth() {
+            return size;
+        }
+
+        @Override
+        public int getIconHeight() {
+            return size;
+        }
+
+        @Override
+        public void paintIcon(Component c, Graphics g, int x, int y) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.translate(x, y);
+            UiIcons.paintChevron(g2, new Rectangle(0, 0, size, size), UiTheme.muted(), true);
             g2.dispose();
         }
     }

@@ -175,6 +175,11 @@ public final class AgentCoreService implements Disposable {
         Map<String, Object> hello = new HashMap<>();
         hello.put("protocolVersion", "1.0");
         hello.put("ide", "intellij");
+        // Optional notifications this shell can actually render. The Core only sends
+        // ask/user when "ask-user" is listed, so an older shell never waits for an answer
+        // that has no UI.
+        // 本 Shell 能渲染的可选通知；列出 "ask-user" 后 Core 才会发提问，旧版 Shell 不会白等。
+        hello.put("capabilities", List.of("ask-user"));
         conn.notify("ide/hello", hello);
     }
 

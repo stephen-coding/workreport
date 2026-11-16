@@ -15,6 +15,9 @@ import com.workreport.agent.AgentBundle;
 import com.workreport.agent.rpc.AgentCoreService;
 import com.workreport.agent.rpc.JsonRpcConnection;
 import com.workreport.agent.tools.ToolDispatcher;
+import com.workreport.agent.ui.chat.AskCard;
+import com.workreport.agent.ui.chat.ToolCallCard;
+import com.workreport.agent.ui.design.UiMetrics;
 import com.workreport.plugin.settings.ModelProfile;
 import com.workreport.plugin.settings.ModelProfiles;
 import com.workreport.plugin.settings.ReportSettingsState;
@@ -34,8 +37,10 @@ import java.util.Map;
 // 每个会话在 Core 里有独立的 sessionId 与 taskId，多个会话可以同时运行。
 public final class ChatSessionPanel extends JPanel {
 
-    // Hooks back to the tab container (session list, status bar, settings dialog).
-    // 回传给标签容器的钩子（会话列表、状态栏、设置窗口）。
+    // Hooks back to the tab container (session list, tab strip, settings dialog).
+    // 回传给标签容器的钩子（会话列表、标签条、设置窗口）。
+    // The status line lives in this panel, so the container no longer needs a setStatus hook.
+    // 状态行已经下移到本面板，容器不再需要 setStatus 钩子。
     public interface Owner {
         void onTaskBound(ChatSessionPanel session, String taskId);
 
@@ -46,8 +51,6 @@ public final class ChatSessionPanel extends JPanel {
         void onTitleChanged(ChatSessionPanel session);
 
         void openSettings();
-
-        void setStatus(String text);
     }
 
     private static final Logger LOG = Logger.getInstance(ChatSessionPanel.class);
@@ -61,12 +64,23 @@ public final class ChatSessionPanel extends JPanel {
 
     private final ChatTranscript transcript = new ChatTranscript();
     private final TodoStrip todoStrip = new TodoStrip();
+    private final StatusRow statusRow = new StatusRow();
     private final OnePixelSplitter conversationSplit;
     private final ChatComposer composer;
 
     private volatile String currentTaskId;
+    // Confirmation cards still waiting for an answer, keyed by confirmId.
+    // 还在等用户答复的确认卡片，键是 confirmId。
+    private final Map<String, ToolCallCard> pendingConfirms = new HashMap<>();
+    // Questions the Core is currently blocked on, keyed by askId.
+    // Core 正在等待回答的提问，按 askId 索引。
+    private final Map<String, AskCard> pendingAsks = new HashMap<>();
     private boolean composerSized;
     private String autoTitle;
+    private String modelLabel = "";
+    private long turnStartMs;
+    private long turnIn;
+    private long turnOut;
 
     public ChatSessionPanel(Project project, String sessionId, String defaultTitle, Owner owner) {
         super(new BorderLayout());
@@ -83,17 +97,18 @@ public final class ChatSessionPanel extends JPanel {
     }
 
     private void initUI() {
-        // Say it out loud: a fresh tab starts empty, it does not inherit another tab's
-        // transcript. Users otherwise expect the new tab to "remember" the last one.
-        // 明确告知：新标签是空上下文，不继承其它标签；要接着上次聊得从「历史」打开。
-        transcript.addHint("这是新会话，不继承其它标签的上下文；要接着上次聊，点右上「历史」打开那条会话。"
-                + "多个会话可以同时并行跑任务；拖动上方分隔条能加高输入区，"
-                + "「附件」或直接拖文件进来可把文件一并发给模型。");
+        // One short line under the empty-state cards; the long explanation that used to greet
+        // every new tab is gone, the suggestion cards carry it now.
+        // 空态卡片下方只留一行提示；过去那段长说明由建议卡取代。
+        transcript.addHint(AgentBundle.message("ui.session.hint"));
+        // Clicking a suggestion card drops its prompt into the composer instead of sending it.
+        // 点建议卡只是把提示词填进输入框，不直接发送。
+        transcript.setSuggestionSink(composer::setText);
 
         // Transcript above, composer below; the divider is draggable so the input can grow.
         // 上方对话、下方输入区；中间分隔条可拖动，用来放大输入区。
         transcript.setMinimumSize(new Dimension(160, 120));
-        composer.setMinimumSize(new Dimension(160, 110));
+        composer.setMinimumSize(new Dimension(160, 100));
         // The checklist sits above the transcript, inside the top half, so the divider
         // still only resizes transcript vs composer.
         // 清单放在对话区上方（仍在上半区），分隔条依旧只调整对话区与输入区。
@@ -102,13 +117,49 @@ public final class ChatSessionPanel extends JPanel {
         top.setMinimumSize(new Dimension(160, 120));
         top.add(todoStrip, BorderLayout.NORTH);
         top.add(transcript, BorderLayout.CENTER);
+
+        // The status line moved out of the tool-window header and sits right above the input.
+        // 状态行从工具窗口顶部下移到输入区上方。
+        JPanel bottom = new JPanel(new BorderLayout(0, UiMetrics.xs()));
+        bottom.setOpaque(false);
+        bottom.setMinimumSize(new Dimension(160, 110));
+        bottom.add(statusRow, BorderLayout.NORTH);
+        bottom.add(composer, BorderLayout.CENTER);
+
         conversationSplit.setFirstComponent(top);
-        conversationSplit.setSecondComponent(composer);
+        conversationSplit.setSecondComponent(bottom);
         conversationSplit.setHonorComponentsMinimumSize(true);
         add(conversationSplit, BorderLayout.CENTER);
 
+        setStatus(AgentBundle.message("status.ready"));
         refreshModelCombo();
         composer.setAutoAccept(ReportSettingsState.getInstance().autoAcceptEdits);
+    }
+
+    // Status text and the meta chip are owned by this panel now.
+    // 状态文本与右侧 chip 改由本面板维护。
+    public void setStatus(String text) {
+        statusRow.setText(text);
+    }
+
+    // Right-hand chip: model name, this turn's tokens and its wall-clock time.
+    // 右侧 chip：模型名 + 本轮用量 + 耗时。
+    private void refreshMeta() {
+        StringBuilder meta = new StringBuilder(modelLabel);
+        if (turnIn > 0 || turnOut > 0) {
+            if (meta.length() > 0) {
+                meta.append(" · ");
+            }
+            meta.append(formatTokens(turnIn)).append('/').append(formatTokens(turnOut));
+        }
+        if (turnStartMs > 0) {
+            if (meta.length() > 0) {
+                meta.append(" · ");
+            }
+            long elapsed = System.currentTimeMillis() - turnStartMs;
+            meta.append(String.format(java.util.Locale.ROOT, "%.1fs", elapsed / 1000.0));
+        }
+        statusRow.setMeta(meta.toString());
     }
 
     // ------------------------------------------------------------------ identity
@@ -211,22 +262,27 @@ public final class ChatSessionPanel extends JPanel {
         for (ModelProfile profile : ModelProfiles.resolve(state)) {
             names.add(profile.name);
         }
-        composer.setModels(names, ModelProfiles.activeName(state));
+        String active = ModelProfiles.activeName(state);
+        composer.setModels(names, active);
         composer.setAutoAccept(state.autoAcceptEdits);
+        modelLabel = active == null ? "" : active;
+        refreshMeta();
     }
 
     private void switchModel(String name) {
         ReportSettingsState state = ReportSettingsState.getInstance();
         state.activeProfile = name;
         ModelProfile profile = ModelProfiles.active(state);
-        owner.setStatus(AgentBundle.message("session.modelSwitched", profile.name, profile.model));
+        modelLabel = profile.name;
+        refreshMeta();
+        setStatus(AgentBundle.message("session.modelSwitched", profile.name, profile.model));
         coreService.pushSettings();
     }
 
     private void setAutoAccept(boolean value) {
         ReportSettingsState state = ReportSettingsState.getInstance();
         state.autoAcceptEdits = value;
-        owner.setStatus(value ? AgentBundle.message("session.autoOn") : AgentBundle.message("session.autoOff"));
+        setStatus(value ? AgentBundle.message("session.autoOn") : AgentBundle.message("session.autoOff"));
     }
 
     // ------------------------------------------------------------------ messaging
@@ -266,8 +322,14 @@ public final class ChatSessionPanel extends JPanel {
         transcript.addUserMessage(text.isEmpty() ? "（仅附件）" : text, names);
         composer.reset();
         updateTitleFrom(text);
+        // Start the clock and reset the counters for the meta chip of this turn.
+        // 开始本轮计时并清零用量，供右侧 chip 展示。
+        turnStartMs = System.currentTimeMillis();
+        turnIn = 0;
+        turnOut = 0;
+        refreshMeta();
         setBusy(true);
-        owner.setStatus(AgentBundle.message("status.thinking"));
+        setStatus(AgentBundle.message("status.thinking"));
 
         String userText = text;
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
@@ -419,11 +481,22 @@ public final class ChatSessionPanel extends JPanel {
             case "agent/confirm":
                 handleConfirm(params);
                 break;
+            case "ask/user":
+                handleAsk(params);
+                break;
+            case "ask/withdraw": {
+                String askId = params.has("askId") ? params.get("askId").getAsString() : "";
+                AskCard card = pendingAsks.remove(askId);
+                if (card != null) {
+                    card.withdraw();
+                }
+                break;
+            }
             case "chat/finish":
                 transcript.finishAssistant();
                 appendUsage(params);
                 finishTask();
-                owner.setStatus(AgentBundle.message("status.ready"));
+                setStatus(AgentBundle.message("status.ready"));
                 break;
             case "chat/error": {
                 JsonObject error = params.has("error") && params.get("error").isJsonObject()
@@ -433,7 +506,7 @@ public final class ChatSessionPanel extends JPanel {
                 String text = error.has("message") ? error.get("message").getAsString() : "";
                 transcript.addErrorMessage("[错误:" + code + "] " + text);
                 finishTask();
-                owner.setStatus(AgentBundle.message("status.error"));
+                setStatus(AgentBundle.message("status.error"));
                 break;
             }
             default:
@@ -467,7 +540,12 @@ public final class ChatSessionPanel extends JPanel {
     }
 
     // Ask the user to approve a Core-initiated sensitive action (e.g. an MCP tool call).
-    // 向用户确认 Core 发起的敏感操作（例如 MCP 工具调用），结果通过 agent/confirmResult 回传。
+    // The card lives in the transcript, so the context that led to the call stays visible and
+    // Enter/Esc answer it; the modal dialog is only the fallback for when this session is not on
+    // screen (another tab is active, or the tool window is collapsed).
+    // 向用户确认 Core 发起的敏感操作（例如 MCP 工具调用）。
+    // 卡片留在对话区里，调用前的上下文不被遮挡，Enter/Esc 即可答复；
+    // 只有本会话不在屏幕上（切到了别的标签、工具窗口收起）时才退回模态对话框。
     private void handleConfirm(JsonObject params) {
         String confirmId = params.has("confirmId") ? params.get("confirmId").getAsString() : "";
         if (confirmId.isEmpty()) {
@@ -481,24 +559,209 @@ public final class ChatSessionPanel extends JPanel {
             args = args.substring(0, 400) + "...";
         }
         String detail = args;
-        transcript.addToolLine("[确认] MCP 服务 " + server + " 请求调用 " + tool + "...");
 
         ApplicationManager.getApplication().invokeLater(() -> {
-            int answer = Messages.showYesNoDialog(project,
-                    "会话「" + displayTitle() + "」\n\nMCP 服务 \"" + server + "\" 请求调用工具 \"" + tool
-                            + "\"\n\n参数：" + detail,
-                    "确认 MCP 工具调用", "允许", "拒绝", Messages.getQuestionIcon());
-            Map<String, Object> result = new HashMap<>();
-            result.put("confirmId", confirmId);
-            result.put("approved", answer == Messages.YES);
-            JsonRpcConnection conn = coreService.connectionOrNull();
-            if (conn != null) {
-                conn.request("agent/confirmResult", result).exceptionally(ex -> {
-                    LOG.warn("failed to send confirm result", ex);
-                    return null;
+            if (transcript.isShowing()) {
+                ToolCallCard card = new ToolCallCard(server, tool, detail);
+                card.setDecisionHandler(approved -> {
+                    pendingConfirms.remove(confirmId);
+                    sendConfirmResult(confirmId, approved);
+                    setStatus(AgentBundle.message("status.thinking"));
                 });
+                if (transcript.addCard(card)) {
+                    pendingConfirms.put(confirmId, card);
+                    setStatus(AgentBundle.message("ui.confirm.status"));
+                    return;
+                }
             }
+            askConfirmInDialog(confirmId, server, tool, detail);
         });
+    }
+
+    // Fallback path: a dialog is the only option when no transcript is on screen.
+    // 保底路径：对话区不在屏幕上时只能用弹框。
+    private void askConfirmInDialog(String confirmId, String server, String tool, String detail) {
+        transcript.addToolLine("[确认] MCP 服务 " + server + " 请求调用 " + tool + "...");
+        int answer = Messages.showYesNoDialog(project,
+                "会话「" + displayTitle() + "」\n\nMCP 服务 \"" + server + "\" 请求调用工具 \"" + tool
+                        + "\"\n\n参数：" + detail,
+                "确认 MCP 工具调用", "允许", "拒绝", Messages.getQuestionIcon());
+        sendConfirmResult(confirmId, answer == Messages.YES);
+    }
+
+    private void sendConfirmResult(String confirmId, boolean approved) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("confirmId", confirmId);
+        result.put("approved", approved);
+        JsonRpcConnection conn = coreService.connectionOrNull();
+        if (conn != null) {
+            conn.request("agent/confirmResult", result).exceptionally(ex -> {
+                LOG.warn("failed to send confirm result", ex);
+                return null;
+            });
+        }
+    }
+
+    // The agent asked a question (``ask_user``) and is blocked until we answer.
+    // Same routing as a confirmation: an in-place card first, a dialog only when this
+    // session is not on screen. Skipping is explicit, so the model continues with
+    // assumptions instead of waiting for an answer that never comes.
+    // Agent 提问（``ask_user``）并停在这一轮等我们回答。
+    // 与确认走同一套路由：优先对话区内的卡片，本会话不可见时才用对话框兵底；
+    // 「跳过」是显式动作，模型会带着假设继续，不会干等。
+    private void handleAsk(JsonObject params) {
+        String askId = params.has("askId") ? params.get("askId").getAsString() : "";
+        if (askId.isEmpty() || !params.has("questions") || !params.get("questions").isJsonArray()) {
+            return;
+        }
+        ApplicationManager.getApplication().invokeLater(() -> {
+            AskCard card = buildAskCard(params);
+            if (card.isEmpty()) {
+                AskCard.Answer skipped = new AskCard.Answer();
+                skipped.skipped = true;
+                sendAskResult(askId, skipped);
+                return;
+            }
+            card.setAnswerHandler(answer -> {
+                pendingAsks.remove(askId);
+                sendAskResult(askId, answer);
+                setStatus(AgentBundle.message("status.thinking"));
+            });
+            if (transcript.isShowing() && transcript.addCard(card)) {
+                pendingAsks.put(askId, card);
+                setStatus(AgentBundle.message("ui.ask.status"));
+                return;
+            }
+            askInDialog(askId, params.getAsJsonArray("questions"));
+        });
+    }
+
+    private static AskCard buildAskCard(JsonObject params) {
+        AskCard card = new AskCard();
+        for (JsonElement element : params.getAsJsonArray("questions")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject question = element.getAsJsonObject();
+            String text = textOf(question, "question");
+            List<String> labels = new ArrayList<>();
+            List<String> descriptions = new ArrayList<>();
+            if (question.has("options") && question.get("options").isJsonArray()) {
+                for (JsonElement optionElement : question.getAsJsonArray("options")) {
+                    if (!optionElement.isJsonObject()) {
+                        continue;
+                    }
+                    JsonObject option = optionElement.getAsJsonObject();
+                    String label = textOf(option, "label");
+                    if (label.isEmpty()) {
+                        continue;
+                    }
+                    labels.add(label);
+                    descriptions.add(textOf(option, "description"));
+                }
+            }
+            boolean multi = question.has("multiSelect") && question.get("multiSelect").getAsBoolean();
+            boolean allowCustom = !question.has("allowCustom")
+                    || question.get("allowCustom").getAsBoolean();
+            card.question(textOf(question, "header"), text, labels, descriptions, multi, allowCustom);
+        }
+        return card.finishQuestions();
+    }
+
+    private static String textOf(JsonObject object, String field) {
+        if (!object.has(field) || object.get(field).isJsonNull()) {
+            return "";
+        }
+        return object.get(field).getAsString().trim();
+    }
+
+    // Fallback path: one dialog per question. Multi-select degrades to single choice.
+    // 兵底路径：逐题弹框；多选在对话框里降为单选。
+    private void askInDialog(String askId, Iterable<JsonElement> questions) {
+        AskCard.Answer answer = new AskCard.Answer();
+        for (JsonElement element : questions) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject question = element.getAsJsonObject();
+            String text = textOf(question, "question");
+            String title = textOf(question, "header");
+            if (title.isEmpty()) {
+                title = AgentBundle.message("ui.ask.dialog.title");
+            }
+            List<String> labels = new ArrayList<>();
+            if (question.has("options") && question.get("options").isJsonArray()) {
+                for (JsonElement optionElement : question.getAsJsonArray("options")) {
+                    if (optionElement.isJsonObject()) {
+                        String label = textOf(optionElement.getAsJsonObject(), "label");
+                        if (!label.isEmpty()) {
+                            labels.add(label);
+                        }
+                    }
+                }
+            }
+            boolean allowCustom = !question.has("allowCustom")
+                    || question.get("allowCustom").getAsBoolean();
+            List<String> picked = new ArrayList<>();
+            String custom = "";
+            if (labels.isEmpty()) {
+                custom = Messages.showInputDialog(project, text, title,
+                        Messages.getQuestionIcon());
+                if (custom == null) {
+                    answer.skipped = true;
+                    break;
+                }
+            } else {
+                List<String> choices = new ArrayList<>(labels);
+                if (allowCustom) {
+                    choices.add(AgentBundle.message("ui.ask.dialog.custom"));
+                }
+                int index = Messages.showChooseDialog(project,
+                        "会话「" + displayTitle() + "」\n\n" + text, title,
+                        Messages.getQuestionIcon(), choices.toArray(new String[0]), choices.get(0));
+                if (index < 0) {
+                    answer.skipped = true;
+                    break;
+                }
+                if (allowCustom && index == labels.size()) {
+                    String typed = Messages.showInputDialog(project,
+                            AgentBundle.message("ui.ask.dialog.input"), title,
+                            Messages.getQuestionIcon());
+                    if (typed == null) {
+                        answer.skipped = true;
+                        break;
+                    }
+                    custom = typed.trim();
+                } else {
+                    picked.add(labels.get(index));
+                }
+            }
+            answer.picked.add(picked);
+            answer.custom.add(custom);
+        }
+        sendAskResult(askId, answer);
+    }
+
+    private void sendAskResult(String askId, AskCard.Answer answer) {
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (int i = 0; i < answer.picked.size(); i++) {
+            Map<String, Object> item = new HashMap<>();
+            item.put("index", i);
+            item.put("picked", answer.picked.get(i));
+            item.put("custom", answer.custom.get(i));
+            items.add(item);
+        }
+        Map<String, Object> result = new HashMap<>();
+        result.put("askId", askId);
+        result.put("skipped", answer.skipped);
+        result.put("answers", items);
+        JsonRpcConnection conn = coreService.connectionOrNull();
+        if (conn != null) {
+            conn.request("ask/userAnswer", result).exceptionally(ex -> {
+                LOG.warn("failed to send ask answer", ex);
+                return null;
+            });
+        }
     }
 
     private void onChatErrorJson(JsonObject response) {
@@ -508,12 +771,13 @@ public final class ChatSessionPanel extends JPanel {
         String text = error.has("message") ? error.get("message").getAsString() : "请求失败";
         transcript.addErrorMessage("[错误] " + text);
         finishTask();
-        owner.setStatus(AgentBundle.message("status.error"));
+        setStatus(AgentBundle.message("status.error"));
     }
 
     private void finishTask() {
         currentTaskId = null;
         setBusy(false);
+        refreshMeta();
         owner.onTaskCleared(this);
     }
 
@@ -526,6 +790,9 @@ public final class ChatSessionPanel extends JPanel {
         JsonObject usage = params.getAsJsonObject("usageTotal");
         long in = usage.has("in") && !usage.get("in").isJsonNull() ? usage.get("in").getAsLong() : 0;
         long out = usage.has("out") && !usage.get("out").isJsonNull() ? usage.get("out").getAsLong() : 0;
+        turnIn = in;
+        turnOut = out;
+        refreshMeta();
         if (in == 0 && out == 0) {
             return;
         }
@@ -545,6 +812,7 @@ public final class ChatSessionPanel extends JPanel {
     private void setBusy(boolean busy) {
         ApplicationManager.getApplication().invokeLater(() -> {
             composer.setBusy(busy);
+            statusRow.setBusy(busy);
             owner.onBusyChanged(this);
         });
     }
@@ -606,6 +874,18 @@ public final class ChatSessionPanel extends JPanel {
     // 关闭标签时取消仍在跑的任务并释放界面资源。
     public void dispose() {
         onStop();
+        // Never leave a Core confirmation unanswered when the tab goes away.
+        // 标签关闭时不能把 Core 的确认请求悬空:统一按拒绝回传。
+        for (ToolCallCard card : new ArrayList<>(pendingConfirms.values())) {
+            card.decide(false);
+        }
+        pendingConfirms.clear();
+        // A question is never left hanging either: skipping lets the Core finish the turn.
+        // 提问也不能悬空：按「跳过」回传，Core 才能把这轮跑完。
+        for (AskCard card : new ArrayList<>(pendingAsks.values())) {
+            card.skip();
+        }
+        pendingAsks.clear();
         transcript.dispose();
     }
 }

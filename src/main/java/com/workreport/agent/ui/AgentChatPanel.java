@@ -21,6 +21,8 @@ import com.intellij.util.ui.UIUtil;
 import com.workreport.agent.AgentBundle;
 import com.workreport.agent.rpc.AgentCoreService;
 import com.workreport.agent.rpc.JsonRpcConnection;
+import com.workreport.agent.ui.design.UiMetrics;
+import com.workreport.agent.ui.picker.PickerPopup;
 import com.workreport.plugin.settings.ReportSettingsState;
 import org.jetbrains.annotations.NotNull;
 
@@ -62,9 +64,7 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     private final Project project;
     private final AgentCoreService coreService;
 
-    private final JBLabel statusLabel = new JBLabel(AgentBundle.message("panel.starting"));
-    private final JBLabel busyLabel = new JBLabel("");
-    private final JPanel tabsBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+    private final SessionTabsBar tabsBar = new SessionTabsBar();
     private final JPanel cards = new JPanel(new CardLayout());
 
     private final Map<String, ChatSessionPanel> sessions = new LinkedHashMap<>();
@@ -75,18 +75,17 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     private final ChatSessionPanel.Owner sessionOwner = new SessionOwner();
     private ChatSessionPanel active;
     private JBPopup historyPopup;
-    private JPanel historyRows;
-    private JBLabel historyHeader;
-    private JBTextField historySearch;
-    private Timer historySearchTimer;
+    private PickerPopup historyPicker;
     // Full list kept next to the popup so clearing the search box restores it without a round trip.
     // 弹窗旁边留着完整列表：清空搜索框时不必再请求一次。
     private List<HistoryEntry> historyEntries = new ArrayList<>();
 
     private JBPopup memoryPopup;
-    private JPanel memoryRows;
-    private JBLabel memoryHeader;
+    private PickerPopup memoryPicker;
     private List<PendingMemory> memoryItems = new ArrayList<>();
+    // Inline yellow hints per candidate ("similar to memory #x"), keyed by candidate id.
+    // 按候选 id 存的行内黄色提示（「与已有记忆 #x 相似」），不弹对话框。
+    private final Map<String, String> memoryWarnings = new HashMap<>();
     // Numbers behind the default "会话 N" titles. They are released on close, so the
     // strip reuses the smallest free number instead of counting up forever.
     // 「会话 N」里的编号：关闭后归还，复用最小空号，不会一直累加。
@@ -100,35 +99,59 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         coreService.setMessageHandler(this::onCoreMessage);
         initUI();
         openSession();
-        refreshBusyLabel();
         startCoreAsync();
     }
 
     private void initUI() {
-        JPanel mainPanel = new JPanel(new BorderLayout(0, 6));
-        mainPanel.setBorder(new EmptyBorder(8, 8, 6, 8));
+        JPanel mainPanel = new JPanel(new BorderLayout(0, UiMetrics.s()));
+        mainPanel.setBorder(new EmptyBorder(UiMetrics.m(), UiMetrics.m(), UiMetrics.s(), UiMetrics.m()));
         mainPanel.setBackground(UIUtil.getPanelBackground());
 
-        JPanel statusPanel = new JPanel(new BorderLayout());
-        statusPanel.setOpaque(false);
-        statusLabel.setBorder(new EmptyBorder(0, 2, 0, 0));
-        statusPanel.add(statusLabel, BorderLayout.WEST);
-        busyLabel.setForeground(UIUtil.getContextHelpForeground());
-        statusPanel.add(busyLabel, BorderLayout.EAST);
+        // The strip is the only thing left on top: the status text moved into each session,
+        // right above the composer, so the transcript starts higher.
+        // 顶部只剩标签条：状态文本已下移到每个会话的输入区上方，对话区因此更靠上。
+        tabsBar.setListener(new SessionTabsBar.Listener() {
+            @Override
+            public void onSelect(int index) {
+                selectSession(sessionAt(index));
+            }
 
-        // Opaque on purpose: after a tab is removed the strip must erase the pixels it
-        // used to occupy, otherwise the empty slot stays visible as a leftover frame.
-        // 故意设为不透明：删掉标签后必须擦掉它占过的像素，否则会留下一个空框。
-        tabsBar.setOpaque(true);
-        tabsBar.setBackground(UIUtil.getPanelBackground());
-        JPanel head = new JPanel(new BorderLayout(0, 4));
-        head.setOpaque(false);
-        head.add(statusPanel, BorderLayout.NORTH);
-        head.add(tabsBar, BorderLayout.SOUTH);
+            @Override
+            public void onClose(int index) {
+                closeSession(sessionAt(index));
+            }
 
-        mainPanel.add(head, BorderLayout.NORTH);
+            @Override
+            public void onNewSession() {
+                openSession();
+            }
+
+            @Override
+            public void onHistory(Component anchor) {
+                showHistory(anchor);
+            }
+
+            @Override
+            public void onMemory(Component anchor) {
+                showMemories(anchor);
+            }
+
+            @Override
+            public void onSettings() {
+                openSettings();
+            }
+        });
+
+        mainPanel.add(tabsBar, BorderLayout.NORTH);
         mainPanel.add(cards, BorderLayout.CENTER);
         setContent(mainPanel);
+    }
+
+    // Tab index -> session, in insertion order (the same order the strip was filled with).
+    // 标签下标 -> 会话，按插入顺序（与填充标签条的顺序一致）。
+    private ChatSessionPanel sessionAt(int index) {
+        List<ChatSessionPanel> ordered = new ArrayList<>(sessions.values());
+        return index >= 0 && index < ordered.size() ? ordered.get(index) : null;
     }
 
     // ------------------------------------------------------------- sessions
@@ -214,57 +237,22 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         cards.revalidate();
         cards.repaint();
         rebuildTabs();
-        refreshBusyLabel();
     }
 
-    // Rebuild the strip so every tab shows the fresh title and running marker.
-    // 重建标签条，让每个标签显示最新标题与运行标记。
+    // Feed the strip with the current titles, running flags and selection.
+    // 把当前标题、运行状态与选中项交给标签条，由它自绘。
     private void rebuildTabs() {
-        tabsBar.removeAll();
-        for (ChatSessionPanel session : sessions.values()) {
-            tabsBar.add(new SessionTab(session));
-        }
-        JButton add = new JButton("+");
-        add.setToolTipText(AgentBundle.message("tab.new.tip"));
-        add.setMargin(new Insets(2, 8, 2, 8));
-        add.setFocusable(false);
-        add.addActionListener(e -> openSession());
-        tabsBar.add(add);
-
-        JButton history = new JButton(AgentBundle.message("tab.history"));
-        history.setToolTipText(AgentBundle.message("tab.history.tip"));
-        history.setMargin(new Insets(2, 8, 2, 8));
-        history.setFocusable(false);
-        history.addActionListener(e -> showHistory(history));
-        tabsBar.add(history);
-
-        JButton memory = new JButton(AgentBundle.message("tab.memory"));
-        memory.setToolTipText(AgentBundle.message("tab.memory.tip"));
-        memory.setMargin(new Insets(2, 8, 2, 8));
-        memory.setFocusable(false);
-        memory.addActionListener(e -> showMemories(memory));
-        tabsBar.add(memory);
-
-        tabsBar.revalidate();
-        // The strip may lose a whole wrapped row; the parent has to re-measure the height
-        // as well, otherwise the freed space stays behind as a blank band.
-        // 标签条可能少一整行，父容器也要重新量高度，否则空出来的位置会留成一条空白。
-        if (tabsBar.getParent() != null) {
-            tabsBar.getParent().revalidate();
-        }
-        tabsBar.repaint();
-    }
-
-    private void refreshBusyLabel() {
-        int running = 0;
-        for (ChatSessionPanel session : sessions.values()) {
-            if (session.isBusy()) {
-                running++;
+        List<ChatSessionPanel> ordered = new ArrayList<>(sessions.values());
+        List<SessionTabsBar.Tab> tabs = new ArrayList<>(ordered.size());
+        int selected = 0;
+        for (int i = 0; i < ordered.size(); i++) {
+            ChatSessionPanel session = ordered.get(i);
+            tabs.add(new SessionTabsBar.Tab(session.displayTitle(), session.isBusy()));
+            if (session == active) {
+                selected = i;
             }
         }
-        busyLabel.setText(running <= 1
-                ? (running == 1 ? AgentBundle.message("busy.one") : "")
-                : AgentBundle.message("busy.many", running));
+        tabsBar.setTabs(tabs, selected);
     }
 
     // ------------------------------------------------------------- history
@@ -405,47 +393,50 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         cancelHistoryPopup();
         historyEntries = new ArrayList<>(entries);
 
-        JPanel content = new JPanel(new BorderLayout(0, 4));
-        content.setBorder(new EmptyBorder(6, 4, 4, 4));
-
-        JPanel head = new JPanel(new BorderLayout(0, 4));
-        head.setOpaque(false);
-        historySearch = new JBTextField();
-        historySearch.getEmptyText().setText(AgentBundle.message("history.search.placeholder"));
-        historySearch.setToolTipText(AgentBundle.message("history.search.tip"));
-        historySearch.getDocument().addDocumentListener(new DocumentAdapter() {
-            @Override
-            protected void textChanged(@NotNull DocumentEvent e) {
-                scheduleHistorySearch();
+        // One shared picker for search, hover actions and keyboard navigation.
+        // 搜索、hover 动作与键盘导航全部复用同一个列表弹窗。
+        PickerPopup picker = new PickerPopup(400,
+                AgentBundle.message("history.search.placeholder"),
+                AgentBundle.message("history.empty"),
+                PickerPopup.defaultFooter());
+        historyPicker = picker;
+        picker.setHeader(historyHeaderText(historyEntries, ""));
+        picker.setPickHandler(row -> {
+            if (row.payload instanceof HistoryEntry entry) {
+                openHistory(entry);
             }
         });
-        head.add(historySearch, BorderLayout.NORTH);
-        historyHeader = new JBLabel(historyHeaderText(historyEntries, ""));
-        historyHeader.setForeground(UIUtil.getContextHelpForeground());
-        historyHeader.setBorder(new EmptyBorder(0, 6, 0, 0));
-        head.add(historyHeader, BorderLayout.SOUTH);
-        content.add(head, BorderLayout.NORTH);
+        picker.setSearchHandler(this::runHistorySearch);
+        picker.setRows(historyRows(historyEntries));
 
-        historyRows = new JPanel();
-        historyRows.setLayout(new BoxLayout(historyRows, BoxLayout.Y_AXIS));
-        historyRows.setOpaque(false);
-        fillHistoryRows(historyEntries, "");
-
-        JBScrollPane scroll = new JBScrollPane(historyRows);
-        scroll.setBorder(BorderFactory.createEmptyBorder());
-        scroll.setPreferredSize(new Dimension(400,
-                Math.min(400, Math.max(80, historyEntries.size() * 54 + 20))));
-        content.add(scroll, BorderLayout.CENTER);
-
-        historyPopup = JBPopupFactory.getInstance()
-                .createComponentPopupBuilder(content, null)
-                .setRequestFocus(true)
-                .setResizable(false)
-                .setMovable(false)
-                .setTitle("历史会话")
-                .createPopup();
+        historyPopup = picker.createPopup();
         historyPopup.showUnderneathOf(anchor);
-        historySearch.requestFocusInWindow();
+        picker.focusSearch();
+    }
+
+    private List<PickerPopup.Row> historyRows(List<HistoryEntry> entries) {
+        List<PickerPopup.Row> rows = new ArrayList<>();
+        int shown = 0;
+        for (HistoryEntry entry : entries) {
+            if (shown >= MAX_HISTORY_ROWS) {
+                break;
+            }
+            // Search hits show the matched snippet, the plain list shows time and size.
+            // 搜索命中显示匹配片段，普通列表显示时间与条数。
+            String subtitle = entry.hasSnippet()
+                    ? stripTags(entry.snippetHtml)
+                    : formatTime(entry.updatedAt) + " · " + entry.messageCount + " 条消息";
+            rows.add(new PickerPopup.Row(entry.displayTitle(), subtitle, "", "",
+                    entry.tooltip(), entry,
+                    List.of(new PickerPopup.RowAction(AgentBundle.message("common.delete"), true,
+                            row -> {
+                                if (row.payload instanceof HistoryEntry target) {
+                                    deleteHistory(target);
+                                }
+                            }))));
+            shown++;
+        }
+        return rows;
     }
 
     private static String historyHeaderText(List<HistoryEntry> entries, String query) {
@@ -459,49 +450,14 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
                 : AgentBundle.message("history.header");
     }
 
-    // Fill the row container; query is only used to pick the empty-state wording.
-    // 填充行容器；query 只决定空状态文案。
-    private void fillHistoryRows(List<HistoryEntry> entries, String query) {
-        if (historyRows == null) {
+    private void runHistorySearch(String query) {
+        PickerPopup picker = historyPicker;
+        if (picker == null) {
             return;
         }
-        historyRows.removeAll();
-        if (entries.isEmpty()) {
-            historyRows.add(new JBLabel(query.isEmpty()
-                    ? AgentBundle.message("history.empty")
-                    : AgentBundle.message("history.empty.search")));
-        } else {
-            int shown = 0;
-            for (HistoryEntry entry : entries) {
-                if (shown >= MAX_HISTORY_ROWS) {
-                    break;
-                }
-                historyRows.add(new HistoryRow(entry));
-                shown++;
-            }
-        }
-        historyRows.revalidate();
-        historyRows.repaint();
-    }
-
-    // Coalesce keystrokes: one request 300 ms after typing stops.
-    // 连续敲键只发一次请求：停下来 300 ms 后再搜。
-    private void scheduleHistorySearch() {
-        if (historySearchTimer != null) {
-            historySearchTimer.stop();
-        }
-        historySearchTimer = new Timer(300, e -> runHistorySearch(
-                historySearch == null ? "" : historySearch.getText().trim()));
-        historySearchTimer.setRepeats(false);
-        historySearchTimer.start();
-    }
-
-    private void runHistorySearch(String query) {
         if (query.isEmpty()) {
-            fillHistoryRows(historyEntries, "");
-            if (historyHeader != null) {
-                historyHeader.setText(historyHeaderText(historyEntries, ""));
-            }
+            picker.setHeader(historyHeaderText(historyEntries, ""));
+            picker.setRows(historyRows(historyEntries));
             return;
         }
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
@@ -524,25 +480,21 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
                 return;
             }
             ApplicationManager.getApplication().invokeLater(() -> {
-                if (historyPopup == null || !historyPopup.isVisible()
-                        || historySearch == null || !query.equals(historySearch.getText().trim())) {
+                if (historyPicker != picker || historyPopup == null || !historyPopup.isVisible()
+                        || !query.equals(picker.query())) {
                     return;
                 }
-                if (historyHeader != null) {
-                    historyHeader.setText(historyHeaderText(hits, query));
-                }
-                fillHistoryRows(hits, query);
+                picker.setHeader(historyHeaderText(hits, query));
+                picker.setRows(historyRows(hits));
             });
         });
     }
 
     private void cancelHistoryPopup() {
-        if (historySearchTimer != null) {
-            historySearchTimer.stop();
-        }
         if (historyPopup != null && historyPopup.isVisible()) {
             historyPopup.cancel();
         }
+        historyPicker = null;
     }
 
     // ------------------------------------------------------------- memory
@@ -606,60 +558,107 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     private void showMemoryPopup(Component anchor, List<PendingMemory> items) {
         cancelMemoryPopup();
         memoryItems = new ArrayList<>(items);
+        memoryWarnings.clear();
+        tabsBar.setPendingMemories(memoryItems.size());
 
-        JPanel content = new JPanel(new BorderLayout(0, 4));
-        content.setBorder(new EmptyBorder(6, 4, 4, 4));
-        memoryHeader = new JBLabel(memoryHeaderText(memoryItems));
-        memoryHeader.setForeground(UIUtil.getContextHelpForeground());
-        memoryHeader.setBorder(new EmptyBorder(0, 6, 4, 0));
-        content.add(memoryHeader, BorderLayout.NORTH);
+        // Same picker as history: search on top, one painted row per candidate.
+        // Filtering is local (the candidates already sit in memory), so typing costs nothing.
+        // 与历史共用同一个弹窗：顶部搜索、每条候选一行自绘；候选已在内存里，筛选完全本地完成。
+        PickerPopup picker = new PickerPopup(420,
+                AgentBundle.message("ui.picker.memory.search"),
+                AgentBundle.message("memory.empty"),
+                PickerPopup.defaultFooter());
+        memoryPicker = picker;
+        picker.setPickHandler(row -> {
+            if (row.payload instanceof PendingMemory item) {
+                resolveMemory(item, true, null);
+            }
+        });
+        picker.setSearchHandler(query -> refreshMemoryRows());
+        picker.setRows(memoryRows());
+        picker.setHeader(memoryHeaderText(memoryItems, ""));
 
-        memoryRows = new JPanel();
-        memoryRows.setLayout(new BoxLayout(memoryRows, BoxLayout.Y_AXIS));
-        memoryRows.setOpaque(false);
-        fillMemoryRows();
-
-        JBScrollPane scroll = new JBScrollPane(memoryRows);
-        scroll.setBorder(BorderFactory.createEmptyBorder());
-        scroll.setPreferredSize(new Dimension(420,
-                Math.min(420, Math.max(110, memoryItems.size() * 92 + 30))));
-        content.add(scroll, BorderLayout.CENTER);
-
-        memoryPopup = JBPopupFactory.getInstance()
-                .createComponentPopupBuilder(content, null)
-                .setRequestFocus(true)
-                .setResizable(false)
-                .setMovable(false)
-                .setTitle("记忆候选")
-                .createPopup();
+        memoryPopup = picker.createPopup();
         memoryPopup.showUnderneathOf(anchor);
+        picker.focusSearch();
     }
 
-    private static String memoryHeaderText(List<PendingMemory> items) {
+    private static String memoryHeaderText(List<PendingMemory> items, String query) {
+        if (!query.isEmpty()) {
+            return AgentBundle.message("ui.picker.memory.hits", query);
+        }
         return items.isEmpty()
                 ? AgentBundle.message("memory.header.empty")
                 : AgentBundle.message("memory.header", items.size());
     }
 
-    private void fillMemoryRows() {
-        if (memoryRows == null) {
+    private List<PickerPopup.Row> memoryRows() {
+        List<PickerPopup.Row> rows = new ArrayList<>();
+        String query = memoryPicker == null ? "" : memoryPicker.query().toLowerCase(Locale.ROOT);
+        int shown = 0;
+        for (PendingMemory item : memoryItems) {
+            if (shown >= MAX_MEMORY_ROWS) {
+                break;
+            }
+            if (!query.isEmpty() && !matchesMemory(item, query)) {
+                continue;
+            }
+            // Confirm sits rightmost (the primary action), ignore leftmost (destructive one).
+            // 确认放在最右（主操作），忽略放在最左（破坏性操作）。
+            rows.add(new PickerPopup.Row(item.displayTitle(), item.content,
+                    item.sourceLabel() + " · " + item.category,
+                    memoryWarnings.getOrDefault(item.id, ""),
+                    item.content, item,
+                    List.of(
+                            new PickerPopup.RowAction(AgentBundle.message("memory.confirm"), false,
+                                    row -> {
+                                        if (row.payload instanceof PendingMemory target) {
+                                            resolveMemory(target, true, null);
+                                        }
+                                    }),
+                            new PickerPopup.RowAction(AgentBundle.message("memory.edit"), false,
+                                    row -> {
+                                        if (row.payload instanceof PendingMemory target) {
+                                            editMemory(target);
+                                        }
+                                    }),
+                            new PickerPopup.RowAction(AgentBundle.message("memory.ignore"), true,
+                                    row -> {
+                                        if (row.payload instanceof PendingMemory target) {
+                                            resolveMemory(target, false, null);
+                                        }
+                                    }))));
+            shown++;
+        }
+        return rows;
+    }
+
+    private static boolean matchesMemory(PendingMemory item, String query) {
+        return item.title.toLowerCase(Locale.ROOT).contains(query)
+                || item.content.toLowerCase(Locale.ROOT).contains(query)
+                || item.category.toLowerCase(Locale.ROOT).contains(query);
+    }
+
+    // Rebuild rows after an approve/ignore, keeping the search box and header in sync.
+    // 确认/忽略后重建行，同时刷新表头与搜索状态。
+    private void refreshMemoryRows() {
+        PickerPopup picker = memoryPicker;
+        if (picker == null) {
             return;
         }
-        memoryRows.removeAll();
-        if (memoryItems.isEmpty()) {
-            memoryRows.add(new JBLabel(AgentBundle.message("memory.empty")));
-        } else {
-            int shown = 0;
-            for (PendingMemory item : memoryItems) {
-                if (shown >= MAX_MEMORY_ROWS) {
-                    break;
-                }
-                memoryRows.add(new MemoryRow(item));
-                shown++;
-            }
+        picker.setHeader(memoryHeaderText(memoryItems, picker.query()));
+        picker.setRows(memoryRows());
+    }
+
+    // Editing still needs a text box; everything else stays inline in the row.
+    // 改写文字仍然需要输入框，其余操作全部留在行内完成。
+    private void editMemory(PendingMemory item) {
+        String edited = Messages.showMultilineInputDialog(project,
+                AgentBundle.message("memory.edit.message"),
+                AgentBundle.message("memory.edit.title"), item.content, null, null);
+        if (edited != null && !edited.trim().isEmpty()) {
+            resolveMemory(item, true, edited.trim());
         }
-        memoryRows.revalidate();
-        memoryRows.repaint();
     }
 
     // approve=true → memory/promote (optionally with edited text), false → memory/discard.
@@ -667,6 +666,7 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     private void resolveMemory(PendingMemory item, boolean approve, String content) {
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             String message;
+            JsonObject duplicate = null;
             try {
                 Map<String, Object> payload = new HashMap<>();
                 payload.put("id", item.id);
@@ -676,7 +676,7 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
                     }
                     JsonObject result = callCore("memory/promote", payload);
                     String title = string(result, "title");
-                    JsonObject duplicate = result.has("duplicate") && result.get("duplicate").isJsonObject()
+                    duplicate = result.has("duplicate") && result.get("duplicate").isJsonObject()
                             ? result.getAsJsonObject("duplicate") : null;
                     String label = title.isBlank() ? item.displayTitle() : title;
                     message = duplicate == null
@@ -692,13 +692,17 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
                 setStatus(AgentBundle.message("memory.opFailed", e.getMessage()));
                 return;
             }
+            String duplicateId = duplicate == null ? null : string(duplicate, "id");
             ApplicationManager.getApplication().invokeLater(() -> {
-                if (memoryItems.remove(item)) {
-                    fillMemoryRows();
-                    if (memoryHeader != null) {
-                        memoryHeader.setText(memoryHeaderText(memoryItems));
-                    }
+                if (duplicateId != null) {
+                    // Keep the row and show the duplicate hint inline in yellow.
+                    // 保留该行，把「与已有记忆相似」的提示直接画在行内（黄色小字）。
+                    memoryWarnings.put(item.id, AgentBundle.message("ui.picker.memory.duplicate", duplicateId));
+                } else if (memoryItems.remove(item)) {
+                    memoryWarnings.remove(item.id);
                 }
+                tabsBar.setPendingMemories(memoryItems.size());
+                refreshMemoryRows();
             });
             setStatus(message);
         });
@@ -708,64 +712,8 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         if (memoryPopup != null && memoryPopup.isVisible()) {
             memoryPopup.cancel();
         }
-    }
-
-    // One candidate: title, the sentence, its origin, then 确认 / 编辑 / 忽略.
-    // 一条候选：标题、原文、来源与三个操作。
-    private final class MemoryRow extends JPanel {
-
-        MemoryRow(PendingMemory item) {
-            super(new BorderLayout(6, 0));
-            setOpaque(false);
-            setBorder(new EmptyBorder(6, 8, 6, 6));
-            setMaximumSize(new Dimension(Integer.MAX_VALUE, 92));
-            setToolTipText(item.content);
-
-            Font base = UIUtil.getLabelFont() != null ? UIUtil.getLabelFont() : new JLabel().getFont();
-            JPanel text = new JPanel();
-            text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
-            text.setOpaque(false);
-            JLabel title = new JLabel(item.displayTitle());
-            title.setFont(base.deriveFont(Font.BOLD));
-            JLabel content = new JLabel(item.content);
-            content.setFont(base.deriveFont(base.getSize2D() - 1f));
-            JLabel meta = new JLabel(item.sourceLabel() + " · " + item.category);
-            meta.setFont(base.deriveFont(base.getSize2D() - 1f));
-            meta.setForeground(UIUtil.getContextHelpForeground());
-            text.add(title);
-            text.add(content);
-            text.add(meta);
-            add(text, BorderLayout.CENTER);
-
-            JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
-            actions.setOpaque(false);
-            JButton confirm = new JButton(AgentBundle.message("memory.confirm"));
-            confirm.setToolTipText(AgentBundle.message("memory.confirm.tip"));
-            confirm.setMargin(new Insets(2, 8, 2, 8));
-            confirm.setFocusable(false);
-            confirm.addActionListener(e -> resolveMemory(item, true, null));
-            JButton edit = new JButton(AgentBundle.message("memory.edit"));
-            edit.setToolTipText(AgentBundle.message("memory.edit.tip"));
-            edit.setMargin(new Insets(2, 8, 2, 8));
-            edit.setFocusable(false);
-            edit.addActionListener(e -> {
-                String edited = Messages.showMultilineInputDialog(project,
-                        AgentBundle.message("memory.edit.message"),
-                        AgentBundle.message("memory.edit.title"), item.content, null, null);
-                if (edited != null && !edited.trim().isEmpty()) {
-                    resolveMemory(item, true, edited.trim());
-                }
-            });
-            JButton ignore = new JButton(AgentBundle.message("memory.ignore"));
-            ignore.setToolTipText(AgentBundle.message("memory.ignore.tip"));
-            ignore.setMargin(new Insets(2, 8, 2, 8));
-            ignore.setFocusable(false);
-            ignore.addActionListener(e -> resolveMemory(item, false, null));
-            actions.add(confirm);
-            actions.add(edit);
-            actions.add(ignore);
-            add(actions, BorderLayout.EAST);
-        }
+        memoryPopup = null;
+        memoryPicker = null;
     }
 
     // Reopen a stored conversation as a tab, replaying its bubbles first.
@@ -893,98 +841,6 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         return HISTORY_TIME.format(Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()));
     }
 
-    // One history entry: title + time on the left, a delete cross on the right.
-    // 单条历史记录：左边标题与时间，右边删除叉。
-    private final class HistoryRow extends JPanel {
-
-        private boolean hover;
-
-        HistoryRow(HistoryEntry entry) {
-            super(new BorderLayout(6, 0));
-            setOpaque(false);
-            setBorder(new EmptyBorder(5, 8, 5, 6));
-            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            setMaximumSize(new Dimension(Integer.MAX_VALUE, 54));
-            setToolTipText(entry.tooltip());
-
-            Font base = UIUtil.getLabelFont() != null ? UIUtil.getLabelFont() : new JLabel().getFont();
-            JPanel text = new JPanel();
-            text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
-            text.setOpaque(false);
-            JLabel title = new JLabel(entry.displayTitle());
-            title.setFont(base.deriveFont(Font.BOLD));
-            text.add(title);
-            if (entry.hasSnippet()) {
-                // Search hit: the snippet already boldens the matched words.
-                // 搜索命中：片段里已经把匹配词加粗了。
-                JLabel snippet = new JLabel(entry.snippetHtml);
-                snippet.setFont(base.deriveFont(base.getSize2D() - 1f));
-                snippet.setForeground(UIUtil.getContextHelpForeground());
-                text.add(snippet);
-            } else {
-                JLabel meta = new JLabel(formatTime(entry.updatedAt) + " · " + entry.messageCount + " 条消息");
-                meta.setFont(base.deriveFont(base.getSize2D() - 1f));
-                meta.setForeground(UIUtil.getContextHelpForeground());
-                text.add(meta);
-            }
-            add(text, BorderLayout.CENTER);
-
-            JLabel remove = new JLabel("×");
-            remove.setToolTipText(AgentBundle.message("history.delete.tip"));
-            remove.setForeground(UIUtil.getContextHelpForeground());
-            remove.setBorder(new EmptyBorder(0, 4, 0, 2));
-            remove.addMouseListener(new MouseAdapter() {
-                @Override
-                public void mouseClicked(MouseEvent e) {
-                    e.consume();
-                    deleteHistory(entry);
-                }
-
-                @Override
-                public void mouseEntered(MouseEvent e) {
-                    remove.setForeground(JBColor.RED);
-                }
-
-                @Override
-                public void mouseExited(MouseEvent e) {
-                    remove.setForeground(UIUtil.getContextHelpForeground());
-                }
-            });
-            add(remove, BorderLayout.EAST);
-
-            addMouseListener(new MouseAdapter() {
-                @Override
-                public void mouseClicked(MouseEvent e) {
-                    openHistory(entry);
-                }
-
-                @Override
-                public void mouseEntered(MouseEvent e) {
-                    hover = true;
-                    repaint();
-                }
-
-                @Override
-                public void mouseExited(MouseEvent e) {
-                    hover = false;
-                    repaint();
-                }
-            });
-        }
-
-        @Override
-        protected void paintComponent(Graphics g) {
-            if (hover) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setColor(new JBColor(new Color(0xEAF1FB), new Color(0x39404A)));
-                g2.fillRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 8, 8);
-                g2.dispose();
-            }
-            super.paintComponent(g);
-        }
-    }
-
     // ------------------------------------------------------------- core wiring
 
     private void startCoreAsync() {
@@ -1031,6 +887,10 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
                 setStatus(AgentBundle.message("status.ready"));
             } else if ("memory/pendingChanged".equals(method)) {
                 int count = params.has("count") ? params.get("count").getAsInt() : 0;
+                // The badge on the memory button carries the number; no status line needed.
+                // 待确认数改为记忆按钮上的角标，不再占用状态行。
+                ApplicationManager.getApplication().invokeLater(
+                        () -> tabsBar.setPendingMemories(count));
                 if (count > 0) {
                     setStatus(AgentBundle.message("status.newMemories", count));
                 }
@@ -1124,7 +984,12 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     }
 
     private void setStatus(String text) {
-        ApplicationManager.getApplication().invokeLater(() -> statusLabel.setText(text));
+        ApplicationManager.getApplication().invokeLater(() -> {
+            ChatSessionPanel target = active;
+            if (target != null) {
+                target.setStatus(text);
+            }
+        });
     }
 
     @Override
@@ -1146,20 +1011,17 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         public void onTaskBound(ChatSessionPanel session, String taskId) {
             byTask.put(taskId, session);
             rebuildTabs();
-            refreshBusyLabel();
         }
 
         @Override
         public void onTaskCleared(ChatSessionPanel session) {
             byTask.values().remove(session);
             rebuildTabs();
-            refreshBusyLabel();
         }
 
         @Override
         public void onBusyChanged(ChatSessionPanel session) {
             rebuildTabs();
-            refreshBusyLabel();
         }
 
         @Override
@@ -1170,116 +1032,6 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
         @Override
         public void openSettings() {
             AgentChatPanel.this.openSettings();
-        }
-
-        @Override
-        public void setStatus(String text) {
-            AgentChatPanel.this.setStatus(text);
-        }
-    }
-
-    // One tab: title, running dot and a close cross.
-    // 单个标签：标题、运行圆点、关闭叉。
-    private final class SessionTab extends JPanel {
-
-        private static final Color SELECTED_BG = new JBColor(new Color(0xE4EEFF), new Color(0x2F3A4A));
-        private static final Color HOVER_BG = new JBColor(new Color(0xEEF2F7), new Color(0x343A44));
-
-        private final ChatSessionPanel session;
-        private final JLabel titleLabel = new JLabel();
-        private boolean hover;
-
-        SessionTab(ChatSessionPanel session) {
-            super(new FlowLayout(FlowLayout.LEFT, 5, 0));
-            this.session = session;
-            setOpaque(false);
-            setBorder(new EmptyBorder(5, 10, 5, 6));
-            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-
-            titleLabel.setFont(fontFor(session == active));
-            titleLabel.setForeground(UIUtil.getLabelForeground());
-            titleLabel.setText((session.isBusy() ? "● " : "") + session.displayTitle());
-            titleLabel.setToolTipText(session.isBusy()
-                    ? AgentBundle.message("tab.running.tip")
-                    : AgentBundle.message("tab.switch.tip"));
-            // Labels swallow mouse events, so the title forwards clicks to the tab.
-            // JLabel 会吞掉鼠标事件，因此标题要把点击转发给标签。
-            titleLabel.addMouseListener(new MouseAdapter() {
-                @Override
-                public void mouseClicked(MouseEvent e) {
-                    selectSession(session);
-                }
-            });
-
-            JLabel close = new JLabel("×");
-            close.setToolTipText(AgentBundle.message("tab.close.tip"));
-            close.setForeground(UIUtil.getContextHelpForeground());
-            close.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            close.setBorder(new EmptyBorder(0, 2, 0, 0));
-            close.addMouseListener(new MouseAdapter() {
-                @Override
-                public void mouseClicked(MouseEvent e) {
-                    closeSession(session);
-                }
-
-                @Override
-                public void mouseEntered(MouseEvent e) {
-                    close.setForeground(JBColor.RED);
-                }
-
-                @Override
-                public void mouseExited(MouseEvent e) {
-                    close.setForeground(UIUtil.getContextHelpForeground());
-                }
-            });
-
-            add(titleLabel);
-            add(close);
-
-            addMouseListener(new MouseAdapter() {
-                @Override
-                public void mouseClicked(MouseEvent e) {
-                    selectSession(session);
-                }
-
-                @Override
-                public void mouseEntered(MouseEvent e) {
-                    hover = true;
-                    repaint();
-                }
-
-                @Override
-                public void mouseExited(MouseEvent e) {
-                    hover = false;
-                    repaint();
-                }
-            });
-        }
-
-        private Font fontFor(boolean selected) {
-            Font base = UIUtil.getLabelFont();
-            if (base == null) {
-                base = new JLabel().getFont();
-            }
-            return selected ? base.deriveFont(Font.BOLD) : base;
-        }
-
-        @Override
-        protected void paintComponent(Graphics g) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            boolean selected = session == active;
-            if (selected) {
-                g2.setColor(SELECTED_BG);
-                g2.fillRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 8, 8);
-                g2.setColor(JBColor.namedColor("Focus.color", new Color(0x4C7DF0)));
-                g2.fillRoundRect(0, getHeight() - 2, getWidth() - 1, 2, 2, 2);
-            } else if (hover) {
-                g2.setColor(HOVER_BG);
-                g2.fillRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 8, 8);
-            }
-            g2.dispose();
-            super.paintComponent(g);
         }
     }
 }
