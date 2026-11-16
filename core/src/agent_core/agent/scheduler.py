@@ -21,6 +21,12 @@ EndCallback = Callable[[ToolCall, ToolResult], Awaitable[None]]
 # 未知工具报错里最多列出多少个可用工具名。
 MAX_NAME_HINTS = 12
 
+# Tools that pause the turn and wait for a human. They never share a round with
+# anything else: asking the user while an edit is already running means the file has
+# changed before the answer arrives.
+# 需要等人回答的工具。它们独占一轮：否则用户还在选，文件已经被改了。
+INTERACTIVE_TOOLS = frozenset({"ask_user"})
+
 
 def unknown_tool_error(registry: ToolRegistry, name: str) -> str:
     """Name the tools that do exist.
@@ -76,4 +82,27 @@ class ToolScheduler:
                 await on_end(call, result)
             return result
 
-        return list(await asyncio.gather(*(run_one(call) for call in calls)))
+        results = {}
+
+        def run_batch(batch: List[ToolCall]):
+            return asyncio.gather(*(run_one(call) for call in batch))
+
+        def store(calls_batch: List[ToolCall], batch_results) -> None:
+            for call, call_result in zip(calls_batch, batch_results):
+                results[call.id] = call_result
+
+        interactive = [call for call in calls if call.name in INTERACTIVE_TOOLS]
+        rest = [call for call in calls if call.name not in INTERACTIVE_TOOLS]
+
+        # Interactive tools run first and alone; the rest still run in parallel after.
+        # 交互式工具先单独跑完，其余工具再并行执行。
+        for call in interactive:
+            store([call], await run_batch([call]))
+        if rest:
+            store(rest, await run_batch(rest))
+
+        # Keep the caller's order: it zips results back onto the assistant message.
+        # 按调用方给的顺序返回：loop 会把它和 assistant 消息里的 tool_calls 一一对应。
+        return [results[call.id] if call.id in results
+                else ToolResult(tool_call_id=call.id, ok=False, error="工具未执行")
+                for call in calls]

@@ -16,6 +16,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from agent_core.agent import ask as ask_tools
 from agent_core.agent import todos as todo_tools
 from agent_core.agent.commands import decide as decide_command
 from agent_core.agent.loop import run_chat
@@ -53,6 +54,10 @@ LOGGER = logging.getLogger(__name__)
 
 HEARTBEAT_SECONDS = 3.0
 CONFIRM_TIMEOUT = 120.0
+# A question to the user has no short deadline: people walk away. chat/cancel still
+# interrupts the wait, and the Shell gets ask/withdraw so the card does not linger.
+# 提问不设短超时：人会离开。需要中断时走 chat/cancel，卡片会收到 ask/withdraw 收起。
+ASK_TIMEOUT = 1800.0
 
 # The task id of the chat currently being executed (used when forwarding tool
 # invocations so the IDE can group UI cards per task).
@@ -85,6 +90,13 @@ class RpcServer:
         self.mcp.set_confirm(self._confirm_via_shell)
         self._mcp_settings: List[Any] = []
         self._pending_confirms: Dict[str, asyncio.Future] = {}
+        # askId -> future; the Shell answers with ask/userAnswer.
+        # askId → future：Shell 用 ask/userAnswer 回答。
+        self._pending_asks: Dict[str, asyncio.Future] = {}
+        # What the Shell advertised in ide/hello. A Shell that does not know ask/user
+        # would leave the turn waiting, so ask_user degrades to "no UI" instead.
+        # Shell 在 ide/hello 里声明支持的能力；没声明就不发 ask/user，避免白等一轮。
+        self._shell_capabilities: set = set()
         self._tasks: Dict[str, asyncio.Task] = {}
         # taskId -> sessionId, so deleting a conversation can stop its running task.
         # taskId → sessionId：删除历史会话时据此取消该会话在跑的任务。
@@ -100,6 +112,7 @@ class RpcServer:
         self._background: set = set()
         self._register_shell_tools()
         todo_tools.register_tools(self.tools, self._publish_todos)
+        ask_tools.register_tools(self.tools, self._ask_via_shell)
         self.memory.register_tools(self.tools)
         self.index.register_tools(self.tools)
         self.skills.register_tools(self.tools)
@@ -157,7 +170,8 @@ class RpcServer:
             "capabilities": ["chat", "parallel-tools", "tokenizer", "codesoup",
                              "memory", "skill", "mcp", "subagent", "inline",
                              "code-index", "session-store", "terminal",
-                             "session-search", "memory-pending", "usage"],
+                             "session-search", "memory-pending", "usage",
+                             "ask-user"],
             "native": native_info(),
         })
         LOGGER.info("agent core %s started (project=%s)", CORE_VERSION, self.project_id)
@@ -241,6 +255,8 @@ class RpcServer:
             return self._tool_result(params)
         if method == "agent/confirmResult":
             return self._confirm_result(params)
+        if method == "ask/userAnswer":
+            return self._ask_result(params)
         if method == "index/status":
             return self.index.status()
         if method == "session/list":
@@ -344,6 +360,17 @@ class RpcServer:
             future.set_result(bool(params.get("approved")))
         return {"received": True}
 
+    def _ask_result(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        ask_id = params.get("askId") or ""
+        future = self._pending_asks.pop(ask_id, None)
+        if future is not None and not future.done():
+            answers = params.get("answers")
+            future.set_result({
+                "skipped": bool(params.get("skipped")),
+                "answers": answers if isinstance(answers, list) else [],
+            })
+        return {"received": True}
+
     async def _run_inline(self, req_id: Any, params: Dict[str, Any]) -> None:
         """Answer one ghost-text request; never raises into the dispatch loop."""
         try:
@@ -384,6 +411,12 @@ class RpcServer:
         elif method == "chat/cancel":
             self._cancel(params.get("taskId"))
         elif method == "ide/hello":
+            # The Shell tells us which optional notifications it can render; ask/user is
+            # only sent to a Shell that understands it.
+            # Shell 声明能渲染哪些可选通知；ask/user 只发给认识它的 Shell。
+            capabilities = params.get("capabilities")
+            if isinstance(capabilities, list):
+                self._shell_capabilities = {str(item) for item in capabilities}
             LOGGER.info("ide hello: %s", params)
         else:
             LOGGER.debug("unhandled notification: %s", method)
@@ -678,6 +711,38 @@ class RpcServer:
             return False
         finally:
             self._pending_confirms.pop(confirm_id, None)
+
+    # Ask the user a question and wait for the answer (the ``ask_user`` tool).
+    # Returns None when no Shell can render the card, so the model continues with
+    # assumptions instead of waiting for an answer that will never come.
+    # 向用户提问并等答复（``ask_user`` 工具）。没有能渲染卡片的 Shell 时返回 None，
+    # 让模型带着假设继续，而不是干等一个永远不会来的回答。
+    async def _ask_via_shell(self, questions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if "ask-user" not in self._shell_capabilities:
+            LOGGER.info("ask_user skipped: shell did not advertise ask-user")
+            return None
+        ask_id = uuid.uuid4().hex[:12]
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_asks[ask_id] = future
+        self._send_notification("ask/user", {
+            "askId": ask_id,
+            "taskId": _current_task.get(),
+            "questions": questions,
+        })
+        answered = False
+        try:
+            reply = await asyncio.wait_for(future, timeout=ASK_TIMEOUT)
+            answered = True
+            return reply
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self._pending_asks.pop(ask_id, None)
+            if not answered:
+                # Cancelled or timed out: tell the Shell to drop the card.
+                # 被取消或超时：通知 Shell 收起卡片。
+                self._send_notification("ask/withdraw", {
+                    "askId": ask_id, "taskId": _current_task.get()})
 
     def _cancel(self, task_id: Optional[str]) -> None:
         if task_id:
