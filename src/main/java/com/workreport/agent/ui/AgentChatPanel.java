@@ -377,8 +377,9 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
                         ? response.getAsJsonObject("result") : new JsonObject();
                 String title = string(result, "title");
                 List<ChatSessionPanel.HistoryMessage> messages = parseHistoryMessages(result);
+                List<TodoStrip.Item> todos = ChatSessionPanel.parseTodos(result);
                 ApplicationManager.getApplication().invokeLater(
-                        () -> addHistoryTab(entry, title, messages));
+                        () -> addHistoryTab(entry, title, messages, todos));
             } catch (Exception e) {
                 LOG.warn("failed to load session " + entry.id, e);
                 setStatus("打开历史会话失败：" + e.getMessage());
@@ -387,14 +388,15 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
     }
 
     private void addHistoryTab(HistoryEntry entry, String title,
-                               List<ChatSessionPanel.HistoryMessage> messages) {
+                               List<ChatSessionPanel.HistoryMessage> messages,
+                               List<TodoStrip.Item> todos) {
         if (sessions.containsKey(entry.id)) {
             selectSession(sessions.get(entry.id));
             return;
         }
         ChatSessionPanel session = new ChatSessionPanel(project, entry.id,
                 entry.displayTitle(), sessionOwner);
-        session.applyHistory(title.isBlank() ? entry.displayTitle() : title, messages);
+        session.applyHistory(title.isBlank() ? entry.displayTitle() : title, messages, todos);
         sessions.put(entry.id, session);
         cards.add(session, entry.id);
         selectSession(session);

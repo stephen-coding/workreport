@@ -7,6 +7,13 @@ type MessageHandler = (text: string) => void;
 type StopHandler = () => void;
 type ConfirmHandler = (id: string, approved: boolean) => void;
 
+// One row of the Core-owned checklist (chat/todos).
+// Core 维护的任务清单的一行（chat/todos）。
+export interface TodoItem {
+  content: string;
+  status: string;
+}
+
 export class ChatPanel implements vscode.WebviewViewProvider {
   static readonly viewId = "agentCoder.chatView";
 
@@ -84,6 +91,12 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     this.post({ type: "status", text });
   }
 
+  // Replace the whole checklist; an empty list hides the area.
+  // 整表覆盖任务清单；为空时隐藏该区域。
+  setTodos(todos: TodoItem[]): void {
+    this.post({ type: "todos", todos });
+  }
+
   showConfirm(id: string, title: string, detail: string): void {
     this.post({ type: "confirm", id, title, detail });
   }
@@ -101,6 +114,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   body { font-family: var(--vscode-font-family); font-size: 13px; margin: 0; padding: 8px;
          color: var(--vscode-foreground); background: var(--vscode-sideBar-background); }
   #status { color: var(--vscode-descriptionForeground); margin-bottom: 6px; font-size: 12px; }
+  #todos { border-bottom: 1px solid var(--vscode-panel-border, #444); margin-bottom: 6px;
+           padding-bottom: 4px; max-height: 25vh; overflow-y: auto; }
+  .todo-head { color: var(--vscode-descriptionForeground); cursor: pointer; font-size: 12px; }
+  .todo-row { padding-left: 10px; }
+  .todo-row.active { font-weight: bold; }
   #log { white-space: pre-wrap; word-break: break-word; overflow-y: auto; height: calc(100vh - 130px); }
   .user { color: var(--vscode-textLink-foreground); margin-top: 8px; }
   .system { color: var(--vscode-descriptionForeground); font-style: italic; }
@@ -117,6 +135,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="status">正在启动 Agent Core...</div>
+  <div id="todos" hidden></div>
   <div id="log"></div>
   <textarea id="input" placeholder="描述你的任务，例如：帮我解释当前文件的登录流程"></textarea>
   <div id="row">
@@ -127,10 +146,50 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   const vscode = acquireVsCodeApi();
   const log = document.getElementById("log");
   const status = document.getElementById("status");
+  const todoBox = document.getElementById("todos");
   const input = document.getElementById("input");
   const send = document.getElementById("send");
   const stop = document.getElementById("stop");
   let current = null;
+  let todoItems = [];
+  let todosCollapsed = false;
+
+  const TODO_MARKS = {
+    pending: "☐",
+    in_progress: "◐",
+    completed: "☑",
+    cancelled: "☒",
+  };
+
+  function todoDone(item) {
+    return item.status === "completed" || item.status === "cancelled";
+  }
+
+  function renderTodos() {
+    todoBox.textContent = "";
+    if (!todoItems.length) {
+      todoBox.hidden = true;
+      return;
+    }
+    todoBox.hidden = false;
+    const done = todoItems.filter(todoDone).length;
+    const head = document.createElement("div");
+    head.className = "todo-head";
+    head.textContent = (todosCollapsed ? "▸ " : "▾ ") + "任务清单 " + done + "/" + todoItems.length
+      + (todosCollapsed && done === todoItems.length ? "（已完成）" : "");
+    head.addEventListener("click", () => {
+      todosCollapsed = !todosCollapsed;
+      renderTodos();
+    });
+    todoBox.appendChild(head);
+    if (todosCollapsed) return;
+    for (const item of todoItems) {
+      const row = document.createElement("div");
+      row.className = "todo-row" + (item.status === "in_progress" ? " active" : "");
+      row.textContent = (TODO_MARKS[item.status] || "☐") + " " + item.content;
+      todoBox.appendChild(row);
+    }
+  }
 
   function block(role, text) {
     const div = document.createElement("div");
@@ -177,6 +236,14 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       case "status":
         status.textContent = message.text;
         break;
+      case "todos": {
+        todoItems = Array.isArray(message.todos) ? message.todos : [];
+        // Fold away once everything is finished, same as the IntelliJ strip.
+        // 全部完成后自动折叠，与 IntelliJ 侧一致。
+        todosCollapsed = todoItems.length > 0 && todoItems.every(todoDone);
+        renderTodos();
+        break;
+      }
       case "busy":
         send.disabled = !!message.value;
         stop.disabled = !message.value;

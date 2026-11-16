@@ -179,6 +179,16 @@ export class CoreSession {
       case "chat/notice":
         this.panel.appendSystem(`\n  [提示] ${String(params.text ?? "")}`);
         break;
+      case "chat/todos": {
+        // The Core sends the whole checklist; render it verbatim.
+        // Core 下发整张清单，这里直接渲染。
+        const raw = Array.isArray(params.todos) ? params.todos : [];
+        this.panel.setTodos(raw.map((item) => {
+          const todo = (item ?? {}) as Record<string, unknown>;
+          return { content: String(todo.content ?? ""), status: String(todo.status ?? "pending") };
+        }));
+        break;
+      }
       case "tool/invoke":
         if (this.connection) {
           void this.toolRunner.onToolInvoke(params, this.connection);

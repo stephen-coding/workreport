@@ -1,5 +1,6 @@
 package com.workreport.agent.ui;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
@@ -58,6 +59,7 @@ public final class ChatSessionPanel extends JPanel {
     private final ToolDispatcher toolDispatcher;
 
     private final ChatTranscript transcript = new ChatTranscript();
+    private final TodoStrip todoStrip = new TodoStrip();
     private final OnePixelSplitter conversationSplit;
     private final ChatComposer composer;
 
@@ -91,7 +93,15 @@ public final class ChatSessionPanel extends JPanel {
         // 上方对话、下方输入区；中间分隔条可拖动，用来放大输入区。
         transcript.setMinimumSize(new Dimension(160, 120));
         composer.setMinimumSize(new Dimension(160, 110));
-        conversationSplit.setFirstComponent(transcript);
+        // The checklist sits above the transcript, inside the top half, so the divider
+        // still only resizes transcript vs composer.
+        // 清单放在对话区上方（仍在上半区），分隔条依旧只调整对话区与输入区。
+        JPanel top = new JPanel(new BorderLayout());
+        top.setOpaque(false);
+        top.setMinimumSize(new Dimension(160, 120));
+        top.add(todoStrip, BorderLayout.NORTH);
+        top.add(transcript, BorderLayout.CENTER);
+        conversationSplit.setFirstComponent(top);
         conversationSplit.setSecondComponent(composer);
         conversationSplit.setHonorComponentsMinimumSize(true);
         add(conversationSplit, BorderLayout.CENTER);
@@ -165,12 +175,16 @@ public final class ChatSessionPanel extends JPanel {
     // Fill this session with a stored conversation; sending again continues it,
     // because the Core keys the history by this panel's sessionId.
     // 用 Core 里的历史记录填充本会话；之后再发送会接着这段历史继续。
-    public void applyHistory(String title, List<HistoryMessage> messages) {
+    public void applyHistory(String title, List<HistoryMessage> messages,
+                             List<TodoStrip.Item> todos) {
         String flat = shorten(title);
         if (!flat.isEmpty()) {
             autoTitle = flat;
             owner.onTitleChanged(this);
         }
+        // The checklist is part of the session, so replay it with the transcript.
+        // 清单属于会话的一部分，和聊天一起回放。
+        todoStrip.setItems(todos);
         if (messages == null || messages.isEmpty()) {
             return;
         }
@@ -398,6 +412,9 @@ public final class ChatSessionPanel extends JPanel {
                 }
                 break;
             }
+            case "chat/todos":
+                todoStrip.setItems(parseTodos(params));
+                break;
             case "agent/confirm":
                 handleConfirm(params);
                 break;
@@ -421,6 +438,31 @@ public final class ChatSessionPanel extends JPanel {
             default:
                 break;
         }
+    }
+
+    // Extract a todo list from a chat/todos payload or a session/get result;
+    // both carry the same {"todos": [{"content", "status"}]} shape.
+    // 从 chat/todos 负载或 session/get 结果里取清单，两者字段一致。
+    public static List<TodoStrip.Item> parseTodos(JsonObject container) {
+        List<TodoStrip.Item> items = new ArrayList<>();
+        if (container == null || !container.has("todos") || !container.get("todos").isJsonArray()) {
+            return items;
+        }
+        for (JsonElement element : container.getAsJsonArray("todos")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject todo = element.getAsJsonObject();
+            String content = todo.has("content") && !todo.get("content").isJsonNull()
+                    ? todo.get("content").getAsString() : "";
+            if (content.isBlank()) {
+                continue;
+            }
+            String status = todo.has("status") && !todo.get("status").isJsonNull()
+                    ? todo.get("status").getAsString() : "pending";
+            items.add(new TodoStrip.Item(content, status));
+        }
+        return items;
     }
 
     // Ask the user to approve a Core-initiated sensitive action (e.g. an MCP tool call).
