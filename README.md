@@ -81,7 +81,7 @@ Shell 与 Core 通过 **JSON Lines RPC（stdio）** 通信：Shell 发请求，C
 **职责边界**（改动代码前请先确认自己站在哪一侧）：
 
 1. **Core 只思考与调度**，不写用户文件；`write_file` / `edit_file` / `delete_file` / `revert_file` 一律 `remote=True`，交给 Shell。
-2. **Shell 只做 IDE 侧动作**：文件 IO、Git、diff 确认、终端、行内补全。Shell 不实现 Agent 策略。
+2. **Shell 只做 IDE 侧动作**：文件 IO、Git、diff 确认、行内补全（终端执行工具仍在路线图中，见 [3.0 路线 §5.1](docs/ROADMAP_TO_3.0.md)）。Shell 不实现 Agent 策略。
 3. **协议是唯一契约**：新增能力要么加 RPC 方法/通知，要么加工具定义；不在两侧各写一份逻辑（`vscode/src/settings.ts` 复刻的协议判定是唯一例外，用于发送前的即时校验）。
 
 ### RPC 一览
@@ -381,6 +381,7 @@ M1–M8 的从零落地集中在 `a49411f` ~ `47eafe6`；更早的 `bf89f58` 是
 |---|---|
 | [USER_GUIDE.md](USER_GUIDE.md) | 面向使用者的完整手册：安装、首次配置、面板、状态行、行内补全、语义索引、报告 Skill、MCP、子代理、FAQ |
 | [docs/AGENT_REFACTOR_DETAILED_DESIGN.md](docs/AGENT_REFACTOR_DETAILED_DESIGN.md) | Agent 重构详设：分层、协议、工具、记忆、Skill、MCP、子代理逐项设计与 M1–M8 验收 |
+| [docs/ROADMAP_TO_3.0.md](docs/ROADMAP_TO_3.0.md) | 升级路线详设：v2.4.10 → v3.0.0 每个版本的改动位置、协议字段、兼容性与验收标准 |
 | [docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md) | 行内补全全链路（FIM 报文 / sanitize / 超时降级）与语义索引原理、调试手册 |
 | [docs/VLLM_DEPLOYMENT_GUIDE.md](docs/VLLM_DEPLOYMENT_GUIDE.md) | vLLM / 昇腾部署 27B 模型与工具调用参数 |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | IDE 版本号规则、兼容区间调整、多版本测试方法 |
