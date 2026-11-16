@@ -6,6 +6,7 @@ the human-readable side (see :mod:`agent_core.memory.files`).
 
 import json
 import logging
+import re
 import sqlite3
 import time
 from typing import List, Optional
@@ -140,6 +141,33 @@ class MemoryStore:
             rows = connection.execute(query, params).fetchall()
         return [_row_to_record(row) for row in rows]
 
+    def find_similar(self, text: str, scope: Optional[str] = None,
+                     project_path: Optional[str] = None,
+                     threshold: float = 0.55) -> Optional[MemoryRecord]:
+        """Best existing memory that may already say the same thing (or None).
+
+        The FTS hit list alone is not enough: a CJK sentence is one token to the
+        default tokenizer, so a rephrased fact often misses the index.  The most
+        recently updated records are therefore scored as well.
+        FTS 对中文长句分词有限，因此再把最近更新的若干条一起打分。
+        """
+        terms = derive_terms(text)
+        pool: List[MemoryRecord] = []
+        seen = set()
+        candidates = self.search(terms, scope=scope, project_path=project_path, limit=10)
+        for record in candidates + self.list_all(scope, project_path)[:50]:
+            if record.id in seen:
+                continue
+            seen.add(record.id)
+            pool.append(record)
+        best: Optional[MemoryRecord] = None
+        best_score = 0.0
+        for record in pool:
+            score = similarity(text, "%s\n%s" % (record.title, record.content))
+            if score > best_score:
+                best, best_score = record, score
+        return best if best_score >= threshold else None
+
     def search(self, keywords: List[str], scope: Optional[str] = None,
                project_path: Optional[str] = None, limit: int = 8) -> List[MemoryRecord]:
         terms = [k.strip() for k in keywords if k and k.strip()]
@@ -176,6 +204,42 @@ class MemoryStore:
                 params,
             ).fetchall()
         return [_row_to_record(row) for row in rows]
+
+
+def derive_terms(text: str, limit: int = 6) -> List[str]:
+    """Cheap query terms for an FTS lookup: words first, then CJK runs."""
+    terms: List[str] = []
+    for match in re.findall(r"[A-Za-z_][A-Za-z0-9_.\-]{1,30}", text or ""):
+        word = match.strip("._-")
+        if len(word) >= 2 and word not in terms:
+            terms.append(word)
+        if len(terms) >= limit:
+            return terms
+    for match in re.findall(r"[\u4e00-\u9fff]{2,6}", text or ""):
+        if match not in terms:
+            terms.append(match)
+        if len(terms) >= limit:
+            break
+    return terms
+
+
+def _bigrams(text: str):
+    """Character bigrams after dropping punctuation/space: works for CJK too."""
+    flat = re.sub(r"[\s\W_]+", "", (text or "").lower())
+    return {flat[i:i + 2] for i in range(len(flat) - 1)}
+
+
+def similarity(left: str, right: str) -> float:
+    """Overlap of character bigrams, normalised by the shorter side.
+
+    Dividing by the shorter text makes a short fact score high when it is fully
+    contained in a longer existing memory, which is exactly the duplicate we
+    want to warn about before promoting a candidate.
+    """
+    first, second = _bigrams(left), _bigrams(right)
+    if not first or not second:
+        return 0.0
+    return len(first & second) / float(min(len(first), len(second)))
 
 
 def _row_to_record(row: sqlite3.Row) -> MemoryRecord:

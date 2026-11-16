@@ -12,6 +12,7 @@ from typing import List
 
 from agent_core import __version__
 from agent_core.rpc.server import RpcServer
+from agent_core.usage import default_log_dir
 
 
 def _configure_streams() -> None:
@@ -24,8 +25,9 @@ def _configure_streams() -> None:
 
 
 def _default_log_file() -> str:
-    return os.path.join(os.path.expanduser("~"), ".agent", "logs",
-                        "core-%s.log" % time.strftime("%Y%m%d"))
+    # Same directory as usage.jsonl, so AGENT_LOG_DIR moves both.
+    # 与 usage.jsonl 同目录，AGENT_LOG_DIR 一并挪走。
+    return os.path.join(default_log_dir(), "core-%s.log" % time.strftime("%Y%m%d"))
 
 
 def _configure_logging(level: str, log_file: str) -> None:

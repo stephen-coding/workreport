@@ -90,9 +90,14 @@ class Session:
 
 
 class SessionManager:
-    def __init__(self, store=None) -> None:
+    def __init__(self, store=None, on_saved=None, on_deleted=None) -> None:
         self._sessions: Dict[str, Session] = {}
         self._store = store
+        # Hooks keep the full-text index in step with the session files.
+        # on_saved(session_id, title, content, updated_at) / on_deleted(session_id)
+        # 钩子用于同步全文索引（见 agent/search.py）。
+        self._on_saved = on_saved
+        self._on_deleted = on_deleted
 
     def get_or_create(self, session_id: str) -> Session:
         session = self._sessions.get(session_id)
@@ -126,6 +131,22 @@ class SessionManager:
             self._store.save(session)
         except Exception:  # pragma: no cover - defensive
             LOGGER.exception("failed to persist session %s", session.session_id)
+            return
+        self._index(session)
+
+    def _index(self, session: Session) -> None:
+        if self._on_saved is None:
+            return
+        try:
+            content = "\n".join(item["content"] for item in display_messages(session.messages))
+            self._on_saved(
+                session.session_id,
+                session.title or make_title(_first_user_text(session.messages)),
+                content,
+                session.updated_at,
+            )
+        except Exception:  # pragma: no cover - a broken index must not break chatting
+            LOGGER.exception("failed to index session %s", session.session_id)
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         if self._store is None:
@@ -181,10 +202,16 @@ class SessionManager:
         if self._store is None:
             return 0
         try:
-            return self._store.delete(session_id)
+            freed = self._store.delete(session_id)
         except Exception:  # pragma: no cover - defensive
             LOGGER.exception("failed to delete session %s", session_id)
             return 0
+        if self._on_deleted is not None:
+            try:
+                self._on_deleted(session_id)
+            except Exception:  # pragma: no cover - defensive
+                LOGGER.exception("failed to drop session %s from the index", session_id)
+        return freed
 
 
 def _first_user_text(messages: List[Message]) -> str:

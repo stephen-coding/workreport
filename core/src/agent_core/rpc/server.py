@@ -12,12 +12,14 @@ import logging
 import os
 import sys
 import threading
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
 from agent_core.agent import todos as todo_tools
 from agent_core.agent.commands import decide as decide_command
 from agent_core.agent.loop import run_chat
+from agent_core.agent.search import SessionSearch
 from agent_core.agent.session import Session, SessionManager, make_title
 from agent_core.agent.store import SessionStore
 from agent_core.agent.subagent import SubagentLoader, SubagentService
@@ -45,6 +47,7 @@ from agent_core.protocol import (
 from agent_core.skills import SkillLoader, SkillService
 from agent_core.tools.registry import ToolRegistry
 from agent_core.tools.remote import SHELL_TOOLS, RemoteToolProxy
+from agent_core.usage import UsageLog, default_log_dir
 
 LOGGER = logging.getLogger(__name__)
 
@@ -68,7 +71,12 @@ class RpcServer:
         self.data_dir = data_dir
         self.project_root = os.environ.get("AGENT_PROJECT_ROOT") or None
         self.config = ChatConfig()
-        self.sessions = SessionManager(SessionStore(data_dir))
+        self.store = SessionStore(data_dir)
+        self.search = SessionSearch(os.path.join(data_dir, "sessions.db"))
+        self.sessions = SessionManager(self.store,
+                                       on_saved=self._on_session_saved,
+                                       on_deleted=self._on_session_deleted)
+        self.usage = UsageLog(os.environ.get("AGENT_USAGE_DIR") or default_log_dir())
         self.tools = ToolRegistry()
         self.memory = MemoryService(self.project_root, data_dir)
         self.index = CodeIndexService(self.project_root, data_dir, lambda: self.config)
@@ -86,6 +94,10 @@ class RpcServer:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._out_lock = threading.Lock()
         self._closing = False
+        self._index_task: Optional[asyncio.Task] = None
+        # Fire-and-forget work (memory capture) outlives the chat task itself.
+        # 后台任务（记忆候选抽取）需要持有引用，否则可能被回收。
+        self._background: set = set()
         self._register_shell_tools()
         todo_tools.register_tools(self.tools, self._publish_todos)
         self.memory.register_tools(self.tools)
@@ -144,10 +156,16 @@ class RpcServer:
             "projectId": self.project_id,
             "capabilities": ["chat", "parallel-tools", "tokenizer", "codesoup",
                              "memory", "skill", "mcp", "subagent", "inline",
-                             "code-index", "session-store", "terminal"],
+                             "code-index", "session-store", "terminal",
+                             "session-search", "memory-pending", "usage"],
             "native": native_info(),
         })
         LOGGER.info("agent core %s started (project=%s)", CORE_VERSION, self.project_id)
+
+        # Indexing historical conversations reads many files, so it runs in a
+        # worker thread and reports progress; a failure only costs search.
+        # 历史会话建索引读大量文件，放到工作线程并上报进度；失败只影响检索。
+        self._index_task = asyncio.create_task(self._reindex_sessions())
 
         heartbeat = asyncio.create_task(self._heartbeat())
         try:
@@ -167,7 +185,11 @@ class RpcServer:
                 await self._dispatch(message)
         finally:
             heartbeat.cancel()
+            if self._index_task is not None:
+                self._index_task.cancel()
             for task in list(self._tasks.values()):
+                task.cancel()
+            for task in list(self._background):
                 task.cancel()
             await self.mcp.shutdown()
             LOGGER.info("agent core stopped")
@@ -233,7 +255,74 @@ class RpcServer:
             self._cancel_session_tasks(session_id)
             freed = self.sessions.delete(session_id)
             return {"deleted": freed > 0, "freedBytes": freed}
+        if method == "session/search":
+            limit = int(params.get("limit") or 20)
+            return {"results": self.search.search(str(params.get("query") or ""), limit)}
+        if method == "memory/pending":
+            return {"items": self.memory.pending_list()}
+        if method == "memory/promote":
+            return self._memory_promote(params)
+        if method == "memory/discard":
+            pending_id = str(params.get("id") or "")
+            if not pending_id:
+                raise RpcError(ErrorCode.PROTOCOL_ERROR, "empty id")
+            discarded = self.memory.discard(pending_id)
+            return {"discarded": discarded, "remaining": len(self.memory.pending_list())}
+        if method == "usage/report":
+            return self.usage.report(int(params.get("days") or 7))
         raise RpcError(ErrorCode.PROTOCOL_ERROR, "unknown method: %s" % method)
+
+    def _memory_promote(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        pending_id = str(params.get("id") or "")
+        if not pending_id:
+            raise RpcError(ErrorCode.PROTOCOL_ERROR, "empty id")
+        keywords = params.get("keywords")
+        if isinstance(keywords, str):
+            keywords = [part.strip() for part in keywords.split(",") if part.strip()]
+        if not isinstance(keywords, list):
+            keywords = None
+        try:
+            return self.memory.promote(
+                pending_id,
+                content=(params.get("content") or None),
+                title=(params.get("title") or None),
+                category=(params.get("category") or None),
+                keywords=keywords,
+            )
+        except KeyError:
+            raise RpcError(ErrorCode.PROTOCOL_ERROR,
+                           "pending memory not found: %s" % pending_id)
+        except ValueError as exc:
+            raise RpcError(ErrorCode.PROTOCOL_ERROR, str(exc))
+
+    # ---------------------------------------------------------- session index
+
+    def _on_session_saved(self, session_id: str, title: str, content: str,
+                          updated_at: int) -> None:
+        self.search.index(session_id, title, content, updated_at)
+
+    def _on_session_deleted(self, session_id: str) -> None:
+        self.search.remove(session_id)
+
+    async def _reindex_sessions(self) -> None:
+        """One-time migration: index conversations saved by older versions."""
+        try:
+            total = await asyncio.to_thread(self._index_all_documents)
+        except Exception:  # pragma: no cover - a broken index must not stop the Core
+            LOGGER.exception("session reindex failed")
+            return
+        if total:
+            LOGGER.info("session index ready (%d conversations)", total)
+        self._send_notification("session/indexProgress",
+                                {"done": total, "total": total, "finished": True})
+
+    def _index_all_documents(self) -> int:
+        def progress(done: int, changed: int) -> None:
+            # Progress only; the Shell shows a one-line hint while it runs.
+            self._send_notification("session/indexProgress",
+                                    {"done": done, "total": 0, "changed": changed})
+
+        return self.search.index_many(self.store.iter_documents(), progress)
 
     def _tool_result(self, params: Dict[str, Any]) -> Dict[str, Any]:
         tool_call_id = params.get("toolCallId") or ""
@@ -399,11 +488,17 @@ class RpcServer:
         # todo_write writes into the session of the running chat.
         # todo_write 写入当前会话的清单，任务结束随会话落盘。
         todo_token = todo_tools.bind_session(session)
+        started = time.monotonic()
+        tool_calls = 0
+        usage_total: Dict[str, Any] = {}
+        ok = False
 
         async def emit_token(delta: str) -> None:
             self._send_notification("chat/token", {"taskId": task_id, "delta": delta})
 
         async def on_tool_start(call: ToolCall) -> None:
+            nonlocal tool_calls
+            tool_calls += 1
             self._send_notification("chat/toolStart", {
                 "taskId": task_id,
                 "toolCallId": call.id,
@@ -434,12 +529,18 @@ class RpcServer:
                 skill_instruction=self.skills.instruction_for(user_input, skill_name),
                 subagent_catalog=self.subagents.catalog_text(),
             )
+            usage_total = result.usage_total if isinstance(result.usage_total, dict) else {}
+            ok = True
             self._send_notification("chat/finish", {
                 "taskId": task_id,
                 "fullText": result.content,
                 "usage": result.usage,
                 "usageTotal": result.usage_total,
             })
+            # Only a finished round can teach a memory: a cancelled one may have
+            # stopped in the middle of the user's thought.
+            # 只有正常结束的一轮才可能漏出可沉淀的记忆；取消的那轮可能只说了一半。
+            self._spawn(self._capture_memories(session))
         except asyncio.CancelledError:
             self._send_notification("chat/error", {
                 "taskId": task_id,
@@ -460,6 +561,40 @@ class RpcServer:
             todo_tools.reset_session(todo_token)
             _current_task.reset(task_token)
             self.sessions.save(session)
+            self._record_usage(task_id, usage_total, started, tool_calls,
+                               ok and not session.deleted)
+
+    def _spawn(self, coroutine) -> None:
+        """Keep a strong reference: a bare create_task may be collected."""
+        task = asyncio.create_task(coroutine)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    def _record_usage(self, task_id: str, usage: Dict[str, Any], started: float,
+                      tool_calls: int, ok: bool) -> None:
+        """One line per task in ~/.agent/logs/usage.jsonl (never leaves the machine)."""
+        self.usage.record(
+            task_id=task_id,
+            model=self.config.model,
+            usage_in=int(usage.get("in") or 0),
+            usage_out=int(usage.get("out") or 0),
+            tool_calls=tool_calls,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            ok=ok,
+        )
+
+    async def _capture_memories(self, session: Session) -> None:
+        """Rule-based candidate extraction; runs after chat/finish, off the chat path."""
+        memory = self.memory
+        try:
+            added = await asyncio.to_thread(memory.capture, session)
+        except Exception:  # pragma: no cover - memory capture must never break chat
+            LOGGER.exception("memory capture failed for %s", session.session_id)
+            return
+        if not added:
+            return
+        LOGGER.info("captured %d pending memories from %s", len(added), session.session_id)
+        self._send_notification("memory/pendingChanged", {"count": len(added)})
 
     def _publish_todos(self, todos: List[Dict[str, str]]) -> None:
         """Push the checklist to the Shell after every todo_write."""

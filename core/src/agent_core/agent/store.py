@@ -12,8 +12,9 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from agent_core.agent.session import Session, make_title
 from agent_core.agent.todos import normalize_todos
@@ -31,6 +32,10 @@ MAX_LIST_ITEMS = 50
 PREVIEW_CHARS = 80
 # A .tmp file older than this was left behind by a crashed write; sweep it on list.
 TEMP_MAX_AGE_SEC = 3600
+# The history list reads every file; a handful of threads takes the per-file
+# round trip (NTFS is the slow part, not the JSON) off the critical path.
+# 历史列表要读每个文件，用少量线程把 NTFS 的打开开销叠起来（基线 §7.4）。
+LIST_THREADS = 8
 
 
 def _file_name(session_id: str) -> str:
@@ -120,26 +125,13 @@ class SessionStore:
         if not self.root.exists():
             return []
         self._sweep_temps()
-        entries: List[Dict[str, Any]] = []
-        for path in self.root.glob("*.json"):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            session_id = str(data.get("id") or "")
-            if not session_id:
-                continue
-            # Count the turns a Shell replays, not the tool traffic behind them.
-            messages = [m for m in (data.get("messages") or [])
-                        if m.get("role") in ("user", "assistant")
-                        and str(m.get("content") or "").strip()]
-            entries.append({
-                "id": session_id,
-                "title": str(data.get("title") or ""),
-                "preview": _preview(messages),
-                "messageCount": len(messages),
-                "updatedAt": int(data.get("updatedAt") or 0),
-            })
+        paths = list(self.root.glob("*.json"))
+        if len(paths) <= LIST_THREADS:
+            entries = [entry for entry in map(_list_entry, paths) if entry is not None]
+        else:
+            with ThreadPoolExecutor(max_workers=LIST_THREADS) as pool:
+                entries = [entry for entry in pool.map(_list_entry, paths)
+                           if entry is not None]
         entries.sort(key=lambda item: item["updatedAt"], reverse=True)
         return entries[:MAX_LIST_ITEMS]
 
@@ -162,6 +154,37 @@ class SessionStore:
                 LOGGER.warning("failed to delete %s", target, exc_info=True)
         return freed
 
+    def iter_documents(self) -> Iterator[Dict[str, Any]]:
+        """Yield ``{id, title, content, updatedAt}`` for the full-text index.
+
+        Only user/assistant prose is indexed: tool traffic is noise for a search
+        and would blow the index up by an order of magnitude.
+        只索引用户与助手的正文，工具流水对检索无益且会把索引撑大一个量级。
+        """
+        if not self.root.exists():
+            return
+        for path in sorted(self.root.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            session_id = str(data.get("id") or "")
+            if not session_id:
+                continue
+            parts: List[str] = []
+            for message in data.get("messages") or []:
+                if message.get("role") not in ("user", "assistant"):
+                    continue
+                text = str(message.get("content") or "").strip()
+                if text:
+                    parts.append(text)
+            yield {
+                "id": session_id,
+                "title": str(data.get("title") or ""),
+                "content": "\n".join(parts),
+                "updatedAt": int(data.get("updatedAt") or 0),
+            }
+
     def _sweep_temps(self) -> None:
         """Drop stale .tmp files left by an interrupted save (never touches fresh ones)."""
         now = time.time()
@@ -172,6 +195,28 @@ class SessionStore:
                     LOGGER.info("swept stale session temp %s", path)
             except OSError:  # pragma: no cover - defensive
                 continue
+
+
+def _list_entry(path: Path) -> Optional[Dict[str, Any]]:
+    """One row of the history list; unreadable files are simply skipped."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    session_id = str(data.get("id") or "")
+    if not session_id:
+        return None
+    # Count the turns a Shell replays, not the tool traffic behind them.
+    messages = [m for m in (data.get("messages") or [])
+                if m.get("role") in ("user", "assistant")
+                and str(m.get("content") or "").strip()]
+    return {
+        "id": session_id,
+        "title": str(data.get("title") or ""),
+        "preview": _preview(messages),
+        "messageCount": len(messages),
+        "updatedAt": int(data.get("updatedAt") or 0),
+    }
 
 
 def _first_user_text(messages: List[Message]) -> str:

@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from agent_core.memory.files import MemoryFiles
+from agent_core.memory.pending import PENDING_DIR_NAME, PendingStore, extract_candidates
 from agent_core.memory.store import MemoryRecord, MemoryStore
 from agent_core.protocol import ToolCall, ToolDef, ToolResult
 from agent_core.tools.registry import ToolRegistry
@@ -84,6 +85,9 @@ class MemoryService:
         global_memory_dir = os.path.join(os.path.expanduser("~"), ".agent", "memories")
         self.files = MemoryFiles(project_memory_dir, global_memory_dir)
         self.store = MemoryStore(os.path.join(data_dir, "memory.db"))
+        # Candidates wait here, outside memory_overview, until a human promotes them.
+        # 候选记忆先落在这里，不进入 overview，等用户确认后再转正。
+        self.pending = PendingStore(os.path.join(project_memory_dir, PENDING_DIR_NAME))
         self._overview_cache: Optional[str] = None
 
     # ------------------------------------------------------------------ query
@@ -140,6 +144,57 @@ class MemoryService:
         self._overview_cache = None
         self.files.rebuild_overview(self._all_records())
         return True
+
+    # --------------------------------------------------------------- pending
+
+    def capture(self, session: Any) -> List[Dict[str, Any]]:
+        """Turn the finished conversation into review candidates (rules 1 and 2)."""
+        candidates = extract_candidates(getattr(session, "messages", []) or [])
+        if not candidates:
+            return []
+        return self.pending.add(getattr(session, "session_id", ""), candidates)
+
+    def pending_list(self) -> List[Dict[str, Any]]:
+        return self.pending.list_all()
+
+    def promote(self, pending_id: str, content: Optional[str] = None,
+                title: Optional[str] = None, category: Optional[str] = None,
+                keywords: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Move one candidate into long-term memory, flagging a likely duplicate."""
+        entry = self.pending.get(pending_id)
+        if entry is None:
+            raise KeyError(pending_id)
+        text = (content or entry["content"]).strip()
+        if not text:
+            raise ValueError("content is empty")
+        duplicate = self.store.find_similar(text, scope="project",
+                                            project_path=self.project_root)
+        record = self.save(
+            title=(title or entry["title"]).strip(),
+            content=text,
+            category=category or entry["category"],
+            keywords=keywords or self.pending_derive_keywords(text, entry),
+            scope="project",
+        )
+        self.pending.remove(pending_id)
+        return {
+            "memoryId": record.id,
+            "title": record.title,
+            "content": record.content,
+            "duplicate": ({"id": duplicate.id, "title": duplicate.title}
+                          if duplicate is not None and duplicate.id != record.id else None),
+        }
+
+    def discard(self, pending_id: str) -> bool:
+        return self.pending.remove(pending_id)
+
+    def pending_derive_keywords(self, text: str,
+                                entry: Dict[str, Any]) -> List[str]:
+        """Keep the original keywords unless the reviewer rewrote the sentence."""
+        if text.strip() == entry["content"].strip():
+            return list(entry.get("keywords") or [])
+        from agent_core.memory.pending import derive_keywords
+        return derive_keywords(text)
 
     # ------------------------------------------------------------------ tools
 
