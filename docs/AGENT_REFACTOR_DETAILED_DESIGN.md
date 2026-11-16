@@ -2,7 +2,7 @@
 
 **依据**：方案 v3（Python 核心 · 多语言混合架构）
 **范围**：RPC 协议、Python Core、Rust 扩展、IntelliJ Shell、VSCode Shell、配置与安全
-**兼容目标**：IntelliJ 全家桶（build 252–262）+ VSCode；辅助编码语言：py/rust/js/ts/java/go/c/cpp 等
+**兼容目标**：IntelliJ 全家桶（build 252–263.*，当前编译基线 263.7307.259）+ VSCode；辅助编码语言：py/rust/js/ts/java/go/c/cpp 等
 
 ---
 
@@ -32,29 +32,30 @@ IDE 关闭项目/退出
 ### 1.3 目录结构
 
 ```
-workreport-agent/
-├── core/                          # Python Agent Core
-│   ├── pyproject.toml             # uv 管理，requires-python>=3.10
+workreport-intellij-plugin/
+├── core/                          # Python Agent Core + Rust 扩展
+│   ├── pyproject.toml             # requires-python >= 3.9
 │   ├── src/agent_core/
-│   │   ├── rpc/{server,protocol,connection}.py
-│   │   ├── llm/{providers/,streaming,context,router}.py
-│   │   ├── agent/{loop,scheduler,subagent,permissions}.py
-│   │   ├── tools/{registry,builtin/,remote}.py
-│   │   ├── mcp/{manager,bridge}.py
-│   │   ├── memory/{sqlite_store,files,vector}.py
-│   │   ├── skills/loader.py
-│   │   └── native/                # Rust 扩展 crate（maturin）
-│   │       ├── tokenizer/
-│   │       ├── codesoup/
-│   │       └── sse_fast/
-│   ├── skills/                    # 内置 skills（daily-report 等）
-│   └── tests/
-├── intellij/                      # Java 21 Shell（原项目改造）
-│   └── src/main/java/com/workreport/agent/{rpc,tools,ui,settings,actions,legacy}
+│   │   ├── rpc/server.py + protocol.py
+│   │   ├── llm/{providers/,streaming,context,transport,tool_text,completion}.py
+│   │   ├── agent/{loop,scheduler,subagent,permissions,commands,status,todos,ask,search,session,store}.py
+│   │   ├── tools/{registry,remote}.py
+│   │   ├── mcp/{client,config,manager,bridge}.py
+│   │   ├── memory/{store,files,pending,service}.py
+│   │   ├── codeindex/{chunker,embeddings,store,service}.py
+│   │   ├── skills/{loader,service}.py
+│   │   ├── usage.py               # 本地用量 jsonl + 报表
+│   │   └── native/                # Rust 扩展的 Python 门面（tokenizer / codesoup，无扩展时降级）
+│   ├── native/                    # Rust crates（tokenizer / codesoup，maturin）
+│   ├── packaging/agent-core.spec  # PyInstaller 单文件
+│   ├── scripts/                   # smoke_*.py、bench_core.py
+│   └── tests/                     # unittest（258 例）
+├── src/                           # IntelliJ Shell（Java 21 字节码，JDK 25 编译；类结构见 §5.1）
 ├── vscode/                        # TypeScript Shell
-│   └── src/{extension,panel,tools,diff,settings}.ts
-├── scripts/                       # CI：maturin wheels、PyInstaller、协议一致性测试
-└── docs/                          # 设计文档与 ADR
+│   └── src/{extension,rpc,locator,panel,session,tools,diff,inline,secrets,settings}.ts
+├── scripts/                       # build_core / build_native / build_plugin / verify_all
+├── assembly/plugin-assembly.xml   # 插件 zip 布局（lib/ + agent-core/）
+└── docs/                          # 设计文档与 ADR（含本文件、UI_OVERHAUL.md）
 ```
 
 ---
@@ -74,38 +75,78 @@ workreport-agent/
 ```
 
 - **请求-响应型**：Core 发 `tool/invoke` 等，Shell 必须回：`{"id": "同请求id", "ok": true, "result": {...}}` 或 `{"id": "...", "ok": false, "error": {"code": "TOOL_TIMEOUT", "message": "..."}}`
-- **通知型**（无响应）：`chat/token`、`chat/toolProgress`、`chat/finish` 等
-- **双向可发**：任意一侧都可以是请求方（diff 确认由 Core 发起并阻塞等待）
+- **通知型**（无响应）：`chat/token`、`chat/notice`、`chat/finish` 等
+- **双向可发**：任意一侧都可以是请求方（MCP 确认由 Core 发起并阻塞等待）
 
 ### 2.3 版本协商与心跳
 
 ```
-Core → { "method": "core/hello", "params": {"protocolVersion": "1.0", "coreVersion": "0.1.0", "capabilities": ["mcp", "subagent", "memory", "skill", "parallel-tools", "session-store"]} }
-IDE  → { "method": "ide/hello", "params": {"protocolVersion": "1.0", "ide": "idea|webstorm|pycharm|vscode", "tools": ["read_file", ...]} }
-心跳：Core → { "method": "agent/ping" }，IDE 回 { "id": ..., "ok": true, "result": {"pong": true} }，3s 间隔，10s 超时判死
+Core → { "method": "core/hello", "params": {"protocolVersion": "1.0", "coreVersion": "3.1.2", "projectId": "<projectHash>", "capabilities": [16 项，见 §2.4], "native": {"backend": "rust", …}} }
+IDE  → { "method": "ide/hello", "params": {"protocolVersion": "1.0", "ide": "idea|webstorm|pycharm|vscode", "capabilities": ["ask-user"]} }
+心跳：Core → { "method": "agent/ping" }（纯通知，不等回包，3 s 间隔）；Shell 侧另有 ping 请求可主动探测，返回 {"pong": true}
 ```
 
 ### 2.4 消息全集
 
-| 方向 | 方法 | 类型 | 关键参数 |
-|---|---|---|---|
-| IDE→Core | `chat/start` | 请求 | `{sessionId, message, contextSnapshot}` → 返回 `{taskId}` |
-| IDE→Core | `chat/cancel` | 通知 | `{taskId?}`（缺省取消全部） |
-| IDE→Core | `settings/update` | 通知 | `{settings}` |
-| IDE→Core | `session/list` | 请求 | `{}` → `{sessions: [{id, title, preview, messageCount, updatedAt}]}`（按 `updatedAt` 倒序，最多 50 条） |
-| IDE→Core | `session/get` | 请求 | `{sessionId}` → `{id, title, updatedAt, messages: [{role, content}]}`（只含 user / assistant 非空正文，供回放） |
-| IDE→Core | `session/delete` | 请求 | `{sessionId}` → `{deleted: bool, freedBytes: int}`（先取消该会话在跑的任务，再同时清内存与磁盘，`.tmp` 残留一并删除） |
-| IDE→Core | `tool/result` | 请求 | `{taskId, toolCallId, ok, result?, error?}` |
-| IDE→Core | `ui/event` | 通知 | `{taskId, event, payload}`（diff 接受/拒绝、确认结果） |
-| Core→IDE | `chat/token` | 通知 | `{taskId, delta}` |
-| Core→IDE | `chat/toolStart` | 通知 | `{taskId, toolCallId, toolName, args}` |
-| Core→IDE | `chat/toolProgress` | 通知 | `{taskId, toolCallId, progressText}` |
-| Core→IDE | `chat/toolEnd` | 通知 | `{taskId, toolCallId, ok, summary}` |
-| Core→IDE | `chat/finish` | 通知 | `{taskId, fullText, usage}` |
-| Core→IDE | `chat/error` | 通知 | `{taskId, error}` |
-| Core→IDE | `tool/invoke` | 请求 | `{taskId, toolCallId, toolName, params}` → 响应 `tool/result` |
-| Core→IDE | `edit/previewDiff` | 请求 | `{taskId, toolCallId, filePath, diff, snapshots}` → 响应 `{accepted: bool}`（阻塞等用户） |
-| Core→IDE | `agent/confirm` | 请求 | `{taskId, message, options[], defaultOption}` → 响应 `{selected}` |
+> 下表已按 v3.1.2 的实现校对（`core/src/agent_core/rpc/server.py` 的 `_handle_request` /
+> `_handle_notification` 与各 `_send_notification` 调用点）。v2.x 早期的 `chat/toolProgress`、
+> `edit/previewDiff`、`ui/event` 三条已删除：远程工具（含 diff 预览）统一走 `tool/invoke` 并在
+> `permission` 字段说明要弹哪种卡，只有 MCP 调用另走 `agent/confirm`。
+
+**IDE → Core 请求**（Shell 等响应）
+
+| 方法 | 关键参数 → 返回 | 说明 |
+|---|---|---|
+| `chat/start` | `{sessionId, message, contextSnapshot}` → `{taskId}` | 启动一轮任务；同一会话同时只跑一个 |
+| `tool/result` | `{toolCallId, ok, result?, error?}` → `{received}` | 回写 `tool/invoke` 的执行结果 |
+| `agent/confirmResult` | `{confirmId, approved}` → `{received}` | 回写 `agent/confirm`（MCP 调用确认） |
+| `ask/userAnswer` | `{askId, skipped, answers[]}` → `{received}` | 回写 `ask/user`；`skipped=true` 表示用户跳过 |
+| `session/list` | `{}` → `{sessions: [{id, title, preview, messageCount, updatedAt}]}` | 按 `updatedAt` 倒序，最多 50 条 |
+| `session/get` | `{sessionId}` → `{id, title, updatedAt, messages[], todos[]}` | 只含 user / assistant 非空正文，供回放 |
+| `session/delete` | `{sessionId}` → `{deleted, freedBytes}` | 先取消该会话在跑的任务，再清内存与磁盘 |
+| `session/search` | `{query, limit=20}` → `{results: [{id, title, snippet, updatedAt}]}` | FTS5 trigram 子串匹配，命中片段带 `<mark>` |
+| `memory/pending` | `{}` → `{items: [{id, content, title, keywords, category, createdAt}]}` | 待确认的记忆候选 |
+| `memory/promote` | `{id, content?, title?, category?, keywords?}` → 落库结果 | 候选转正；可顺带改写标题/分类/关键词 |
+| `memory/discard` | `{id}` → `{discarded, remaining}` | 丢弃候选并返回剩余条数 |
+| `usage/report` | `{days=7}` → 按天聚合的用量 | 读 `usage.jsonl`（+ 轮转文件），最长 90 天 |
+| `index/status` | `{}` → 索引统计 | 语义索引进度与规模 |
+| `index/build` | `{full}` → 构建结果 | 后台任务执行，进度走 `index/progress` |
+| `inline/complete` | `{prefix, suffix, language, maxTokens}` → `{text}` | Ghost text；1.5 s 超时，失败返回空串 |
+| `ping` | `{}` → `{pong: true}` | 连通性探测 |
+
+**IDE → Core 通知**（不等响应）
+
+| 方法 | 参数 | 说明 |
+|---|---|---|
+| `settings/update` | `{settings}` | 模型 / 端点 / Key / `context_window` / 白名单 / MCP 列表即时下发 |
+| `chat/cancel` | `{taskId?}` | 缺省取消该项目全部任务 |
+| `ide/hello` | `{capabilities: []}` | 声明 Shell 能渲染的可选通知，Core 只向声明过的能力发对应消息（当前用于 `ask-user`） |
+
+**Core → IDE 通知**（不等响应）
+
+| 方法 | 参数 | 说明 |
+|---|---|---|
+| `core/hello` | `{protocolVersion, coreVersion, projectId, capabilities[], native}` | 启动握手；capabilities 当前为 `chat / parallel-tools / tokenizer / codesoup / memory / skill / mcp / subagent / inline / code-index / session-store / terminal / session-search / memory-pending / usage / ask-user` |
+| `agent/ping` | `{}` | 心跳 |
+| `chat/token` | `{taskId, delta}` | 流式增量 |
+| `chat/toolStart` | `{taskId, toolCallId, toolName, args}` | 工具开始 |
+| `chat/toolEnd` | `{taskId, toolCallId, ok, summary}` | 工具结束 |
+| `chat/notice` | `{taskId, text}` | 非致命提示（降级、排队等） |
+| `chat/todos` | `{taskId, todos: [{id, content, status}]}` | 任务清单全表覆盖；`status` ∈ `pending` / `in_progress` / `completed` / `cancelled`，随会话落盘 |
+| `chat/subagent` | `{taskId, role, model, ok, summary, durationMs, …}` | 子代理进度与汇总 |
+| `chat/finish` | `{taskId, fullText, usage, usageTotal}` | 本轮结束；`usageTotal` 为本任务累计用量 |
+| `chat/error` | `{taskId, error}` | 错误码 + 说明（网络类一定带文案） |
+| `session/indexProgress` | `{done, total, changed, finished}` | 会话全文索引进度 |
+| `index/progress` | `{done, total, path}` | 语义索引构建进度 |
+| `ask/withdraw` | `{askId, taskId}` | 提问被取消 / 超时，Shell 收起卡片 |
+
+**Core → IDE 请求**（Core 阻塞等 Shell 回）
+
+| 方法 | 参数 → 回包 | 说明 |
+|---|---|---|
+| `tool/invoke` | `{taskId, toolCallId, toolName, params, permission}` → `tool/result` | 远程工具执行；`permission` 为 `auto` / `preview` / `confirm` |
+| `agent/confirm` | `{confirmId, taskId, kind="mcp", server, tool, args}` → `agent/confirmResult` | MCP 工具调用确认；超时（`CONFIRM_TIMEOUT`）视为拒绝 |
+| `ask/user` | `{askId, taskId, questions[]}` → `ask/userAnswer` | 1~3 题、每题 2~4 个选项；Shell 未声明 `ask-user` 时直接跳过 |
 
 ### 2.5 错误码表
 
@@ -137,11 +178,11 @@ sequenceDiagram
     S-->>C: tool/result(ok, content)
     C->>L: chat(工具结果注入)
     L-->>C: tool_calls=[edit_file(old, new)]
-    C->>S: edit/previewDiff(阻塞等待)
-    S->>U: 展示 diff 卡片
+    C->>S: tool/invoke(edit_file, permission=preview)
+    S->>U: 展示 DiffConfirmCard
     U->>S: 点击接受
-    S-->>C: {accepted: true}
-    S->>S: 应用编辑
+    S->>S: 应用编辑并留快照
+    S-->>C: tool/result(ok)
     C->>L: chat(编辑完成)
     L-->>C: 文本结论
     C->>S: chat/token* + chat/finish
@@ -282,7 +323,7 @@ run_parallel(tool_calls, session) -> list[ToolResult]:
   3. 每个分支 asyncio.create_task + asyncio.timeout(独立超时)
   4. 分支取消：只取消本 task，不传播异常；结果按原顺序返回
   5. 远程工具 → rpc 客户端请求；本地工具（memory_*/skill_load）→ 直接协程
-  6. 全程经 emit 向 Shell 发 toolStart/toolProgress/toolEnd
+  6. 全程经 emit 向 Shell 发 toolStart / toolEnd（非致命降级走 notice）
 ```
 
 **Subagent 池**（`agent/subagent.py`）：
@@ -302,7 +343,7 @@ class SubagentPool:
     # 池满排队；结果 SubagentReport{task_id, ok, summary(进主上下文前先压缩), detail}
 ```
 
-内置 subagent 定义（`.agent/subagents/*.md`，与 SKILL.md 同格式）：`code-reviewer`、`bug-hunter`、`test-generator`。
+内置 subagent 定义（`.agent/subagents/*.md`，与 SKILL.md 同格式）：`code-reviewer`、`bug-hunter`、`test-generator`、`general`（v2.4.9 起角色化：frontmatter 可写 `model` / `output` / `timeout_sec`，见 §14.13）。
 
 ### 3.4 工具系统
 
@@ -315,22 +356,31 @@ async def read_file(path: str, start_line: int = 1, end_line: int | None = None)
 ```
 
 - pydantic 签名 → 自动生成 JSON Schema；执行期校验参数
-- **工具清单**：
+- **工具清单**（已按 v3.1.2 代码校对：Shell `ToolDispatcher` 11 个 + Core 内置）：
 
 | 工具 | 类型 | 权限 | 位置 |
 |---|---|---|---|
-| `read_file` / `list_dir` / `search_code` / `search_symbol` / `git_status` / `git_diff` / `git_log` / `get_diagnostics` | 只读 | auto | Shell |
-| `write_file` / `edit_file` / `delete_file` | 编辑 | preview | Shell |
-| `run_terminal` / `run_test` | 执行 | confirm | Shell |
-| `open_file` / `goto_symbol` | IDE 操作 | auto | Shell |
-| `skill_load` / `memory_recall` / `memory_save` / `memory_delete` / `subagent_dispatch` | 内置 | auto/confirm | Core |
+| `read_file` / `list_dir` / `search_code` | 只读 | auto | Shell |
+| `git_log` / `git_diff` | 只读 | auto | Shell |
+| `diagnostics` | 只读 | auto | Shell（IDE Problems） |
+| `write_file` / `edit_file` | 编辑 | preview | Shell（写操作经 `ProjectWriteGate` 串行） |
+| `delete_file` | 编辑 | confirm | Shell |
+| `revert_file` | 回滚 | auto | Shell（按 `FileSnapshots` 快照回退） |
+| `run_command` | 执行 | confirm | Shell（白名单直跑、危险命令拒绝） |
+| `skill_list` / `skill_load` | 内置 | auto | Core |
+| `memory_recall` / `memory_save` / `memory_delete` | 内置 | auto / auto / **confirm** | Core |
+| `subagent_dispatch` / `subagent_list` | 内置 | auto | Core（子代理只读，三道护栏） |
+| `todo_write` | 内置 | auto | Core（清单经 `chat/todos` 下发并落盘） |
+| `ask_user` | 内置 | auto | Core（阻塞等 `ask/userAnswer`，超时带假设继续） |
+| `semantic_search` / `build_index` | 内置 | auto | Core（code-index） |
+| `mcp__<服务名>__<工具名>` | 动态 | `auto_approve ? auto : confirm` | MCP 桥接 |
 
-- **权限引擎**（`agent/permissions.py`）：`auto` 直通；`preview` 走 `edit/previewDiff` 阻塞确认（会话级"本次自动接受"开关）；`confirm` 走 `agent/confirm`；命令白名单匹配失败即拒。连续 3 次权限拒绝 → 终止循环并汇报。
+- **权限判定**：Core 只在 `tool/invoke` 里带 `permission`（`auto` / `preview` / `confirm`），弹卡由 Shell 负责——`preview` 生成 diff 卡片、`confirm` 弹命令确认；MCP 工具不走 Shell 工具路由，另走 `agent/confirm`（`kind="mcp"`）等回包。`run_command` 的策略留在 Core（`agent/commands.py` 的 `decide()`）：危险片段直接 `deny` 不弹窗、白名单按整词前缀 `auto`、其余 `confirm`。`PermissionTracker`（`agent/permissions.py`）只记账：连续 3 次「用户拒绝」→ 终止循环并汇报。
 - **文本解码**（Shell `tools/FileText.java`，v2.4.2）：`read_file` / `search_code` / `write_file` / `edit_file` / `revert_file` 统一走它——先看 BOM（UTF-8 / UTF-16 LE / BE），再严格 UTF-8，再 GBK，最后有损 UTF-8；写回沿用探测到的编码与 BOM。PowerShell 5 重定向出的 UTF-16 日志不会再报 `Input length = 1`（`MalformedInputException`）
 
 ### 3.5 记忆系统
 
-**SQLite schema**（`memory/sqlite_store.py`，stdlib sqlite3，Core 数据目录）：
+**SQLite schema**（`memory/store.py`，stdlib sqlite3，Core 数据目录）：
 
 ```sql
 CREATE TABLE memories (
@@ -350,7 +400,18 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(title, content, keywords,
 
 **检索两级**：
 1. `memory_recall(mode="overview")` → 返回 overview 文本（便宜）
-2. `mode="search", keywords` → FTS5 全文 + 关键词加权，Top-N 返回；可选 `vector.py`（usearch + 本地 embedding）做语义召回，首版关闭
+2. `mode="search", keywords` → FTS5 全文 + 关键词加权，Top-N 返回；向量召回（`vector.py`）首版关闭，现有实现只做关键词与相似度比对
+
+**记忆候选（v3.0.0，`memory/pending.py`）**：
+
+对话里的长期偏好与纠正不再直接写进长期记忆，先生成**候选**等你确认。
+
+| 环节 | 实现 |
+|---|---|
+| 抽取 | `extract_candidates(messages)`：按句子切分，命中偏好句式（“以后都…”“不要…”“记得…”）或纠正句式（“不是…而是…”）且不是疑问句时，生成 `{content, title, keywords}` |
+| 落盘 | `PendingStore`：一个会话一个 Markdown——`<项目>/.agent/memories/_pending/<session>.md`，仍在本机，不进 `overview.md` |
+| 确认 | `memory/pending` 列表 → `memory/promote`（可改标题/分类/关键词，写入 SQLite + Markdown 并重建索引）或 `memory/discard` |
+| 提示 | 新增候选后发 `memory/pendingChanged {count}`，面板「记忆」按钮上的角标就是这个数 |
 
 ### 3.6 MCP 集成（`mcp/manager.py`）
 
@@ -377,7 +438,7 @@ class MCPServerConfig(BaseModel):
 name: daily-report
 description: 生成日报/周报/季报/年报；聚合今日 Git 提交并 AI 润色
 scenarios: ["生成日报", "今日工作汇报", "写周报"]
-tools: [git_log, run_terminal]        # 可选：建议工具白名单
+tools: [git_log, run_command]        # 可选：建议工具白名单
 ---
 # 指令
 1. 调用 git_log 采集用户指定日期范围的提交
@@ -445,31 +506,45 @@ detect_language(path: str, content: str) -> str | None
 
 ```
 com.workreport.agent/
+├── AgentBundle.java              # i18n 入口（messages/AgentBundle*.properties）
 ├── rpc/
-│   ├── CoreProcess.java          # ProcessBuilder 拉起/守护/重启
+│   ├── CoreProcess.java          # ProcessBuilder 拉起/守护/重启，收集 stderr
 │   ├── PythonLocator.java        # 探测：设置指定 → 发行产物 → PATH → 报错引导
 │   ├── JsonRpcConnection.java    # stdin/stdout 行读写（读线程 → EDT 分发）
-│   └── protocol/                 # DTO：ChatStartReq/ToolInvokeReq/DiffPreviewReq/…
+│   └── AgentCoreService.java     # 项目级单例：唯一 Core 进程，聊天 / 补全 / 索引共用，负责 pushSettings
 ├── tools/
-│   ├── ToolDispatcher.java       # tool/invoke → 各工具实现（switch 路由 + 异步执行）
-│   ├── FileTools.java            # VirtualFile 读写 + 内存快照（撤销用）
+│   ├── ToolDispatcher.java       # tool/invoke → 11 个远程工具的路由
+│   ├── FileTools.java / EditTools.java / FileText.java / FileSnapshots.java
 │   ├── SearchTools.java          # PSI 符号 + ProjectFileIndex 全文搜索
-│   ├── GitTools.java             # 改造自 GitLogCollectorService（新增 status/diff）
-│   ├── TerminalTools.java        # ToolWindowManager terminal API + 白名单校验
-│   └── DiagnosticsTools.java     # Problems 收集（CodeInsightProblemsUtil）
+│   ├── GitTools.java             # git_log / git_diff（改造自 GitLogCollectorService）
+│   ├── DiagnosticsTools.java     # diagnostics（IDE Problems）
+│   ├── CommandTools.java         # run_command：白名单直跑、其余确认、危险命令拒绝
+│   ├── ProjectWriteGate.java     # 项目级写操作串行闸门（多会话共用）
+│   └── ToolResult.java
+├── inline/
+│   └── InlineCompletionClient.java   # inline/complete，1.5 s 超时失败返回空串
 ├── ui/
-│   ├── AgentChatPanel.java       # 改造自 ReportToolWindowPanel（消息区重写）
-│   ├── MarkdownRenderer.java     # 轻量 MD→StyledText（标题/粗体/列表/代码块高亮）
-│   ├── ToolCallCard.java         # 并行执行卡（taskId 分组，进度+折叠参数/结果）
-│   └── DiffConfirmCard.java      # DiffContent 展示 + 接受/拒绝
-├── settings/
-│   ├── AgentSettingsState.java   # 扩展自 ReportSettingsState（见 §7）
-│   └── AgentSettingsConfigurable.java
-├── actions/
-│   ├── ExplainAction.java / FixAction.java / TestGenAction.java / ReviewAction.java
-│   └── FixDiagnosticIntention.java   # Alt+Enter 意图
-└── legacy/
-    └── ReportSkillTrigger.java   # 旧 UI 入口改为：向 Core 发"生成日报"指令
+│   ├── AgentChatPanel.java       # 工具窗口根面板：会话表 + CardLayout + 历史/记忆/设置
+│   ├── AgentToolWindowFactory.java
+│   ├── SessionTabsBar.java       # 自绘标签条：pill / 呼吸点 / 溢出 » / 右侧工具按钮组
+│   ├── ChatSessionPanel.java     # 单个会话：对话区 + 状态行 + 输入区
+│   ├── ChatComposer.java         # 浮动输入卡片：附件 chip / 模型下拉 / 自动执行 / 发送与停止
+│   ├── ChatTranscript.java       # 对话区入口（3.1 块级渲染，classic 开关走 ClassicTranscript）
+│   ├── StatusRow.java / TodoStrip.java / ChatAttachment.java
+│   ├── DiffConfirmCard.java / CommandConfirmCard.java / MarkdownRenderer.java
+│   ├── chat/                     # 块级渲染：ChatView、ClassicTranscript、BlockListLayout、InlineLayout、
+│   │                             #   Heading/Paragraph/List/CodeBlock/Quote/Table/Divider 视图、
+│   │                             #   StepGroupView、ToolCallCard、AskCard、NoticeView、ErrorView、
+│   │                             #   UserMessageView、EmptyState、TextCopy
+│   ├── markdown/                 # MarkdownParser + IncrementalParser + MarkdownBlock / InlineSpan
+│   ├── picker/PickerPopup.java   # 历史与记忆共用的弹窗（顶部搜索 / hover 动作 / ↑↓ Enter Esc）
+│   └── design/                   # UiTheme / UiMetrics / UiIcons / UiButton / UiAnim
+├── settings/（实际包名 com.workreport.plugin.settings）
+│   ├── ReportSettingsState.java  # 保留类名，新增 maxIterations / contextWindow / embeddingModel 等字段
+│   └── ReportSettingsConfigurable.java
+└── actions/
+    ├── OpenSettingsAction.java
+    └── GenerateReportAction.java # 旧入口：向面板发「生成今天的日报」
 ```
 
 ### 5.2 现有代码改造对照表
@@ -478,8 +553,8 @@ com.workreport.agent/
 |---|---|
 | `ReportPolishService` | 删除全部 LLM/SSE 逻辑；保留 `notifyError` 通知工具 |
 | `GitLogCollectorService` | 改为 `GitTools` 的实现体，接口适配 tool/invoke 参数 |
-| `ReportSettingsState` | 更名扩展 `AgentSettingsState`，新增字段（§7） |
-| `ReportToolWindowPanel` | 重构为 `AgentChatPanel`，复用输入区/发送按钮骨架 |
+| `ReportSettingsState` | 保留类名（不更名 `AgentSettingsState`），在原有字段上新增（§7）；设置页类同理 |
+| `ReportToolWindowPanel` | 重构为 `AgentChatPanel`（3.1 起再拆为 `ChatSessionPanel` + `ChatComposer` + `ChatTranscript`） |
 | `ReportSettingsConfigurable` | 重写为 Agent 设置页（模型/并发/权限/Python/MCP） |
 | `PrivacyNoticeUtil` | 保留，文案改"代码外传确认" |
 | `ReportToolWindowFactory` | 指向新面板类，toolWindow id 改 `AgentCoder` |
@@ -487,10 +562,40 @@ com.workreport.agent/
 
 ### 5.3 UI 行为详设
 
-- 消息区：用户/助手气泡 + Markdown 渲染；助手消息内嵌多张 `ToolCallCard`（并行时同时出现、各自滚动进度）
-- `edit/previewDiff` 到达：插入 `DiffConfirmCard`（左右对比 + 接受/拒绝/接受全部），期间输入框可继续（消息级阻塞而非全局阻塞）
-- 取消：面板"停止"按钮 → `chat/cancel`
-- 会话持久化由 Core 负责（重启 IDE 恢复历史，Shell 只渲染）
+**多会话面板**（`AgentChatPanel` + `SessionTabsBar`）
+
+- 根面板是 `CardLayout`：每个标签一张 `ChatSessionPanel`（对话区 + `StatusRow` + `ChatComposer`），历史 / 记忆 / 设置各一张卡片
+- 标签条自绘：选中指示条、运行中呼吸点、hover 关闭叉、溢出折成 `»`；`Ctrl+Tab` / `Ctrl+1..8` 切换；关闭后按原位置优先切右侧邻居
+- 右上工具按钮组固定四个：历史、记忆（tab 上带候选角标）、设置、新建会话；图标统一走 `UiIcons.icon(...)`（缺文件即 WARN + 空图标，由 `UiIconsResourceTest` 兜底）
+- 会话编号从 1 找最小空号、关闭即归还（§14.10）；打开的标签数受 `MAX_SESSIONS` 限制
+
+**对话区**（`ChatTranscript` → `ChatView`）
+
+- 3.1 起不再用 `JEditorPane` + 整段 HTML：Markdown 先解析成块模型，再由自绘块视图（`HeadingView` / `ParagraphView` / `ListView` / `CodeBlockView` / `QuoteView` / `TableView` / `DividerView`）排版；`BlockListLayout` 按宽度缓存每块高度，只失效被修改的块
+- 流式：`IncrementalParser` 40 ms 合并窗口，只重解析尾部块；`chat/token` 逐片追加不整体重排
+- 超过 120 块折叠为一行「查看更早的 N 条消息」，分批展开
+- 用户消息右对齐气泡；助手消息是卡片（角色 chip + 元信息 + hover 复制）
+- 连续的 `[工具]` / `[子代理]` 行合并为可折叠的 `StepGroupView` 时间线；单张 `ToolCallCard` 显示参数摘要、耗时与结果摘要
+- `chat/notice` / `chat/error` 走 `NoticeView` / `ErrorView` 细状态行；`chat/todos` → `TodoStrip` 自绘清单
+
+**确认与提问**
+
+- `permission=preview`（`write_file` / `edit_file`，以及 `confirm` 的 `delete_file`）→ 对话区插 `DiffConfirmCard`（左右对比 + 接受/拒绝），期间输入框可继续（消息级阻塞而非全局阻塞）；删除以「整文件删光」的 diff 展示
+- `permission=confirm` 的 `run_command` → `CommandConfirmCard`；命令策略已由 Core 判过，卡片展示命令、工作目录与判定结果
+- `ToolDispatcher` 的 `needsApproval = !auto && !(写操作 && autoAcceptEdits)`：打开「自动接受编辑」后写操作不再弹卡，读工具与命令不受影响
+- MCP 调用 → `agent/confirm` → `ToolCallCard` 内联确认（`Enter` 允许 / `Esc` 拒绝）；面板不在屏幕上时回退模态对话框
+- `ask/user` → `AskCard`（1~3 题、每题 2~4 选项 + 自定义答案，`Enter` 提交 / `Esc` 跳过），交互式工具独占一轮；`ask/withdraw` 收起未答卡片
+
+**输入区**（`ChatComposer`）
+
+- 浮动卡片：焦点环、圆形发送/停止、自绘附件 chip（`ChatAttachment`）、模型下拉、自动执行开关
+- `Enter` / `Ctrl+Enter` 发送，`Shift+Enter` 换行（显式绑定 `insert-break`，§14.6）；任务运行中 `Enter` 同样只换行
+- 高度随内容增长，超过上限后内部滚动
+
+**回退与持久化**
+
+- `-Dagent.ui.classic=true` → `ClassicTranscript`，回到 3.0 的 HTML 渲染（3.2.0 删除）
+- 会话持久化由 Core 负责（`session/list|get|delete|search`），Shell 只渲染；历史回放只重放 user/assistant 正文，不重放工具事件
 
 ---
 
@@ -502,7 +607,7 @@ vscode/src/
 ├── rpc.ts           # JSON Lines 收发（Node stream 逐行解析）
 ├── panel.ts         # Webview 聊天面板（同协议，渲染与 IntelliJ 对等）
 ├── tools.ts         # workspace API 文件工具、内置 Terminal、LSP 诊断
-├── diff.ts          # 原生 diff 编辑器组件承载 previewDiff
+├── diff.ts          # 原生 diff 编辑器组件，承载 permission=preview 的写操作
 └── settings.ts      # settings.json 贡献点
 ```
 
@@ -524,6 +629,8 @@ vscode/src/
   "temperature": 0.2,
   "maxTokens": 8192,
   "maxIterations": 40,
+  "contextWindow": 32000,
+  "embeddingModel": "nomic-embed-text",
   "toolConcurrency": 4,
   "subagentConcurrency": 3,
   "pythonPath": "",
@@ -553,8 +660,8 @@ vscode/src/
 | 级别 | 工具 | 流程 |
 |---|---|---|
 | auto | 只读/IDE 操作 | 直接执行 |
-| preview | write/edit/delete | Core 生成 diff+快照 → `edit/previewDiff` 阻塞 → 接受才落盘；路径必须落在 `project_root` 内（`Path.resolve` 后前缀校验） |
-| confirm | run_terminal/run_test/git push/memory_delete | `agent/confirm` 弹窗，命令需过白/黑名单；会话内"总是允许"记忆于 Core 会话级 |
+| preview | write/edit/delete | Shell 生成 diff+快照 → `DiffConfirmCard` 阻断 → 接受才落盘；路径必须落在 `project_root` 内（`Path.resolve` 后前缀校验），写操作经 `ProjectWriteGate` 串行；`autoAcceptEdits` 只降级写操作 |
+| confirm | run_command/delete_file/MCP 工具 | `run_command` 由 Core `decide()` 给 `auto`/`confirm`/`deny`，危险命令直接拒绝不弹窗；MCP 工具走 `agent/confirm`（`kind="mcp"`） |
 
 - Core 进程自身：数据目录 `~/.agent/data` 与项目 `.agent/` 之外无写权限（代码层拒绝）
 - API Key 永不进入 messages（settings 下发时仅传引用标记）
@@ -603,12 +710,12 @@ vscode/src/
 | 里程碑 | 主要产物 | 验收方式 |
 |---|---|---|
 | M1 Core 地基 | `core/src/agent_core/{rpc,llm,agent}`、`agent/rpc/{CoreProcess,JsonRpcConnection,PythonLocator}.java`、`agent/ui/AgentChatPanel.java`、`plugin.xml` 接线 | `core/tests` 单测 + `vscode`/Java 冒烟最小对话 |
-| M2 工具与并行 | `tools/registry.py`、`agent/scheduler.py`、Shell 端 9 个工具实现 | `scripts/smoke_tools.py`（真实 Core + mock LLM） |
+| M2 工具与并行 | `tools/registry.py`、`agent/scheduler.py`、Shell 端 11 个工具实现（含 v2.6 的 `run_command`） | `scripts/smoke_tools.py`（真实 Core + mock LLM） |
 | M3 Rust 扩展 | `core/native/`（pyo3 + tiktoken-rs + tree-sitter）、`agent_core/native/` 门面 + 纯 Python 降级 | `scripts/build_native.ps1` 实际编译 + `test_native.py`（Rust/Python 双后端对拍）；无 cargo 时自动降级 |
 | M4 编辑与记忆 | `write/edit/delete` + diff 确认 + 快照回退、`memory/`（SQLite FTS5 + Markdown 镜像） | `scripts/smoke_memory.py` + 单测 |
 | M5 Skill 迁移 | `skills/builtin/{daily,weekly,monthly,quarterly,annual}-report/SKILL.md`、旧入口 action | `smoke-rpc.js` 断言 `daily-report` 注入 |
 | M6 MCP | `mcp/{client,config,manager}.py`、`agent/confirm` ↔ `agent/confirmResult`、设置页 MCP JSON、`tests/test_mcp.py` | `scripts/smoke_mcp.py`（auto + ask 双服务） |
-| M7 Subagent | `agent/subagent.py`、3 个内置 `SUBAGENT.md`、并行池 + 工具白名单（禁递归） | `scripts/smoke_subagent.py` + `tests/test_subagent.py` |
+| M7 Subagent | `agent/subagent.py`、内置 4 个 `SUBAGENT.md`（v2.4.9 起含 `general`）、并行池 + 工具白名单（禁递归） | `scripts/smoke_subagent.py` + `tests/test_subagent.py` |
 | M8 VSCode + 分发 | `vscode/`（TS Shell：rpc/locator/session/tools/diff/panel）、`packaging/agent-core.spec`、`scripts/{build_core,verify_all}.ps1`、`.github/workflows/ci.yml` | `npm run compile` + `npm run smoke`；`agent-core.exe` 端到端冒烟 |
 
 ### 12.1 一键验收
@@ -619,10 +726,10 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **173 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
-- 协议冒烟 4 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent`
-- VS Code：`tsc` 编译通过，`smoke-rpc.js` 与真实 Core 跑通并校验 skill 注入
-- IntelliJ：`mvn -q -DskipTests compile` 通过
+- Core 单测 **258 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
+- 协议冒烟 8 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent` / `smoke_command` / `smoke_todos` / `smoke_v3` / `smoke_ask`
+- VS Code：`npm run compile` 通过，`npm run smoke` 与真实 Core 跑通
+- IntelliJ：`mvn -q -DskipTests compile` 通过（需 JDK 25；脚本先校验 `JAVA_HOME`，低于 25 记失败而不是静默 SKIP）；`mvn -B test` 15 个 JUnit 用例（Markdown 解析 14 + 图标资源 1）
 - 打包：PyInstaller 产物 `core/dist/agent-core(.exe)` 可启动，`AGENT_CORE_EXE` 模式下冒烟同样通过（证明 SKILL.md / SUBAGENT.md 已随包分发）
 
 ### 12.1.1 可安装插件产物
@@ -662,7 +769,7 @@ powershell -File scripts/build_plugin.ps1
 | Core | `llm/completion.py` | FIM：Ollama `/api/generate` + `suffix`；OpenAI 兼容 `/v1/completions` |
 | Core | `rpc/server.py` | `inline/complete` 以 `asyncio.create_task` 后台执行，不阻塞 stdin 循环 |
 
-- 平台依赖：`com.jetbrains.intellij.platform:ide-codeinsight-inline`（provided）+ `kotlin-stdlib` + `kotlinx-coroutines-core-jvm`（provided，IDE 运行时提供），`since-build` 因此提到 252。
+- 平台依赖：`com.jetbrains.intellij.platform:ide-codeinsight-inline`（provided）+ `kotlin-stdlib` + `kotlinx-coroutines-core-jvm`（provided，IDE 运行时提供），`since-build` 因此提到 252。v3.1.1 把编译基线升到 263（`until-build="263.*"`，安装区间 2025.2 ~ 2026.3），Kotlin 跟平台内置版本对齐到 `2.4.21-RC`，coroutines 到 `1.11.0-intellij-1`、annotations 到 `26.1.0`。
 - 编排：Core 侧统一 `sanitize()`（去代码围栏、截断与 suffix 重复的行、去 prefix 回显），确保 ghost text 只显示新增片段。
 - 降级：端点不支持 FIM、Core 未启动、超时 → 一律返回 `{"text": ""}`，编辑器不弹错误。
 
@@ -686,6 +793,7 @@ powershell -File scripts/build_plugin.ps1
 ### 13.3 已知边界
 
 - 252 以下 IDE 无法加载（inline completion API 不存在）；若需兼容需单独发 LTS 包并移除 EP 与 Kotlin provider。
+- 263 平台用 Java 25 编译（class 版本 69），构建机必须有 JDK 25；`source/target` 仍是 21，插件字节码维持版本 65。
 - FIM 质量取决于模型：建议用 `qwen2.5-coder` / `codellama` 等支持 suffix 的模型。
 - 语义索引不解析符号引用关系（无 call graph），跨文件“找实现”靠语义相似度而非精确跳转。
 
@@ -869,3 +977,139 @@ powershell -File scripts/build_plugin.ps1
 - 缓存语义：角色目录在 Core 启动（或 `set_project_root`）时扫描并缓存，新增/修改 `SUBAGENT.md` 后需重启 IDE 或重开项目
 - 向后兼容：`_normalise_requests` 同时接受 `tasks` 与 `type` + `goals`，旧调用与旧测试照旧通过；`SubagentTask` / `SubagentReport` 新字段都有默认值
 - 用例（`core/tests/test_subagent.py`，新增 9 个）：元数据解析与非法值回落、内置角色清单含 `general`、`tasks` 混合派发与每任务 `context` 拼接、显式 `tools` 里的写工具被剔除、角色模型与轮次覆盖、超时转为失败报告、`catalog_text()` 内容、`run_chat` 注入 / 不注入两种情况
+
+---
+
+## 15. v2.5.0–v2.7.0 增量：预算、终端与双端对齐
+
+v2.4.10 只做发布工程：CI 覆盖 `develop` / `master`、About 文案、`agent_core.__version__` 支持 `AGENT_CORE_VERSION` 注入，`--version` 与 `core/hello.coreVersion` 同源。下面四节从 v2.5.0 开始。
+
+### 15.1 上下文预算（v2.5.0）
+
+| 位置 | 说明 |
+|---|---|
+| `protocol.py` | `ChatConfig.context_window` 默认 `32000`；`0` 表示未配置 |
+| `llm/context.py` | `budget_for(window)` = 窗口 × 75%，夹紧在 `[MIN_BUDGET 4000, MAX_BUDGET 200000]`；未配置回退 `DEFAULT_BUDGET = 24000` |
+| 设置页 / 下发 | `ReportSettingsState.contextWindow`（默认 32000）→ `settings/update` → `ChatConfig`，下一次 `chat/start` 生效 |
+| 裁剪 | 预算只是阈值，真正的裁剪仍是 `trim_history` 两趟丢弃（§14.5）且单次分词 / O(n)（§14.12） |
+
+- 24000 是 v2.4 的硬编码值：8k 窗口会溢出，128k 窗口又浪费；改成按窗口缩放后两头都合理
+- 回复与工具输出共用剩下的 25%，所以历史预算看起来比窗口小
+
+### 15.2 传输层重试与日志轮转（v2.5.0）
+
+- `llm/transport.py`：`RETRYABLE_STATUS = {429, 500, 502, 503, 504}`、`MAX_RETRIES = 2`、`BACKOFF_SEC = (0.5, 1.5)`；**只在尚未产出任何 token 时重放**（`started()` 为真即不再重试），避免重复工具副作用
+- 不可重试的传输错误也必须给出可读文案（httpcore 的 `str(exc)` 是空串，§14.11）
+- 日志：`agent_core/__main__.py` 用 `RotatingFileHandler` 写 `<AGENT_LOG_DIR 或 ~/.agent/logs>/core-YYYYMMDD.log`，`maxBytes = 5 MB`、`backupCount = 5`
+- 用量聚合：`chat/finish` 带 `usage`（本轮）与 `usageTotal`（本任务累计），状态行的累计 token 就是后者
+
+### 15.3 `run_command` / `diagnostics` / `todo_write`（v2.6.0）
+
+| 工具 | 位置 | 行为 |
+|---|---|---|
+| `run_command` | Shell `CommandTools` + Core `agent/commands.py` | 策略在 Core：`decide()` 先按 `DENY_PATTERNS`（`rm -rf`、`git push`、`format`、管道接 `sh` 等）判 `deny` 并给出替代方案；再按「分段 + 整词前缀」对 `DEFAULT_ALLOWLIST`（mvn/npm/pytest/cargo/`git status`…）判 `auto`；其余 `confirm`，由 `CommandConfirmCard` 逐次确认 |
+| `diagnostics` | Shell `DiagnosticsTools` | 读 IDE Problems（`Diagnostic` 列表），只读、`auto` |
+| `todo_write` | Core `agent/todos.py` | 整表覆盖 `session.todos`；`STATUSES = pending / in_progress / completed / cancelled`，工具结果回读「进度：x/y」；每次写入发 `chat/todos` |
+| 落盘 | `agent/store.py` | 会话 JSON 升到 v2，多一个 `todos` 字段（旧文件没有该键即空列表） |
+| UI | `TodoStrip` | 自绘标记 `[ ]` / `[>]` / `[x]` / `[-]`，两端渲染同一份清单 |
+
+- `todo_write` 是内置工具（`remote=False`），更新清单不需要 IDE 往返
+- 与 §14.7 的自检状态栏互补：状态栏是零调用成本的事后事实，清单是模型主动声明的计划
+
+### 15.4 VS Code 侧补齐（v2.7.0）
+
+- `vscode/src/inline.ts`：行内补全，走同一个 `inline/complete`
+- `vscode/src/settings.ts`：字段集与 IntelliJ `pushSettings` 对齐（`embedding_model` / `context_window` / `max_iterations` …），端点形状优先于 provider 类型（与 Core 的 `detect_provider()` 同规则）；`autoAcceptEdits` 单独读，控制写操作是否弹卡
+- API Key 从 `settings.json` 迁到 `SecretStorage`（`vscode/src/secrets.ts`）
+- `vscode/src/session.ts` 加历史会话面板；能力矩阵核对表归档到 `vscode/README.md`
+
+---
+
+## 16. v3.0.0 增量：记忆沉淀、会话检索与用量
+
+### 16.1 记忆候选
+
+实现见 §3.5 的「记忆候选」小节，要点：
+
+- 抽取是**纯规则**（`extract_candidates`）：只扫 user 轮，按句切分；命中「记住 / 以后都 / 不要 / 必须 / 禁止…」记 `user_preference`，命中「不对，/ 不是…而是 / 说错了 / 应该是 / 纠正」记 `correction`；疑问句与过短句跳过，单轮最多 `MAX_CANDIDATES = 8` 条
+- 一个会话一个 Markdown（`memories/_pending/<session>.md`），带 frontmatter 与 `## <pendingId>` 条目；候选不参与 `memory_overview`，模型看不到
+- 只有**正常结束**的一轮才抽取（`chat/finish` 之后起后台任务），取消的那轮可能只说了一半
+- 转正时 `find_similar(text, scope="project")` 与既有记忆比对，命中就在返回里带 `duplicate: {id, title}`，面板显示行内黄色提示而不是模态框
+
+### 16.2 会话全文检索
+
+| 模块 | 说明 |
+|---|---|
+| `agent/search.py` | `sessions.db` 两张表：`sessions_text`（镜像：`session_id/title/content/updated_at`）+ `sessions_fts`（FTS5，`tokenize='trigram'`） |
+| 为什么用 trigram | FTS5 默认分词器把整段 CJK 当一个 token，中文子串搜不到；trigram 按 3 字符切片；2 字以内的查询仍回退 `LIKE` |
+| 索引 | 保存会话时增量刷新；首次启动后台全量建索引（`index_many` 单连接批量，每 25 份回调进度），完成后发 `session/indexProgress` |
+| 查询 | 空白归一化 → 长度 ≥ 3 的词走 FTS（`bm25` 排序、`snippet(..., '<mark>', '</mark>')`），否则 `LIKE`；`limit` 默认 20、上限 50；单条索引正文截到 20 万字符 |
+| UI | 历史弹窗顶部搜索框 300 ms 防抖，命中行显示带 `<mark>` 的片段 |
+
+### 16.3 本地用量统计
+
+- `usage.py`：`~/.agent/logs/usage.jsonl` 每任务一行（`ts / taskId / model / in / out / toolCalls / durationMs / ok`）
+- 单文件超过 `MAX_BYTES = 10 MB` 轮转为 `usage-YYYYMM.jsonl`（同月重复轮转则追加合并）；`usage/report(days)` 默认 7 天、上限 `MAX_REPORT_DAYS = 90`
+- 报表给出任务/失败数、token 进出、工具调用数、平均耗时、按天与按模型聚合；不上报、不做用户标识
+
+### 16.4 性能基线
+
+`core/scripts/bench_core.py` 记录冷启动、空闲 RSS、单轮延迟与千条会话列表；千条列表从 211 ms 降到 105~110 ms，来源是并行读取 + 单连接批量建索引。
+
+### 16.5 i18n
+
+- `com.workreport.agent.AgentBundle`（`DynamicBundle`）绑 `messages/AgentBundle.properties` + `AgentBundle_en.properties`，两个文件各 190 行
+- 面板按钮、状态行、设置页标签、弹窗与错误文案都走 bundle；IDE 切英文即为英文
+- Core 的提示词、工具描述与工具错误保持中文（模型侧不做本地化）
+
+**端到端验收**：`core/scripts/smoke_v3.py` 用 mock LLM 串起「对话 → 候选落盘 → 转正 → 检索 → 用量」五步。
+
+---
+
+## 17. v3.1.x 增量：渲染重写、平台 263 与图标资源
+
+### 17.1 v3.1.0：对话渲染与界面重做
+
+| 主题 | 变化 |
+|---|---|
+| 渲染内核 | 不再 `JEditorPane` + 整段 HTML；Markdown → 块模型 → 自绘块视图（`ui/chat/`），流式只重解析尾部块（`IncrementalParser` 40 ms 合并） |
+| 布局 | `BlockListLayout` 按宽度缓存高度、只失效被修改的块；超过 120 块折叠为「查看更早的 N 条消息」 |
+| 消息容器 | 用户消息右对齐气泡、助手卡片（角色 chip + 元信息 + hover 复制）、`StepGroupView` 把连续的工具/子代理行合并为可折叠时间线 |
+| 面板 | `SessionTabsBar` 自绘标签（选中指示条、运行中呼吸点、hover 关闭、`Ctrl+Tab` / `Ctrl+1..8`、溢出 `»`）、浮动输入卡片、`TodoStrip`、`EmptyState` |
+| 弹窗 | 历史与记忆共用 `PickerPopup`（顶部搜索 + hover 动作 + ↑↓/Enter/Esc） |
+| 主题 | 所有颜色走 `JBColor` 在绘制时解析，跟随明/暗/高对比主题即时切换 |
+| 回退 | `-Dagent.ui.classic=true` → `ClassicTranscript`（3.2.0 删除） |
+| 模型提问 | 新增阻塞式 `ask_user`：Core 发 `ask/user`、Shell 回 `ask/userAnswer`，`AskCard` 插在对话区（`Enter` 提交 / `Esc` 跳过）；`ide/hello` 声明 `ask-user`，未声明或 30 分钟超时降级为「带假设继续」，`chat/cancel` 发 `ask/withdraw` 收起卡片；交互式工具独占一轮 |
+
+设计令牌与组件清单见 `docs/UI_OVERHAUL.md`；验收：`core/scripts/smoke_ask.py` 端到端冒烟 + `core/tests/test_ask.py`。
+
+### 17.2 v3.1.1：平台 263 与构建工具链
+
+| 项 | 值 |
+|---|---|
+| `intellij.version` | `261.25134.95`（2026.1）→ `263.7307.259`（2026.3） |
+| `since-build` / `until-build` | `252` / `263.*`（安装区间 2025.2 ~ 2026.3） |
+| Kotlin | `2.3.20-RC2` → `2.4.21-RC`；coroutines `1.11.0-intellij-1`；`org.jetbrains:annotations` `26.1.0` |
+| 构建 JDK | 平台 class 版本 69（Java 25）→ 必须 JDK 25 编译；`source/target` 仍 21，插件字节码 65 |
+| Git 依赖 | 263 把 Git 插件拆成 frontend / shared / backend：`com.jetbrains.intellij.vcs:git` 只剩描述符桩，新增 `git-backend` / `git-shared` 两个 `provided` 提供 `git4idea.*` |
+
+- `verify_all.ps1` / `build_plugin.ps1` / CI 都加了 JDK 25 preflight：优先 `$env:JAVA_HOME\bin\javac.exe`，其次 PATH；低于 25 直接记失败，不再静默 SKIP
+- 版本号三处同步（`pom.xml`、`plugin.xml`、内置 Core 可执行文件）；`agent-core --version` 与 `core/hello.coreVersion` 必须同号
+
+### 17.3 v3.1.2：图标资源缺失导致按钮不可见
+
+**现象**：标签条右上角只有「历史」「记忆」两个图标，`+`（新建会话）与「设置」的位置是空白——悬停有底色、点击有效。
+
+**根因**：`SessionTabsBar` 取的是 `icons/add.svg` / `icons/settings.svg`，而 `resources/icons/` 只有 `agent` / `attach` / `history` / `memory`；`UiIcons.icon()` 在 `IconLoader.getIcon` 抛异常时 `catch` 返回 `EmptyIcon.create(16)`，按钮就成了看不见但可点的空白。
+
+**修法**：
+
+| 项 | 变化 |
+|---|---|
+| 资源 | 新增 `add.svg` / `add_dark.svg`、`settings.svg` / `settings_dark.svg`，与既有图标同一套线宽（1.4~1.6）与明暗取色（`#6B7178` / `#A9AEB4`） |
+| 日志 | `UiIcons.icon()` 失败时 `LOGGER.warn("missing or unreadable icon /icons/<key>.svg")`，不再静默退化 |
+| 测试 | `src/test/java/com/workreport/agent/ui/design/UiIconsResourceTest.java` 遍历面板引用的图标名（`agent/attach/history/memory/add/settings`），断言本体与 `_dark` 都存在 |
+| 验收 | `mvn -B test` 15 例通过；`build_plugin.ps1 -SkipNative` 产出的 zip 内有 12 个图标资源（6 个 × 明暗） |
+
+- `_dark` 变体由 `IconLoader` 按主题自动选择：只补 `add.svg` 不补 `add_dark.svg`，暗色主题下会再次退化成空白
+- 新增图标时同步改 `UiIconsResourceTest.REFERENCED`，否则测试报「missing」，比 UI 上肉眼看不见要早得多
