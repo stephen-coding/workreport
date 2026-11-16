@@ -16,8 +16,8 @@ def _schema(properties: Dict[str, Any], required: List[str] = None) -> Dict[str,
     return {"type": "object", "properties": properties, "required": required or []}
 
 
-# Read-only tools plus the edit set; terminal tools arrive with M4/M6.
-# 只读工具 + 编辑工具；终端工具随后加入。
+# Read-only tools, the edit set and the terminal tool.
+# 只读工具 + 编辑工具 + 终端工具。
 SHELL_TOOLS: List[ToolDef] = [
     ToolDef(
         name="read_file",
@@ -129,6 +129,27 @@ SHELL_TOOLS: List[ToolDef] = [
         ),
         permission=Permission.AUTO,
         timeout_sec=15,
+    ),
+    ToolDef(
+        name="run_command",
+        description=(
+            "在项目目录执行一条 shell 命令并返回输出（默认 120 秒超时）。"
+            "白名单内的构建/测试/只读命令直接执行，其余命令需要用户确认；"
+            "删除、推送、格式化磁盘等危险命令一律拒绝——删除文件请改用 delete_file。"
+        ),
+        parameters=_schema(
+            {
+                "command": {"type": "string", "description": "完整命令行，例如 mvn -q test"},
+                "cwd": {"type": "string", "description": "相对项目根的子目录（可选）"},
+                "timeout_sec": {"type": "integer", "minimum": 1, "maximum": 600,
+                                "description": "超时秒数，默认 120"},
+            },
+            ["command"],
+        ),
+        # Fallback only: the server rewrites this per call from the command policy.
+        # 这里的 permission 只是兜底值，实际下发的是 server 按白名单计算出的生效值。
+        permission=Permission.CONFIRM,
+        timeout_sec=130,
     ),
 ]
 

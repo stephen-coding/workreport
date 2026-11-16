@@ -78,6 +78,10 @@ class ChatConfig(BaseModel):
     subagent_concurrency: int = 3
     embedding_model: str = "nomic-embed-text"
     mcp_servers: List[Dict[str, Any]] = Field(default_factory=list)
+    # Empty means "use agent_core.agent.commands.DEFAULT_ALLOWLIST"; the shells
+    # send their own list when the user overrides it.
+    # 留空时使用内置白名单；用户覆盖后由 Shell 下发完整列表。
+    command_allowlist: List[str] = Field(default_factory=list)
 
 
 class ContextSnapshot(BaseModel):

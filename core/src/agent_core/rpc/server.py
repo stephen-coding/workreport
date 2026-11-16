@@ -15,6 +15,7 @@ import threading
 import uuid
 from typing import Any, Dict, Optional
 
+from agent_core.agent.commands import decide as decide_command
 from agent_core.agent.loop import run_chat
 from agent_core.agent.session import Session, SessionManager, make_title
 from agent_core.agent.store import SessionStore
@@ -141,7 +142,7 @@ class RpcServer:
             "projectId": self.project_id,
             "capabilities": ["chat", "parallel-tools", "tokenizer", "codesoup",
                              "memory", "skill", "mcp", "subagent", "inline",
-                             "code-index", "session-store"],
+                             "code-index", "session-store", "terminal"],
             "native": native_info(),
         })
         LOGGER.info("agent core %s started (project=%s)", CORE_VERSION, self.project_id)
@@ -472,16 +473,36 @@ class RpcServer:
         self._send_notification("chat/subagent", payload)
 
     async def _invoke_shell_tool(self, call: ToolCall) -> ToolResult:
+        tool_def = self.tools.get(call.name)
+        permission = tool_def.permission.value if tool_def else Permission.AUTO.value
+        # Terminal commands are judged here, not in the Shell: the policy travels
+        # with the invocation so both IDEs behave identically.
+        # 终端命令的判定留在 Core：策略随调用一起下发，两端 Shell 行为一致。
+        if call.name == "run_command":
+            command = str(call.arguments.get("command") or "")
+            decision = decide_command(command, self.config.command_allowlist)
+            if decision == "deny":
+                LOGGER.info("refused dangerous command: %s", command[:200])
+                return ToolResult(
+                    tool_call_id=call.id,
+                    ok=False,
+                    error=(
+                        "已拒绝执行危险命令: %s\n"
+                        "删除文件请改用 delete_file（逐个确认）；"
+                        "推送与历史重写由人执行，Agent 不代为执行。" % command.strip()[:200]
+                    ),
+                )
+            permission = decision
+
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._pending_tools[call.id] = future
-        tool_def = self.tools.get(call.name)
         self._send_notification("tool/invoke", {
             "taskId": _current_task.get(),
             "toolCallId": call.id,
             "toolName": call.name,
             "params": call.arguments,
-            "permission": tool_def.permission.value if tool_def else Permission.AUTO.value,
+            "permission": permission,
         })
         try:
             return await future
