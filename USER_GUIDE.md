@@ -1,6 +1,6 @@
 # Agent Coding Assistant 使用手册
 
-> 适用版本：**2.4.9** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.2**（`since-build=252`）
+> 适用版本：**3.0.0** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.2**（`since-build=252`）
 >
 > 本手册面向使用者。想了解内部实现（RPC 协议、FIM 补全原理、向量检索细节），
 > 请看 [技术详情文档](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md)。
@@ -34,7 +34,7 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 |---|---|---|
 | 对话式编码 | 描述任务，Agent 自己读文件、搜代码、改代码、跑验证 | 底部 **AgentCoder** 工具窗口 |
 | 多模型切换 | 设置页维护模型列表，面板下拉框随时切换，无需重启 IDE | 面板右上「模型:」下拉 |
-| 工具执行 | 读写文件、正则搜索、Git 日志/diff、目录浏览，写操作先看 diff | 对话中自动触发 |
+| 工具执行 | 读写文件、正则搜索、Git 日志/diff、目录浏览，写操作先看 diff；`run_command` 跑构建/测试（白名单直跑、其余确认、危险命令拒绝），`diagnostics` 读 IDE 诊断，`todo_write` 维护任务清单 | 对话中自动触发 |
 | 不挑文件编码 | `read_file` / `search_code` 自动识别 UTF-8 / UTF-16（BOM）/ GBK；写回保持原编码 | 对话中自动 |
 | 文本工具调用兜底 | 模型把 `<tool_call>` 写进正文（端点没开 `--tool-call-parser` 时常见）也照样执行 | 对话中自动 |
 | 自动执行 | 勾选后写文件不再逐次确认，直接落盘（仍可 `revert_file` 回退） | 面板右上「自动执行」 |
@@ -42,7 +42,7 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 | 语义索引 | 用自然语言"这段逻辑在哪实现"来检索代码，不依赖关键词 | 对话中自动调用 |
 | 报告生成 | 内置日报/周报/季报/年报 4 个 Skill | 对话，或菜单 `Tools` → `生成今日日报` |
 | MCP 接入 | 挂载外部 MCP 服务，工具以 `mcp__服务名__工具名` 暴露 | 设置页 MCP JSON |
-| 记忆 | 跨会话记住偏好与结论（本地 SQLite） | 对话中自动 |
+| 记忆 | 跨会话记住偏好与结论（本地 SQLite）；对话里的偏好/纠正先落成「记忆候选」，由你确认、编辑或忽略 | 对话中自动；面板「记忆」 |
 | 子代理 | 主代理自动把审查 / 排查 / 补测试拆给 4 个只读角色并行做（角色可自定义模型档位与输出格式） | 对话中自动 |
 
 ---
@@ -61,12 +61,12 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 
 ### 2.2 安装步骤
 
-1. 拿到 `workreport-ai-assistant-2.4.9.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
+1. 拿到 `workreport-ai-assistant-3.0.0.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
 2. IDEA → `Settings` → `Plugins` → ⚙️ → `Install Plugin from Disk...`
 3. 选择该 zip → `Restart IDE`
 4. 重启后底部出现 **AgentCoder** 工具窗口；菜单 `Tools` 下多出 **「模型设置…」** 与 `生成今日日报`
 
-> **升级提醒**：如果版本号没变（例如都是 2.4.9），IDEA 可能仍显示旧缓存。
+> **升级提醒**：如果版本号没变（例如都是 3.0.0），IDEA 可能仍显示旧缓存。
 > 让版本号变化（或先卸载再装）才能确保界面与代码一致。
 
 ---
@@ -82,7 +82,7 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 - Agent 面板输入区工具栏的 **「设置」** 按钮
 
 > 找不到入口时也可以按 **`Ctrl+Shift+A`**，输入 `模型设置` 直接跳转；
-> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `2.4.9` 的 zip。
+> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `3.0.0` 的 zip。
 
 ### 3.2 配置模型（必做）
 
@@ -170,7 +170,8 @@ DeepSeek（OpenAI 兼容）：
 - **模型**：输入区工具栏的下拉切换即时生效（下发 `settings/update`），无需重启 IDE 或 Core
 - **自动执行**：勾选后写文件/删除不再弹 diff 确认；适合"改完直接跑"，出错可用 `revert_file` 回退
 - **设置**：打开设置页；关掉后模型/端点/MCP 立即下发，会话上下文不受影响（只有改了 Core 路径才会重建 Core）；也可从 `Tools` → 「模型设置…」或 `Ctrl+Shift+A` 搜到
-- **历史**：`+` 右侧的「历史」按钮列出本机保存的会话（含已关闭标签的），可回放、接着聊或删除，详见 [§4.6](#46-历史会话关掉标签也不丢)
+- **历史**：`+` 右侧的「历史」按钮列出本机保存的会话（含已关闭标签的），可搜索、回放、接着聊或删除，详见 [§4.6](#46-历史会话关掉标签也不丢)
+- **记忆**：「历史」右侧的「记忆」按钮列出当前项目的记忆候选，逐条确认 / 编辑 / 忽略，详见 [§9](#9-记忆与子代理)
 
 ### 4.2 界面上的状态行
 
@@ -252,7 +253,7 @@ v2.3.0 起面板顶部是一排会话标签（最多 8 个），**每个会话�
 
 ### 4.6 历史会话（关掉标签也不丢）
 
-点 `+` 右侧的 **「历史」**，弹出本机保存过的会话列表（按最近更新倒序，最多 30 条）：
+点 `+` 右侧的 **「历史」**，弹出本机保存过的会话列表（按最近更新倒序，最多 30 条），顶部带搜索框：
 
 ```text
 ┌───────────────────────────────────────────┐
@@ -264,9 +265,14 @@ v2.3.0 起面板顶部是一排会话标签（最多 8 个），**每个会话�
 └───────────────────────────────────────────┘
 ```
 
+**搜索（v3.0.0）**：顶部输入框输入即搜（300 ms 防抖），同时匹配会话标题与正文，命中的片段以**加粗**显示在标题下方；
+清空输入框就回到按时间倒序的完整列表。首次安装后 Core 会在后台给旧会话补建索引，
+状态行显示「正在为历史会话建立索引…」，建完即可搜索（耗时与会话数量成正比，几十条通常几秒）。
+
 | 操作 | 效果 |
 |---|---|
 | 点某一行 | 把该会话回放到一个新标签里（只回放你的提问与 Agent 正文，工具调用不展示），可直接接着聊；历史里已有的内容也会一起带回上下文 |
+| 搜索框输入关键词 | 只列出标题或正文命中的会话，钉在行内的加粗片段即命中处；点行仍然照常回放 |
 | 点行尾 `×` | 先弹确认，然后**立即删除落盘文件**；该会话若有任务在跑会先取消，任务收尾时也不会再把文件写回来。它的标签会一起关掉，状态行会显示释放了多少磁盘 |
 | 关掉标签 | **不删历史**，下次仍能从列表里打开 |
 
@@ -406,6 +412,7 @@ v2.3.0 起面板顶部是一排会话标签（最多 8 个），**每个会话�
 ├── memory.db        # 记忆（SQLite FTS5）
 ├── memories/        # 记忆的 Markdown 镜像
 ├── sessions/        # 历史会话（每个会话一个 JSON，v2.4.0 起）
+├── sessions.db      # 历史会话全文索引（sessions_text 镜像 + FTS5 trigram，v3.0.0 起）
 └── code_index.db    # 语义索引（code_files / code_chunks 两表，向量以 BLOB 存同一文件）
 ```
 
@@ -476,6 +483,25 @@ v2.3.0 起面板顶部是一排会话标签（最多 8 个），**每个会话�
 - 存本地 SQLite FTS5，同时在 `memories/` 下保留 Markdown 镜像，便于人工查看
 - 会话开始时会注入记忆概览；说"记住…"/"忘掉…"即可维护
 
+**记忆候选（v3.0.0）**
+
+对话里出现「以后都…」「不要…」这类偏好，或「不是…而是…」这类纠正时，Core 用规则抽取一条候选，
+落到 `<项目>/.agent/memories/_pending/`，**不进** 记忆概览——是否值得长期记住由你决定。
+
+点面板的 **「记忆」** 按钮（在 `+` / 「历史」旁边）列出当前项目的候选：
+
+| 操作 | 效果 |
+|---|---|
+| 确认 | 写入正式记忆（`memory/promote`）；与已有记忆高度相似时会提示「可能重复」，可先去编辑再确认 |
+| 编辑 | 先改标题/正文再确认，适合把模型抽取的一句话补成完整规则 |
+| 忽略 | 删除候选文件（`memory/discard`），不会写入记忆库 |
+
+几个要点：
+
+- 候选按项目分开，只在当前项目的面板里出现；有候选待处理时状态行提示「N 条新记忆待确认」
+- 抽取是纯规则（无额外模型调用）：只认“偏好 / 纠正”两种句式，宁可漏也不乱收
+- 候选文件仍是 Markdown，可以直接打开改字；不想要就删掉该文件
+
 **子代理**
 
 主代理是「编排者」，子代理是「只读专家」：改文件、跑工具由主代理统一做；需要从多个角度判断时，主代理把目标拆给角色，拿回结论再汇总。
@@ -529,9 +555,11 @@ timeout_sec: 180
 | 记忆 | 不发送（除被召回注入对话时） | `memory.db` + `memories/*.md` |
 | API Key | 不发送给第三方 | IntelliJ PasswordSafe（系统密钥链，按模型名分开存） |
 | Git 历史 | 仅在报告 Skill 中经 `git_log` 读取，随报告发送给模型端点 | 不落盘 |
+| 本地用量统计 | 不上报、不含用户标识（只记模型名、tokens、耗时、工具次数） | `~/.agent/logs/usage.jsonl`（每个任务一行，超 10 MB 轮转为 `usage-YYYYMM.jsonl`） |
 
 - 换端点后，涉及报告的功能会重新弹一次隐私确认（`resetPrivacyIfEndpointChanged`）
-- 想彻底清空本地数据：关闭 IDE 后删除 `~/.agent/data/<项目哈希>/` 即可（索引、记忆、历史会话一起清）；只清某个会话用面板「历史」里的 `×`
+- 本地用量统计只在 `~/.agent/logs/` 下追加，`usage/report` 按需聚合最近 7/30 天（任务数、成功/失败、tokens、工具次数、按天与按模型分布），**不上报任何服务**；`AGENT_LOG_DIR` / `AGENT_USAGE_DIR` 可改落盘目录
+- 想彻底清空本地数据：关闭 IDE 后删除 `~/.agent/data/<项目哈希>/` 即可（索引、记忆、历史会话一起清）；只清某个会话用面板「历史」里的 `×`；用量日志另外删 `~/.agent/logs/`
 
 ---
 
@@ -758,6 +786,9 @@ v2.4.7 及更早版本：同一个会话聊得越久，下一次发送前的等�
 | `edit_file` | 精确文本替换 | 需确认（自动执行时跳过） |
 | `delete_file` | 删除文件 | 需确认 |
 | `revert_file` | 回退本会话最后一次修改 | 自动 |
+| `diagnostics` | 读 IDE 当前的编译错误 / 告警（可按路径与级别过滤，最多 50 条） | 自动 |
+| `run_command` | 在项目目录跑一条命令（构建/测试/只读类白名单直跑，其余逐次确认，`rm -rf` / `git push` / `format` 等危险命令直接拒绝；默认 120 秒超时） | 白名单自动 / 其余确认 / 危险拒绝 |
+| `todo_write` | 维护本次任务清单（整表覆盖，同步到面板待办条目，随会话落盘） | 自动 |
 | `semantic_search` | 语义检索代码块 | 自动 |
 | `build_index` | 增量/全量重建索引 | 自动 |
 | `memory_recall` / `memory_save` / `memory_delete` | 记忆读写 | 自动 |
@@ -773,7 +804,8 @@ v2.4.7 及更早版本：同一个会话聊得越久，下一次发送前的等�
 | Core 可执行文件 | 插件安装目录 `agent-core/agent-core.exe` |
 | 设置项 | IDE 配置（`ReportSettingsState`，XML 持久化） |
 | API Key | 系统密钥链（PasswordSafe），按模型名分开存 |
-| 记忆 / 索引 / 历史会话 | `~/.agent/data/<项目哈希>/`（`memory.db`、`code_index.db`、`sessions/*.json`） |
+| 记忆 / 索引 / 历史会话 | `~/.agent/data/<项目哈希>/`（`memory.db`、`code_index.db`、`sessions/*.json`、`sessions.db`） |
+| 本地用量统计 | `~/.agent/logs/usage.jsonl`（轮转文件 `usage-YYYYMM.jsonl`；`AGENT_LOG_DIR` 可改目录） |
 | 项目级 MCP | `<项目>/.agent/mcp.json` |
 
 ### 12.3 源码构建（开发者）
@@ -785,7 +817,7 @@ mvn -q -DskipTests compile
 # 一键打包含内置 Core 的 zip（需要 Python 3.9+；有 cargo 时顺便编译 Rust 加速）
 powershell -File scripts/build_plugin.ps1
 
-# 全量校验：Core 单测 + 4 个协议冒烟 + Java 编译 + VS Code 编译/冒烟
+# 全量校验：Core 单测 + 7 个协议冒烟 + Java 编译 + VS Code 编译/冒烟
 powershell -File scripts/verify_all.ps1
 ```
 
@@ -797,3 +829,5 @@ powershell -File scripts/verify_all.ps1
 - 技术详情：[docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md)
 - 总体详设：[docs/AGENT_REFACTOR_DETAILED_DESIGN.md](docs/AGENT_REFACTOR_DETAILED_DESIGN.md)
 - 兼容性说明：[COMPATIBILITY.md](COMPATIBILITY.md)
+- 版本变更记录：[CHANGELOG.md](CHANGELOG.md)
+- 3.0.0 路线图与验收项：[docs/ROADMAP_TO_3.0.md](docs/ROADMAP_TO_3.0.md)

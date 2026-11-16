@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 + VS Code 扩展 · 由语言无关的 Python Agent Core 驱动**
 
-[![Version](https://img.shields.io/badge/version-2.4.9-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.2-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-262.*-lightgrey.svg)
 [![JDK](https://img.shields.io/badge/JDK-21-orange.svg)](https://adoptium.net/)
@@ -323,8 +323,8 @@ powershell -File scripts/build_native.ps1
 
 | 产物 | 路径 | 说明 |
 |---|---|---|
-| 可安装 zip | `target/workreport-ai-assistant-2.4.9.zip` | 内置 `agent-core/agent-core.exe`，用户机器**不需要 Python** |
-| 插件 jar | `target/workreport-intellij-plugin-2.4.9.jar` | 插件本体，不含 Core 可执行文件 |
+| 可安装 zip | `target/workreport-ai-assistant-3.0.0.zip` | 内置 `agent-core/agent-core.exe`，用户机器**不需要 Python** |
+| 插件 jar | `target/workreport-intellij-plugin-3.0.0.jar` | 插件本体，不含 Core 可执行文件 |
 | Core 可执行文件 | `core/dist/agent-core.exe` | 也可单独被 `AGENT_CORE_EXE` 指定 |
 
 只跑 `mvn package` 而不先构建 Core 时，zip 不含可执行文件，插件会回退到开发模式（需要 Python + `AGENT_CORE_HOME`）。
@@ -333,7 +333,7 @@ powershell -File scripts/build_native.ps1
 
 | job | 矩阵 | 内容 |
 |---|---|---|
-| `core` | Ubuntu + Windows × Python 3.9 / 3.12 | 单测 + 4 个协议冒烟 |
+| `core` | Ubuntu + Windows × Python 3.9 / 3.12 | 单测 + 7 个协议冒烟（tools / memory / mcp / subagent / command / todos / v3） |
 | `intellij` | Ubuntu + JDK 21 | `mvn -DskipTests compile` |
 | `vscode` | Node 18 + Python 3.11 | 编译 + `npm run smoke` |
 | `native` | Ubuntu / Windows | 编译 Rust 扩展，并以 `AGENT_CORE_EXPECT_RUST=1` 跑单测 |
@@ -345,17 +345,18 @@ powershell -File scripts/build_native.ps1
 
 | 项 | 当前值 |
 |---|---|
-| 插件版本 | 2.4.9 |
+| 插件版本 | 3.0.0 |
 | 目标平台（编译用） | `intellij.version = 261.25134.95`（2026.1） |
 | 安装区间 | `since-build=252` / `until-build=262.*`（2025.2 ~ 2026.2） |
 | Kotlin | `2.3.20-RC2`，必须与目标平台内置版本一致 |
 | VS Code | `^1.85.0` |
-| 验收基线 | Core 单测 **173 例**（跳过 1 个平台相关用例）、4 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过 |
+| 验收基线 | Core 单测 **241 例**（跳过 1 个平台相关用例）、7 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过 |
+| 性能基线 | 冷启动 343~398 ms、空闲 RSS 97.4~97.7 MB、单轮 20.6~22.1 ms、千条会话列表 105~110 ms（`core/scripts/bench_core.py`） |
 
 升级平台时 `pom.xml` 的 `intellij.version`、`kotlin.version` 与 `plugin.xml` 的 `since-build` /
 `until-build` 必须一起改；版本号规则与多版本测试方法见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
-### 版本演进（v2.0 → v2.4.9）
+### 版本演进（v2.0 → v3.0.0）
 
 | 版本 | 提交 | 主要变更 |
 |---|---|---|
@@ -376,6 +377,11 @@ powershell -File scripts/build_native.ps1
 | v2.4.7 | `43c3785` | 传输层异常写明阶段与端点，不再出现半截 `[错误:LLM_ERROR]` |
 | v2.4.8 | `9fb339e` | 上下文裁剪从 O(n²) 改为线性（150 轮 40 s → 0.27 s），会话内存上限 240 条 |
 | v2.4.9 | `d9df278` | 子代理角色化派发：`model` / `output` / `timeout_sec`、`tasks` 混合派发、角色清单注入、三层只读护栏 |
+| v2.4.10 | `1781f4e` | Core 版本号改为构建注入（`--version` / `core/hello.coreVersion`）；CI 触发分支对齐 `master` |
+| v2.5.0 | `914db69` | 上下文预算随模型窗口缩放、多轮用量汇总；传输层重试退避；日志落盘与轮转；设置页四项双端对齐 |
+| v2.6.0 | `e6f3b38` | `run_command` 终端工具（白名单 auto / 其余 confirm / 危险命令拒绝）与 `diagnostics`；`todo_write` + `chat/todos` 两端任务清单 |
+| v2.7.0 | `bba6051` | VS Code：行内补全、设置项补齐与一致性断言、SecretStorage 迁移、历史会话面板 |
+| v3.0.0 | 本次提交 | 记忆候选人工确认、会话全文检索、本地用量统计、性能基线、中英双语 UI、Marketplace `change-notes` |
 
 M1–M8 的从零落地集中在 `a49411f` ~ `47eafe6`；更早的 `bf89f58` 是重构前最后一次 CDN 下载修复。
 
@@ -386,6 +392,7 @@ M1–M8 的从零落地集中在 `a49411f` ~ `47eafe6`；更早的 `bf89f58` 是
 | 文档 | 内容 |
 |---|---|
 | [USER_GUIDE.md](USER_GUIDE.md) | 面向使用者的完整手册：安装、首次配置、面板、状态行、行内补全、语义索引、报告 Skill、MCP、子代理、FAQ |
+| [CHANGELOG.md](CHANGELOG.md) | 各版本变更（与 `plugin.xml` 的 `change-notes` 一致，发版时同步到 Marketplace） |
 | [docs/AGENT_REFACTOR_DETAILED_DESIGN.md](docs/AGENT_REFACTOR_DETAILED_DESIGN.md) | Agent 重构详设：分层、协议、工具、记忆、Skill、MCP、子代理逐项设计与 M1–M8 验收 |
 | [docs/ROADMAP_TO_3.0.md](docs/ROADMAP_TO_3.0.md) | 升级路线详设：v2.4.10 → v3.0.0 每个版本的改动位置、协议字段、兼容性与验收标准 |
 | [docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md) | 行内补全全链路（FIM 报文 / sanitize / 超时降级）与语义索引原理、调试手册 |

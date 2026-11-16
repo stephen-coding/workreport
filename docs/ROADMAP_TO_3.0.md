@@ -470,12 +470,36 @@ ToolDef(
 
 - CI 只记录、不 gate（避免机器差异导致假红）；连续两周超标再定门槛。
 
+基线实测（Windows 11 / Python 3.9 / 千条会话，三次运行取范围）：
+
+| 指标 | 实测 | 目标 |
+|---|---|---|
+| 冷启动 | 343 ~ 398 ms | < 3.0 s |
+| 空闲内存 RSS | 97.4 ~ 97.7 MB | < 120 MB |
+| 单轮延迟（mock provider） | 20.6 ~ 22.1 ms | < 300 ms |
+| 千条会话列表 | 105 ~ 110 ms | < 150 ms |
+| 首次建索引（info） | 77 ~ 86 ms | — |
+
+千条会话列表的达标来自两处改动：`SessionStore.list_sessions()` 用 8 线程并行读文件；
+首次建索引改用单连接批量写入（`SessionSearch.index_many`），并在 `bench_core.py` 里
+先等 `session/indexProgress` 的 `finished` 再测列表，避免把磁盘争用算进端点耗时。
+
 ### 7.5 国际化
 
 - 范围：仅 Shell UI 文案（IntelliJ `AgentBundle.properties` + `AgentBundle_en.properties`；
   VS Code `l10n` 或 `package.nls.json`）。
 - 不翻译：Core 的提示词、工具描述（模型侧中文可接受，且翻译会破坏 prompt 稳定性）。
 - **验收**：IDE 语言切英文后，面板按钮/状态行/设置页标签为英文，对话内容不受影响。
+
+实现（3.0.0）：
+
+- IntelliJ：`com.workreport.agent.AgentBundle`（`DynamicBundle`）+
+  `resources/messages/AgentBundle.properties`（中文基线）/ `AgentBundle_en.properties`（英文），
+  共 117 个键；`plugin.xml` 用 `<resource-bundle>` 让动作文案与设置页标题也随语言切换。
+- 覆盖范围：面板按钮与状态行（`AgentChatPanel`）、输入区与菜单（`ChatComposer`）、
+  会话状态（`ChatSessionPanel`）、任务清单（`TodoStrip`）、设置页表头/分组/字段标签。
+- 未覆盖（刻意保留中文）：设置页括号里的长说明与 tooltip、Core 的提示词与工具描述。
+- VS Code：`panel.ts` 的 Webview 文案仍为中文，等其单独上架前再补 `package.nls.json`。
 
 ### 7.6 本地使用统计（D4）
 
@@ -509,6 +533,8 @@ ToolDef(
 | 方法 | 负载 | 引入版本 |
 |---|---|---|
 | `chat/todos` | `taskId`, `todos[]` | 2.6.0 |
+| `memory/pendingChanged` | `count` | 3.0.0 |
+| `session/indexProgress` | `done`, `total`, `changed`, `finished` | 3.0.0 |
 
 ### 8.3 字段变更（向后兼容，只增不改）
 
@@ -624,10 +650,10 @@ ToolDef(
 
 ### v3.0.0
 
-- [ ] 记忆候选生成与确认流程（3 个 RPC + UI）
-- [ ] 会话 FTS + `session/search` + 搜索框
-- [ ] Marketplace 上架与 `change-notes`
-- [ ] `scripts/bench_core.py` + 基线数据
-- [ ] i18n（Shell 文案）
-- [ ] `usage.jsonl` 本地统计与 `usage/report`
-- [ ] 全量回归 + Release 说明
+- [x] 记忆候选生成与确认流程（3 个 RPC + UI）
+- [x] 会话 FTS + `session/search` + 搜索框
+- [x] Marketplace 上架与 `change-notes`（`change-notes` 已写入；上传审核需维护者在 Marketplace 页面操作）
+- [x] `scripts/bench_core.py` + 基线数据
+- [x] i18n（Shell 文案：按钮/状态行/设置页标签，见 §7.5）
+- [x] `usage.jsonl` 本地统计与 `usage/report`
+- [x] 全量回归 + Release 说明（241 例单测 OK/跳过 1 + 7 个协议冒烟 + IntelliJ 编译 + VS Code 编译/RPC 冒烟全绿；Release 说明见 `CHANGELOG.md`，发版时直接粘贴）

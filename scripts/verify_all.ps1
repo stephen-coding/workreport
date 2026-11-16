@@ -39,6 +39,9 @@ try {
     Invoke-Step "smoke memory" { python scripts/smoke_memory.py }
     Invoke-Step "smoke mcp" { python scripts/smoke_mcp.py }
     Invoke-Step "smoke subagent" { python scripts/smoke_subagent.py }
+    Invoke-Step "smoke command" { python scripts/smoke_command.py }
+    Invoke-Step "smoke todos" { python scripts/smoke_todos.py }
+    Invoke-Step "smoke v3" { python scripts/smoke_v3.py }
 }
 finally {
     Pop-Location

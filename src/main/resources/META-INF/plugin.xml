@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.workreport.ai-assistant</id>
     <name>Agent Coding Assistant</name>
-    <version>2.4.9</version>
+    <version>3.0.0</version>
     <vendor>WeeklyReport</vendor>
     <description><![CDATA[
         AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
@@ -24,6 +24,32 @@
     <!-- Git4Idea 插件依赖，用于采集 Git 提交日志 -->
     <depends>Git4Idea</depends>
 
+    <!-- Shell UI strings live in one bundle so an English IDE gets English buttons/status lines.
+         Core prompts and tool descriptions stay in Chinese on purpose. -->
+    <!-- Shell 界面文案集中在一个 bundle：英文 IDE 自动拿到英文按钮与状态行。
+         Core 的提示词与工具描述刻意保持中文。 -->
+    <resource-bundle>messages.AgentBundle</resource-bundle>
+
+    <change-notes><![CDATA[
+<h3>3.0.0</h3>
+<ul>
+  <li>Memory candidates: preferences and corrections found in the chat wait in a review list
+      until you confirm, edit or ignore them.</li>
+  <li>Full-text search over stored conversations (title and body) with a search box in the
+      history popup; hits are highlighted.</li>
+  <li>Local usage statistics: one JSONL line per task in <code>~/.agent/logs/usage.jsonl</code>,
+      rotated at 10 MB; aggregated on demand, never uploaded.</li>
+  <li>Terminal tool (<code>run_command</code>) with a prefix allow-list, per-call confirmation and
+      a hard deny list for destructive commands.</li>
+  <li><code>diagnostics</code> and <code>todo_write</code> tools; the checklist is rendered above the
+      transcript and stored with the conversation.</li>
+  <li>Context budget setting, retry/backoff for transport errors, log rotation.</li>
+  <li>English UI: buttons, status lines and settings labels follow the IDE language.</li>
+</ul>
+<p>中文说明：记忆候选人工确认、历史会话全文检索、本地用量统计、终端工具与诊断工具、
+任务清单、上下文预算、重试退避与日志轮转；界面按钮/状态行/设置页标签支持中英双语。</p>
+]]></change-notes>
+
     <extensions defaultExtensionNs="com.intellij">
         <!-- Tool Window: agent chat panel in the bottom bar -->
         <!-- 工具窗口：底部 Agent 聊天面板 -->
@@ -37,7 +63,6 @@
         <applicationConfigurable
                 instance="com.workreport.plugin.settings.ReportSettingsConfigurable"
                 id="com.workreport.settings"
-                displayName="Agent Coding Assistant（模型设置）"
                 parentId="tools"/>
 
         <!-- Editor inline completion (ghost text / fill-in-the-middle) -->
@@ -58,8 +83,8 @@
     <actions>
         <action id="AgentCoder.OpenSettings"
                 class="com.workreport.agent.actions.OpenSettingsAction"
-                text="模型设置…"
-                description="打开 Agent Coding Assistant 设置页：模型列表、MCP 服务、Embedding 模型">
+                text="%action.settings.text"
+                description="%action.settings.description">
             <add-to-group group-id="ToolsMenu" anchor="first"/>
         </action>
 
@@ -67,8 +92,8 @@
         <!-- 旧报告入口：向 Agent 面板发送“生成今天的日报”指令 -->
         <action id="AgentCoder.GenerateReport"
                 class="com.workreport.agent.actions.GenerateReportAction"
-                text="生成今日日报"
-                description="通过 Agent 的内置日报 Skill 生成今天的日报">
+                text="%action.report.text"
+                description="%action.report.description">
             <add-to-group group-id="ToolsMenu" anchor="after" relative-to-action="AgentCoder.OpenSettings"/>
         </action>
     </actions>

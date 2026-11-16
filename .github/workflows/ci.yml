@@ -31,6 +31,9 @@ jobs:
           python scripts/smoke_memory.py
           python scripts/smoke_mcp.py
           python scripts/smoke_subagent.py
+          python scripts/smoke_command.py
+          python scripts/smoke_todos.py
+          python scripts/smoke_v3.py
         shell: bash
 
   intellij:
@@ -133,7 +136,11 @@ jobs:
         run: |
           $out = ./dist/agent-core.exe --version
           Write-Host $out
-          if ($out -notmatch '^agent-core \d+\.\d+\.\d+') { throw "unexpected version output: $out" }
+          if ($out -notmatch '^agent-core (\d+\.\d+\.\d+)') { throw "unexpected version output: $out" }
+          # The bundled Core must report the plugin version from plugin.xml (ROADMAP §7.3).
+          $xml = [xml]([System.IO.File]::ReadAllText("$PWD/../src/main/resources/META-INF/plugin.xml", [System.Text.Encoding]::UTF8))
+          $expected = $xml.idea-plugin.version
+          if ($Matches[1] -ne $expected) { throw "core $($Matches[1]) != plugin $expected" }
       - name: Accelerator status
         working-directory: core
         run: ./dist/agent-core.exe --native-info
