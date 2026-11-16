@@ -39,7 +39,7 @@ Shell 与 Core 通过 **JSON Lines RPC（stdio）** 通信：Shell 发请求，C
 | 工具循环 | 一轮 = 一次模型调用 + 该轮全部工具；默认预算 40 轮（5~300 可调） | `agent/loop.py` |
 | 并行会话 | 最多 8 个标签各自独立 `sessionId` / `taskId`，事件按 `taskId` 路由；写操作在项目级串行 | `AgentChatPanel` / `ProjectWriteGate` |
 | 会话持久化 | 每个会话一个 JSON，Core 重启后按需恢复；历史列表可回放、续聊、删除并回收磁盘 | `agent/store.py` / `session/*` RPC |
-| 工具系统 | 9 个 Shell 侧工具 + 9 个 Core 内置工具，按 `auto/preview/confirm` 分级授权 | `tools/remote.py` / `agent/permissions.py` |
+| 工具系统 | 11 个 Shell 侧工具 + 10 个 Core 内置工具，按 `auto/preview/confirm` 分级授权 | `tools/remote.py` / `agent/permissions.py` |
 | 编辑与回退 | 写文件前 diff 确认卡；每次写前做内存快照，`revert_file` 可逐步回退 | `EditTools` / `FileSnapshots` |
 | 记忆 | SQLite FTS5 检索 + Markdown 镜像；启动时把 overview 注入 system prompt | `memory/` |
 | Skill | `SKILL.md` 技能包，内置日报/周报/季报/年报四个报告技能，可被用户级/项目级覆盖 | `skills/` |
@@ -90,7 +90,7 @@ Shell 与 Core 通过 **JSON Lines RPC（stdio）** 通信：Shell 发请求，C
 |---|---|---|
 | Shell → Core | 请求 | `ping`、`chat/start`、`tool/result`、`agent/confirmResult`、`inline/complete`、`index/build`、`index/status`、`session/list`、`session/get`、`session/delete` |
 | Shell → Core | 通知 | `ide/hello`（握手：协议版本 + IDE 类型）、`settings/update`（模型/端点/MCP 变更即时下发）、`chat/cancel` |
-| Core → Shell | 通知 | `core/hello`、`agent/ping`、`chat/token`、`chat/toolStart`、`chat/toolEnd`、`chat/notice`、`chat/subagent`、`chat/finish`、`chat/error`、`index/progress`、`tool/invoke`（Core 请求 Shell 执行工具）、`agent/confirm`（弹确认） |
+| Core → Shell | 通知 | `core/hello`、`agent/ping`、`chat/token`、`chat/toolStart`、`chat/toolEnd`、`chat/notice`、`chat/subagent`、`chat/todos`、`chat/finish`、`chat/error`、`index/progress`、`tool/invoke`（Core 请求 Shell 执行工具）、`agent/confirm`（弹确认） |
 
 帧格式是一行一个 JSON 对象：请求 `{id, method, params, ts}`，响应 `{id, ok, result}` 或
 `{id, ok, error:{code, message}}`；通知省略 `id`。项目根随 `chat/start` 的 `contextSnapshot.projectRoot`
@@ -207,15 +207,19 @@ powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 扩展，�
 - 底部 `AgentCoder` 工具窗口；顶部标签栏 `+` 新建会话（最多 8 个），`×` 关闭后右侧标签左移补位，会话编号归还并优先复用最小空号。
 - 输入区支持多行（`Enter` 发送 / `Shift+Enter` 换行）、拖动分隔条调高、附件内联文本、模型下拉、自动执行与停止。
 - 工具与子代理进度以状态行插入对话流：`[工具] read_file 执行中…`、`[子代理] bug-hunter-1·qwen2.5-7b 完成（12.4s）`、`[提示] …`（非致命降级）、`[排队] …`（写操作排队）。
+- 多步任务会在对话区上方显示任务清单（模型经 `todo_write` 维护，`☐ / ◐ / ☑`），全部完成后自动折叠；清单随会话落盘，重开历史仍能看到。
 - 「历史」按钮列出本机保存的会话；关闭标签不等于删除历史，删除时才取消在跑任务并回收磁盘。
 
 ### 权限与编辑
 
 | 权限 | 工具 | 行为 |
 |---|---|---|
-| `auto` | `read_file`、`list_dir`、`search_code`、`git_log`、`git_diff`、`revert_file` | 直接执行 |
+| `auto` | `read_file`、`list_dir`、`search_code`、`git_log`、`git_diff`、`revert_file`、`diagnostics`、`todo_write`、白名单内的 `run_command` | 直接执行 |
 | `preview` | `write_file`、`edit_file` | 先显示 diff 确认卡；勾选「自动执行」后跳过 |
-| `confirm` | `delete_file`、MCP 工具（服务器可配 `auto_approve`） | 每次询问；用户连续拒绝 3 次即终止当前任务 |
+| `confirm` | `delete_file`、白名单外的 `run_command`、MCP 工具（服务器可配 `auto_approve`） | 每次询问；用户连续拒绝 3 次即终止当前任务 |
+
+终端命令的判定在 Core（`agent/commands.py`）：白名单前缀免确认，危险命令（`rm -rf`、`git push`、管道进解释器等）
+直接拒绝并告知模型改走 `delete_file`，其余命令弹确认。
 
 所有写操作先做内存快照；`revert_file` 按“最后一次修改”逐步回退。并行会话的写操作经
 `ProjectWriteGate` 在项目级串行，读与搜索不受影响。
@@ -293,9 +297,11 @@ timeout_sec: 200
 | `edit_file` | 精确文本替换，要求唯一匹配 | preview | 30 s |
 | `delete_file` | 删除文件 | confirm | 30 s |
 | `revert_file` | 按快照回退本会话对该文件的最后一次修改 | auto | 15 s |
+| `diagnostics` | 返回项目内的编译错误与告警（最多 50 条，可按路径过滤） | auto | 30 s |
+| `run_command` | 执行终端命令，输出截断到 8000 字符 | 白名单 auto，其余 confirm | 130 s |
 
 **Core 内置（本地执行）**：`semantic_search`、`build_index`、`memory_recall`、`memory_save`、
-`memory_delete`、`skill_list`、`skill_load`、`subagent_list`、`subagent_dispatch`。
+`memory_delete`、`skill_list`、`skill_load`、`subagent_list`、`subagent_dispatch`、`todo_write`。
 MCP 工具在运行时以 `mcp__<server>__<tool>` 动态注册。
 
 ---

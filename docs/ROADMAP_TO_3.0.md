@@ -610,9 +610,9 @@ ToolDef(
 - [x] 危险命令单测 + 白名单单测
 - [x] `smoke_command.py`
 - [x] `diagnostics` 两端实现
-- [ ] `todo_write` + `chat/todos` + 会话落盘 + 两端 UI
-- [ ] `SYSTEM_PROMPT` 计划条目
-- [ ] 四个端到端剧本通过
+- [x] `todo_write` + `chat/todos` + 会话落盘 + 两端 UI
+- [x] `SYSTEM_PROMPT` 计划条目
+- [ ] 四个端到端剧本通过（自动化已覆盖 §5.1 剧本 1/3/4；剧本 2 需真实模型手工执行）
 
 ### v2.7.0
 
