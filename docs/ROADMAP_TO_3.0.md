@@ -609,7 +609,7 @@ ToolDef(
 - [x] `run_command` 定义 + 权限判定 + 两端实现
 - [x] 危险命令单测 + 白名单单测
 - [x] `smoke_command.py`
-- [ ] `diagnostics` 两端实现
+- [x] `diagnostics` 两端实现
 - [ ] `todo_write` + `chat/todos` + 会话落盘 + 两端 UI
 - [ ] `SYSTEM_PROMPT` 计划条目
 - [ ] 四个端到端剧本通过

@@ -21,7 +21,17 @@ const MAX_COMMAND_TIMEOUT_SEC = 600;
 const MAX_OUTPUT_CHARS = 8000;
 const HEAD_OUTPUT_CHARS = 3200;
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
+const MAX_DIAGNOSTICS = 50;
 const SKIP_DIRS = new Set([".git", "node_modules", "target", "dist", "out", "build", ".idea"]);
+
+interface DiagnosticItem {
+  file: string;
+  line: number;
+  column: number;
+  severity: string;
+  message: string;
+  source: string;
+}
 
 interface ToolRequest {
   toolCallId?: string;
@@ -77,6 +87,8 @@ export class ToolRunner {
         return this.revertFile(args);
       case "run_command":
         return this.runCommand(args, permission);
+      case "diagnostics":
+        return this.diagnostics(args);
       default:
         throw new Error(`未知工具: ${toolName}`);
     }
@@ -391,6 +403,53 @@ export class ToolRunner {
       }
     }
     return this.exec(command, cwd, timeoutSec);
+  }
+
+  // -------------------------------------------------------------- diagnostics
+
+  private async diagnostics(args: Record<string, unknown>): Promise<string> {
+    const root = resolve(this.projectRoot);
+    const filter = args.path ? this.resolvePath(args.path) : root;
+    const severityArg = this.stringArg(args, "severity").toLowerCase();
+    const items: DiagnosticItem[] = [];
+    for (const [uri, list] of vscode.languages.getDiagnostics()) {
+      if (uri.scheme !== "file") {
+        continue;
+      }
+      const fsPath = uri.fsPath;
+      if (fsPath !== root && !fsPath.startsWith(root + sep)) {
+        continue;
+      }
+      if (fsPath !== filter && !fsPath.startsWith(filter + sep)) {
+        continue;
+      }
+      const label = this.relativeLabel(fsPath);
+      for (const diagnostic of list) {
+        const severity = diagnostic.severity === vscode.DiagnosticSeverity.Error
+          ? "error"
+          : diagnostic.severity === vscode.DiagnosticSeverity.Warning
+          ? "warning"
+          : null;
+        // Info / hint would drown out the real problems.
+        // info / hint 不进结果，避免淡化真正的问题。
+        if (!severity || (severityArg === "error" && severity !== "error")) {
+          continue;
+        }
+        items.push({
+          file: label,
+          line: diagnostic.range.start.line + 1,
+          column: diagnostic.range.start.character + 1,
+          severity,
+          message: diagnostic.message,
+          source: diagnostic.source ?? "vscode",
+        });
+      }
+    }
+    items.sort((left, right) =>
+      left.file === right.file ? left.line - right.line : left.file.localeCompare(right.file));
+    const truncated = items.length > MAX_DIAGNOSTICS;
+    const kept = truncated ? items.slice(0, MAX_DIAGNOSTICS) : items;
+    return JSON.stringify({ count: kept.length, truncated, items: kept });
   }
 
   private exec(command: string, cwd: string, timeoutSec: number): Promise<string> {

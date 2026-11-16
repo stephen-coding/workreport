@@ -131,6 +131,23 @@ SHELL_TOOLS: List[ToolDef] = [
         timeout_sec=15,
     ),
     ToolDef(
+        name="diagnostics",
+        description=(
+            "返回项目中当前的编译错误与检查告警（可选按路径过滤），最多 50 条。"
+            "内容为 JSON：{count, truncated, items:[{file,line,column,severity,message,source}]}。"
+            "只覆盖 IDE 已分析过的文件；修改代码后用它确认问题是否消失。"
+        ),
+        parameters=_schema(
+            {
+                "path": {"type": "string", "description": "文件或目录（可选，缺省为整个项目）"},
+                "severity": {"type": "string", "enum": ["error", "warning", "all"],
+                             "description": "过滤级别，默认 all（error + warning）"},
+            }
+        ),
+        permission=Permission.AUTO,
+        timeout_sec=30,
+    ),
+    ToolDef(
         name="run_command",
         description=(
             "在项目目录执行一条 shell 命令并返回输出（默认 120 秒超时）。"

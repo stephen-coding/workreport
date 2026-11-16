@@ -30,6 +30,7 @@ public final class ToolDispatcher {
     private final GitTools gitTools;
     private final EditTools editTools;
     private final CommandTools commandTools;
+    private final DiagnosticsTools diagnosticsTools;
 
     public ToolDispatcher(Project project) {
         this.writeGate = ProjectWriteGate.getInstance(project);
@@ -38,6 +39,7 @@ public final class ToolDispatcher {
         this.gitTools = new GitTools(project);
         this.editTools = new EditTools(project, fileTools);
         this.commandTools = new CommandTools(project, fileTools);
+        this.diagnosticsTools = new DiagnosticsTools(project, fileTools);
     }
 
     public void onToolInvoke(JsonObject params, JsonRpcConnection connection) {
@@ -115,6 +117,8 @@ public final class ToolDispatcher {
                 return editTools.revertFile(args);
             case "run_command":
                 return commandTools.runCommand(args, needsApproval);
+            case "diagnostics":
+                return diagnosticsTools.diagnostics(args);
             default:
                 return ToolResult.fail("未知工具: " + toolName);
         }
