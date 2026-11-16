@@ -63,6 +63,9 @@ jobs:
         run: |
           npm install --no-audit --no-fund
           npm run compile
+      - name: Settings parity
+        working-directory: vscode
+        run: npm run check:settings
       - name: RPC smoke
         working-directory: vscode
         run: npm run smoke

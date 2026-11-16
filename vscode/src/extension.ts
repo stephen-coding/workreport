@@ -2,12 +2,16 @@
 // VS Code 入口：注册聊天视图、命令与配置同步。
 
 import * as vscode from "vscode";
+import { InlineCompletionProvider } from "./inline";
 import { ChatPanel } from "./panel";
 import { CoreSession } from "./session";
 
 export function activate(context: vscode.ExtensionContext): void {
   const panel = new ChatPanel(context.extensionUri);
   const session = new CoreSession(context, panel);
+  // Ghost text: reads the live connection, never starts one.
+  // 行内补全只读现有连接，不自行拉起 Core。
+  const inline = new InlineCompletionProvider(() => session.connectionOrNull());
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatPanel.viewId, panel, {
@@ -25,6 +29,7 @@ export function activate(context: vscode.ExtensionContext): void {
         session.pushSettings();
       }
     }),
+    inline,
     { dispose: () => session.dispose() },
   );
 

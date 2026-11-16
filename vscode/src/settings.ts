@@ -20,7 +20,10 @@ function detectProvider(configured: string, baseUrl: string): string {
   return provider === "openai_compat" ? "openai_compat" : "ollama";
 }
 
-export function collectSettings(): Record<string, unknown> {
+// The key lives outside the settings (SecretStorage / env, see secrets.ts), so it
+// is passed in rather than read here.
+// Key 不在设置里读（见 secrets.ts），由调用方传入。
+export function collectSettings(apiKey: string): Record<string, unknown> {
   const config = vscode.workspace.getConfiguration("agentCoder");
   const configured = config.get<string>("provider", "ollama");
   const baseUrl = config.get<string>("baseUrl", "http://localhost:11434");
@@ -28,6 +31,9 @@ export function collectSettings(): Record<string, unknown> {
     provider: detectProvider(configured, baseUrl),
     base_url: baseUrl,
     model: config.get<string>("model", "qwen2.5:7b"),
+    // Same field set as the IntelliJ pushSettings payload (§4.5).
+    // 与 IntelliJ pushSettings 下发同一套字段（§4.5）。
+    embedding_model: config.get<string>("embeddingModel", "") ?? "",
     max_iterations: config.get<number>("maxIterations", 40),
     context_window: config.get<number>("contextWindow", 32000),
     temperature: config.get<number>("temperature", 0.2),
@@ -36,7 +42,6 @@ export function collectSettings(): Record<string, unknown> {
     subagent_concurrency: config.get<number>("subagentConcurrency", 3),
   };
 
-  const apiKey = config.get<string>("apiKey", "") || process.env.OPENAI_API_KEY || "";
   if (apiKey) {
     settings.api_key = apiKey;
   }

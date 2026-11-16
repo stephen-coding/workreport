@@ -6,9 +6,10 @@ import { homedir } from "os";
 import { join } from "path";
 import * as vscode from "vscode";
 import { locateCoreExe, locateCoreHome, locatePython } from "./locator";
-import { ChatPanel } from "./panel";
+import { ChatPanel, HistoryEntry, TodoItem } from "./panel";
 import { RpcConnection, RpcMessage } from "./rpc";
 import { collectSettings } from "./settings";
+import { ensureApiKey } from "./secrets";
 import { ToolRunner } from "./tools";
 
 export class CoreSession {
@@ -17,23 +18,54 @@ export class CoreSession {
   private readonly projectRoot: string;
   private readonly projectId: string;
   private readonly toolRunner: ToolRunner;
+  // Read from SecretStorage / env once, then reused for every settings push.
+  // 启动时从加密存储 / 环境变量读一次，之后每次下发复用。
+  private apiKey = "";
+  private readonly keyReady: Promise<void>;
+  // Conversation currently shown; new tabs (and old files) keep their own id.
+  // 当前显示的会话 id；新建会话或重开历史时会更换。
+  private sessionId: string;
 
   constructor(private readonly context: vscode.ExtensionContext,
               private readonly panel: ChatPanel) {
     this.projectRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
     this.projectId = createHash("sha1").update(this.projectRoot).digest("hex").slice(0, 12);
+    this.sessionId = this.projectId;
     this.toolRunner = new ToolRunner(this.projectRoot);
+    this.keyReady = this.loadApiKey();
     this.panel.setHandlers({
       onSend: (text) => void this.send(text),
       onStop: () => this.stop(),
       onConfirm: (id, approved) => this.replyConfirm(id, approved),
+      onHistoryList: () => void this.loadHistory(),
+      onHistoryOpen: (id) => void this.openSession(id),
+      onHistoryDelete: (id) => void this.deleteSession(id),
+      onNewSession: () => this.newSession(),
     });
+  }
+
+  // Migrate a plaintext key on first start; a broken SecretStorage must never
+  // block the chat, so failures fall back to the environment variable.
+  // 首次启动迁移明文 Key；加密存储不可用时退回环境变量，不阻断对话。
+  private async loadApiKey(): Promise<void> {
+    try {
+      const { key, migrated } = await ensureApiKey(this.context);
+      this.apiKey = key;
+      if (migrated) {
+        this.panel.setStatus("已把 API Key 迁移到安全存储");
+      }
+    } catch (error) {
+      this.apiKey = (process.env.OPENAI_API_KEY ?? "").trim();
+      const message = error instanceof Error ? error.message : String(error);
+      this.panel.appendSystem(`[提示] API Key 读取失败（${message}），已退回环境变量`);
+    }
   }
 
   async ensureStarted(): Promise<void> {
     if (this.connection?.isAlive()) {
       return;
     }
+    await this.keyReady;
     const executable = locateCoreExe(this.context);
     const python = locatePython();
     const coreHome = locateCoreHome(this.context);
@@ -64,7 +96,7 @@ export class CoreSession {
     });
     this.connection = connection;
     connection.notify("ide/hello", { protocolVersion: "1.0", ide: "vscode" });
-    connection.notify("settings/update", collectSettings());
+    connection.notify("settings/update", collectSettings(this.apiKey));
     this.panel.setStatus("正在启动 Agent Core...");
   }
 
@@ -87,7 +119,7 @@ export class CoreSession {
     this.panel.setStatus("思考中...");
     try {
       const response = await connection.request("chat/start", {
-        sessionId: this.projectId,
+        sessionId: this.sessionId,
         message: text,
         contextSnapshot: this.snapshot(),
       });
@@ -108,7 +140,118 @@ export class CoreSession {
   }
 
   pushSettings(): void {
-    this.connection?.notify("settings/update", collectSettings());
+    void this.keyReady.then(() => {
+      this.connection?.notify("settings/update", collectSettings(this.apiKey));
+    });
+  }
+
+  // Live connection for callers that only read (inline completion); undefined
+  // while the Core is down keeps typing free of prompts.
+  // 供只读调用方（行内补全）使用的连接；Core 未就绪时返回 undefined，输入不受影响。
+  connectionOrNull(): RpcConnection | undefined {
+    return this.connection?.isAlive() ? this.connection : undefined;
+  }
+
+  // --------------------------------------------------------------- history
+
+  // List stored conversations; starts the Core first when it is not running yet.
+  // 历史列表：Core 未启动时先启动，再取列表。
+  private async loadHistory(): Promise<void> {
+    const connection = await this.connected();
+    if (!connection) {
+      return;
+    }
+    try {
+      const response = await connection.request("session/list", {});
+      this.panel.showHistory(toEntries(response.result?.sessions));
+    } catch (error) {
+      this.panel.appendSystem(`[错误] 读取历史失败：${describe(error)}`);
+    }
+  }
+
+  // Replay one stored conversation and keep talking to it from now on.
+  // 重放一条历史会话，并把后续对话接到这条会话上。
+  private async openSession(id: string): Promise<void> {
+    if (!id) {
+      return;
+    }
+    if (this.currentTaskId) {
+      this.panel.appendSystem("\n  [提示] 当前任务还在跑，先停止再切换会话。");
+      return;
+    }
+    const connection = await this.connected();
+    if (!connection) {
+      return;
+    }
+    try {
+      const response = await connection.request("session/get", { sessionId: id });
+      const result = response.result ?? {};
+      this.sessionId = id;
+      this.panel.reset();
+      for (const item of asArray(result.messages)) {
+        const text = String(item.content ?? "");
+        if (text.trim()) {
+          this.panel.appendHistory(String(item.role ?? ""), text);
+        }
+      }
+      this.panel.setTodos(toTodos(result.todos));
+      this.panel.appendSystem("\n  已载入历史会话（已保存在本机），可以接着聊。");
+      this.panel.setStatus("就绪");
+    } catch (error) {
+      this.panel.appendSystem(`[错误] 打开历史会话失败：${describe(error)}`);
+    }
+  }
+
+  private newSession(): void {
+    if (this.currentTaskId) {
+      this.panel.appendSystem("\n  [提示] 当前任务还在跑，先停止再新建会话。");
+      return;
+    }
+    // The timestamp keeps a new conversation from overwriting an old file.
+    // 带时间戳的新 id，避免新建会话覆盖已有历史。
+    this.sessionId = `${this.projectId}#${Date.now().toString(36)}`;
+    this.panel.reset();
+    this.panel.setStatus("新会话（不继承其它会话的上下文）");
+  }
+
+  private async deleteSession(id: string): Promise<void> {
+    if (!id) {
+      return;
+    }
+    const answer = await vscode.window.showWarningMessage(
+      "删除这条历史会话？本机文件会一并删除，无法恢复。", { modal: true }, "删除");
+    if (answer !== "删除") {
+      return;
+    }
+    const connection = await this.connected();
+    if (!connection) {
+      return;
+    }
+    try {
+      const response = await connection.request("session/delete", { sessionId: id });
+      const freed = Number(response.result?.freedBytes ?? 0);
+      if (id === this.sessionId) {
+        this.newSession();
+      }
+      // Say how much disk the delete actually reclaimed.
+      // 告诉用户这次删除真正释放了多少磁盘。
+      this.panel.setStatus(`已删除历史会话${freed > 0 ? `（释放 ${formatSize(freed)}）` : ""}`);
+      await this.loadHistory();
+    } catch (error) {
+      this.panel.appendSystem(`[错误] 删除历史会话失败：${describe(error)}`);
+    }
+  }
+
+  // Shared "start if needed, then hand over the connection" step.
+  // 历史操作共用：必要时启动 Core，再把连接交给调用方。
+  private async connected(): Promise<RpcConnection | undefined> {
+    try {
+      await this.ensureStarted();
+    } catch (error) {
+      this.panel.appendSystem(`[错误] ${describe(error)}`);
+      return undefined;
+    }
+    return this.connection;
   }
 
   async restart(): Promise<void> {
@@ -182,11 +325,7 @@ export class CoreSession {
       case "chat/todos": {
         // The Core sends the whole checklist; render it verbatim.
         // Core 下发整张清单，这里直接渲染。
-        const raw = Array.isArray(params.todos) ? params.todos : [];
-        this.panel.setTodos(raw.map((item) => {
-          const todo = (item ?? {}) as Record<string, unknown>;
-          return { content: String(todo.content ?? ""), status: String(todo.status ?? "pending") };
-        }));
+        this.panel.setTodos(toTodos(params.todos));
         break;
       }
       case "tool/invoke":
@@ -243,4 +382,45 @@ export class CoreSession {
 
 function formatTokens(value: number): string {
   return value < 1000 ? String(value) : `${(value / 1000).toFixed(1)}k`;
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function asArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value as Array<Record<string, unknown>> : [];
+}
+
+// The Core owns the shape; the Shell only tolerates missing fields.
+// 结构由 Core 定义，Shell 只容忍缺失字段。
+function toTodos(value: unknown): TodoItem[] {
+  return asArray(value)
+    .map((item) => ({
+      content: String(item.content ?? ""),
+      status: String(item.status ?? "pending"),
+    }))
+    .filter((todo) => todo.content.length > 0);
+}
+
+function toEntries(value: unknown): HistoryEntry[] {
+  return asArray(value)
+    .map((item) => ({
+      id: String(item.id ?? ""),
+      title: String(item.title ?? ""),
+      preview: String(item.preview ?? ""),
+      messageCount: Number(item.messageCount ?? 0),
+      updatedAt: Number(item.updatedAt ?? 0),
+    }))
+    .filter((entry) => entry.id.length > 0);
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

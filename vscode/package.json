@@ -112,6 +112,11 @@
           "default": 4096,
           "description": "单次回复最大输出 tokens"
         },
+        "agentCoder.embeddingModel": {
+          "type": "string",
+          "default": "",
+          "description": "语义索引使用的 embedding 模型（留空则沿用对话模型端点）"
+        },
         "agentCoder.autoAcceptEdits": {
           "type": "boolean",
           "default": false,
@@ -124,6 +129,11 @@
           "items": {
             "type": "string"
           }
+        },
+        "agentCoder.inlineCompletion.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "停笔 300ms 后在光标处显示行内补全（ghost text）；需要 Core 已启动"
         },
         "agentCoder.mcpServers": {
           "type": "array",
@@ -140,6 +150,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "smoke": "node scripts/smoke-rpc.js",
+    "check:settings": "node scripts/check-settings.js",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
