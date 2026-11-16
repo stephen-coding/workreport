@@ -616,11 +616,11 @@ ToolDef(
 
 ### v2.7.0
 
-- [ ] `vscode/src/inline.ts`
-- [ ] 设置项补齐与 `settings/update` 一致性断言
-- [ ] SecretStorage 迁移
-- [ ] 历史会话 UI
-- [ ] 能力矩阵核对表归档到 `vscode/README.md`
+- [x] `vscode/src/inline.ts`
+- [x] 设置项补齐与 `settings/update` 一致性断言
+- [x] SecretStorage 迁移
+- [x] 历史会话 UI
+- [x] 能力矩阵核对表归档到 `vscode/README.md`
 
 ### v3.0.0
 

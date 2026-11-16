@@ -278,7 +278,7 @@ timeout_sec: 200
 | 记忆镜像 | `<项目>/.agent/memories/*.md`（与全局 `~/.agent/memories`） |
 | 用户级 Skill | `~/.agent/skills/<name>/SKILL.md` |
 | 项目级 Skill / MCP | `<项目>/.agent/skills/`、`<项目>/.agent/mcp.json`（优先于设置页 JSON） |
-| API Key | IntelliJ PasswordSafe（按模型名分开存储）；VS Code 存在扩展设置里 |
+| API Key | IntelliJ PasswordSafe（按模型名分开存储）；VS Code SecretStorage（首次启动自动迁移，环境变量兜底） |
 
 ---
 

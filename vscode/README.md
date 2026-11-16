@@ -11,6 +11,11 @@ and the Core injects the role catalog into the main agent's prompt — adding a
 `SUBAGENT.md` needs no shell change. Progress lines show role, model and duration,
 e.g. `[子代理] bug-hunter-1·qwen2.5-7b 完成（12.4s）`.
 
+Inline (ghost text) completion is on by default: 300 ms after you stop typing the
+caret shows the Core's fill-in-the-middle answer; `Tab` accepts, `Esc` drops it.
+Nothing is requested for files over 512 KB, binary documents, or when the Core is
+not running, so typing never blocks.
+
 ## Requirements
 
 - Python 3.9+ (or a packaged `agent-core` executable, see below)
@@ -23,6 +28,7 @@ e.g. `[子代理] bug-hunter-1·qwen2.5-7b 完成（12.4s）`.
 cd vscode
 npm install
 npm run compile
+npm run check:settings   # both shells must push the same settings/update fields
 # press F5 in VS Code with this folder open, or:
 npm run smoke        # boots the real Core and runs one chat round
 ```
@@ -36,11 +42,17 @@ npm run smoke        # boots the real Core and runs one chat round
 | `agentCoder.provider` | `ollama` | `ollama` or `openai_compat` |
 | `agentCoder.baseUrl` | `http://localhost:11434` | Ollama or OpenAI-compatible endpoint |
 | `agentCoder.model` | `qwen2.5:7b` | Model name |
-| `agentCoder.apiKey` | empty | Cloud API key (prefer `OPENAI_API_KEY`) |
-| `agentCoder.maxIterations` | 40 | Tool loop budget per task (5~300); the Core keeps a history list that this shell does not render yet |
+| `agentCoder.embeddingModel` | empty | Embedding model for the semantic index |
+| `agentCoder.apiKey` | empty | **Migrated to SecretStorage on first start**; the encrypted value wins, then `OPENAI_API_KEY` |
+| `agentCoder.maxIterations` | 40 | Tool loop budget per task (5~300) |
+| `agentCoder.contextWindow` | 32000 | Model context window in tokens (4000~200000); history budget is 75% of it |
+| `agentCoder.temperature` | 0.2 | Sampling temperature |
+| `agentCoder.maxTokens` | 4096 | Max output per reply |
 | `agentCoder.toolConcurrency` | 4 | Parallel tool calls |
 | `agentCoder.subagentConcurrency` | 3 | Parallel read-only subagents (role-based dispatch) |
 | `agentCoder.autoAcceptEdits` | false | Skip the diff confirmation |
+| `agentCoder.commandAllowlist` | `[]` | Command prefixes that run without confirmation; empty keeps the Core's built-in list (dangerous commands are always refused) |
+| `agentCoder.inlineCompletion.enabled` | true | Ghost-text completion after a 300 ms pause |
 | `agentCoder.mcpServers` | `[]` | MCP servers (array or name map) |
 
 Project-level `.agent/mcp.json` wins over `agentCoder.mcpServers`, matching the
@@ -51,6 +63,28 @@ IntelliJ shell.
 - `Agent: 打开对话面板` — focus the chat view
 - `Agent: 生成日报` — run the built-in `daily-report` skill
 - `Agent: 重启 Agent Core` — restart the Core process
+
+## Chat panel
+
+- `历史` lists stored conversations (time, first question, message count); click a
+  row to replay it and keep chatting, `×` deletes the file after a confirmation
+  that also reports the disk space freed.
+- `新会话` starts a conversation whose id carries the current timestamp, so the
+  previous one stays in history.
+- A multi-step task shows the Core-owned checklist above the transcript
+  (`☐ / ◐ / ☑`); it folds away once everything is finished and is replayed when
+  you reopen the conversation.
+
+## Capability matrix (after 2.7.0)
+
+| Capability | IntelliJ | VS Code |
+|---|---|---|
+| Streaming chat / tools / memory / skills / MCP / subagents | yes | yes |
+| Inline completion | yes | **yes** |
+| Semantic index settings | yes | **yes** |
+| Multiple chat tabs | yes (up to 8) | single conversation (accepted difference, see FAQ) |
+| History of conversations | yes | **yes** |
+| Secret storage | PasswordSafe | **SecretStorage** |
 
 ## Packaged Core
 
