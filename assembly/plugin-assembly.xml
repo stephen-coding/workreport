@@ -44,6 +44,14 @@
                 <exclude>com.jetbrains.intellij.platform:*</exclude>
                 <exclude>com.jetbrains.intellij.vcs:*</exclude>
                 <exclude>org.jetbrains:annotations</exclude>
+                <!-- Kotlin runtime ships with the IDE. OkHttp 4.12 pulls kotlin-stdlib 1.8.21
+                     transitively; bundling it would duplicate the platform's 2.x stdlib and get
+                     flagged by the Marketplace plugin verifier. -->
+                <!-- Kotlin 运行时由 IDE 自带。OkHttp 会传递引入 kotlin-stdlib 1.8.21，
+                     捆进去会与平台 2.x 重复，也会被 Marketplace 校验器告警 -->
+                <exclude>org.jetbrains.kotlin:*</exclude>
+                <exclude>org.jetbrains.kotlinx:*</exclude>
+                <exclude>org.jetbrains.intellij.deps.kotlinx:*</exclude>
             </excludes>
         </dependencySet>
     </dependencySets>
