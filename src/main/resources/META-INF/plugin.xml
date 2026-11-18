@@ -2,7 +2,7 @@
     <id>com.workreport.ai-assistant</id>
     <name>Agent Coding Assistant</name>
     <version>3.1.2</version>
-    <vendor>WeeklyReport</vendor>
+    <vendor url="https://github.com/stephen-coding/workreport">WeeklyReport</vendor>
     <description><![CDATA[
         AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
         (Python) over a local RPC channel: streaming answers, tool execution, memory, skills.
@@ -20,6 +20,11 @@
     <!-- Platform dependency -->
     <!-- 平台核心依赖 -->
     <depends>com.intellij.modules.platform</depends>
+    <!-- Language module: PSI, Editor, Document — required by the transcript renderer and tools.
+         Declaring it keeps the plugin off IDEs that ship the platform without the language core. -->
+    <!-- 语言模块：PSI / Editor / Document，对话渲染与工具链都必须有；
+         声明后不会在缺失语言核心的 IDE 上加载并抛 NoClassDefFoundError -->
+    <depends>com.intellij.modules.lang</depends>
     <!-- Git4Idea plugin dependency for git log collection -->
     <!-- Git4Idea 插件依赖，用于采集 Git 提交日志 -->
     <depends>Git4Idea</depends>
