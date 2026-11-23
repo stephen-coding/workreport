@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 + VS Code 扩展 · 由语言无关的 Python Agent Core 驱动**
 
-[![Version](https://img.shields.io/badge/version-3.1.2-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-3.3.0-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.3-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-263.*-lightgrey.svg)
 [![JDK](https://img.shields.io/badge/JDK-25%20build%20%2F%2021%20bytecode-orange.svg)](https://adoptium.net/)
@@ -36,6 +36,7 @@ Shell 与 Core 通过 **JSON Lines RPC（stdio）** 通信：Shell 发请求，C
 | 能力 | 说明 | 主要实现 |
 |---|---|---|
 | 流式对话 | token 流式渲染、停止、错误分级；用户消息右侧、Agent 正文左侧，Markdown 按块原生绘制（不再经过 HTML 编辑器） | `ChatView` / `ui/markdown/` / `rpc/server.py` |
+| 思考过程 | 读取 `delta.reasoning_content` / `delta.reasoning`（vLLM `--reasoning-parser`、DeepSeek、Qwen3）与 Ollama `message.thinking`，经 `chat/reasoning` 独立通道下发；界面折成正文上方一行，展开即全文 | `llm/streaming.py` / `rpc/server.py` / `ReasoningView` |
 | 工具循环 | 一轮 = 一次模型调用 + 该轮全部工具；默认预算 40 轮（5~300 可调） | `agent/loop.py` |
 | 并行会话 | 最多 8 个标签各自独立 `sessionId` / `taskId`，事件按 `taskId` 路由；写操作在项目级串行 | `AgentChatPanel` / `ProjectWriteGate` |
 | 会话持久化 | 每个会话一个 JSON，Core 重启后按需恢复；历史列表可回放、续聊、删除并回收磁盘 | `agent/store.py` / `session/*` RPC |
@@ -45,6 +46,7 @@ Shell 与 Core 通过 **JSON Lines RPC（stdio）** 通信：Shell 发请求，C
 | Skill | `SKILL.md` 技能包，内置日报/周报/季报/年报四个报告技能，可被用户级/项目级覆盖 | `skills/` |
 | MCP | stdio 与 HTTP 两种客户端，工具以 `mcp__server__tool` 暴露，调用需确认 | `mcp/` |
 | 子代理 | 主代理按角色清单派发只读专家（4 个内置角色），支持混合派发、角色级模型/输出契约/超时 | `agent/subagent.py` |
+| Agent 团队 | 可开关的多成员协作：团队 = 角色引用 + 能力授权，项目经理派发调研/实现/测试/审查；预审一次后本阶段写入自动执行 | `agent/team.py` / `agent/blackboard.py` |
 | 行内补全 | 编辑器 Ghost text（FIM），Tab 接受 / Esc 取消，1.5 s 超时静默降级 | `AgentInlineCompletionProvider` / `llm/completion.py` |
 | 语义索引 | 本地 Embedding + SQLite float32 向量，tree-sitter 切块，按 sha1 增量构建 | `codeindex/` |
 | 多模型切换 | 模型列表 + 独立的每模型 API Key，输入区下拉即时切换 | `ReportSettingsConfigurable` / `settings/update` |
@@ -88,9 +90,9 @@ Shell 与 Core 通过 **JSON Lines RPC（stdio）** 通信：Shell 发请求，C
 
 | 方向 | 消息 | 方法 |
 |---|---|---|
-| Shell → Core | 请求 | `ping`、`chat/start`、`tool/result`、`agent/confirmResult`、`ask/userAnswer`、`inline/complete`、`index/build`、`index/status`、`session/list`、`session/get`、`session/delete` |
+| Shell → Core | 请求 | `ping`、`chat/start`、`tool/result`、`agent/confirmResult`、`ask/userAnswer`、`inline/complete`、`index/build`、`index/status`、`session/list`、`session/get`、`session/delete`、`session/search`、`memory/pending`、`memory/promote`、`memory/discard`、`usage/report`、`team/list`、`team/artifacts` |
 | Shell → Core | 通知 | `ide/hello`（握手：协议版本 + IDE 类型 + capabilities）、`settings/update`（模型/端点/MCP 变更即时下发）、`chat/cancel` |
-| Core → Shell | 通知 | `core/hello`、`agent/ping`、`chat/token`、`chat/toolStart`、`chat/toolEnd`、`chat/notice`、`chat/subagent`、`chat/todos`、`chat/finish`、`chat/error`、`index/progress`、`tool/invoke`（Core 请求 Shell 执行工具）、`agent/confirm`（弹确认）、`ask/user`（模型提问）/ `ask/withdraw`（撤题） |
+| Core → Shell | 通知 | 共 19 种：`core/hello`、`agent/ping`（3 s 心跳）、`session/indexProgress`、`index/progress`、`memory/pendingChanged`、`chat/token`、`chat/reasoning`（思考过程增量）、`chat/toolStart`、`chat/toolEnd`、`chat/notice`、`chat/subagent`、`chat/artifact`（黑板投稿）、`chat/todos`、`chat/finish`、`chat/error`、`tool/invoke`（Core 请求 Shell 执行工具）、`agent/confirm`（弹确认；`kind="preapprove"` 为团队预审）、`ask/user`（模型提问）/ `ask/withdraw`（撤题） |
 
 帧格式是一行一个 JSON 对象：请求 `{id, method, params, ts}`，响应 `{id, ok, result}` 或
 `{id, ok, error:{code, message}}`；通知省略 `id`。项目根随 `chat/start` 的 `contextSnapshot.projectRoot`
@@ -106,7 +108,9 @@ workreport-intellij-plugin/
 ├── core/                                  # Agent Core（Python，IDE 无关）
 │   ├── src/agent_core/
 │   │   ├── agent/                         # loop / scheduler / permissions / status / store / subagent
-│   │   │   └── subagents_builtin/         # 4 个只读角色：code-reviewer / bug-hunter / test-generator / general
+│   │   │   │                              # + team（团队编排）/ blackboard（团队黑板）
+│   │   │   └── subagents_builtin/         # 角色：4 个只读 + 调研员/全栈/测试/审查
+│   │   ├── teams_builtin/                 # 团队定义：software-dev-team/TEAM.md
 │   │   ├── llm/                           # providers（openai_compat / ollama）+ 流式 / 裁剪 / FIM
 │   │   ├── tools/                         # 注册表 + 远程工具代理
 │   │   ├── memory/                        # FTS5 + Markdown 镜像
@@ -117,8 +121,8 @@ workreport-intellij-plugin/
 │   │   ├── rpc/server.py                  # JSON Lines 服务端（方法分发 + 事件推送）
 │   │   └── protocol.py                    # 数据模型 / 信封 / 错误码
 │   ├── native/                            # Rust 扩展源码（pyo3 abi3 + tiktoken + tree-sitter）
-│   ├── tests/                             # unittest 套件（258 例）
-│   ├── scripts/                           # 8 个协议冒烟
+│   ├── tests/                             # unittest 套件（298 例）
+│   ├── scripts/                           # 10 个协议冒烟（CI 跑其中 9 个）+ 性能基线
 │   └── packaging/agent-core.spec          # PyInstaller 配置
 ├── src/main/java/com/workreport/
 │   ├── agent/rpc/                         # CoreProcess / JsonRpcConnection / AgentCoreService / PythonLocator
@@ -189,14 +193,14 @@ npx @vscode/vsce package && code --install-extension agent-coder-0.1.0.vsix
 ### 4) 一键验证
 
 ```powershell
-powershell -File scripts/verify_all.ps1             # 单测 + 8 个协议冒烟 + Java 编译 + TS 编译/冒烟
+powershell -File scripts/verify_all.ps1             # 单测 + 9 个协议冒烟 + Java 编译 + TS 编译/冒烟
 powershell -File scripts/verify_all.ps1 -SkipJava   # 仅 Core 与 VS Code
 powershell -File scripts/verify_all.ps1 -SkipNode   # 仅 Core 与 IntelliJ
 powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 扩展，并强制断言后端为 rust
 ```
 
 冒烟脚本（`core/scripts/smoke_*.py`）不依赖真实模型：它们在本地起一个模拟 OpenAI 兼容端点，
-按协议跑通工具调用、记忆、MCP、子代理、终端命令、任务清单、v3 会话与模型提问八条链路。改动协议层时优先跑它们。
+按协议跑通工具调用、记忆、MCP、子代理、终端命令、任务清单、v3 会话、模型提问与 Agent 团队九条链路。改动协议层时优先跑它们。
 
 ---
 
@@ -206,7 +210,8 @@ powershell -File scripts/verify_all.ps1 -Native     # 先编译 Rust 扩展，�
 
 - 底部 `AgentCoder` 工具窗口；顶部标签栏 `+` 新建会话（最多 8 个），`×` 关闭后右侧标签左移补位，会话编号归还并优先复用最小空号。
 - 输入区支持多行（`Enter` 发送 / `Shift+Enter` 换行）、拖动分隔条调高、附件内联文本、模型下拉、自动执行与停止。
-- 工具与子代理进度以状态行插入对话流：`[工具] read_file 执行中…`、`[子代理] bug-hunter-1·qwen2.5-7b 完成（12.4s）`、`[提示] …`（非致命降级）、`[排队] …`（写操作排队）。
+- 工具与子代理进度是**英文日志行**，插在对话流里：`read_file · src/main/App.java · done · 0.4s · 摘要`、`agent bug-hunter · qwen2.5-7b · done · 12.4s · 摘要`、`mcp server · tool · approval required`、`queued · waiting for session 2 · edit_file`；连续行合并为 `3 steps · running|done|failed`。`[提示] …` 与 `[错误:CODE] …` 仍是中文，因为内容来自 Core。
+- 模型的思考过程单独折成一行：`思考过程 · 12.4s · 3204 字`（英文 IDE 为 `Thinking`）。思考期间展开随到随看，正文一开始就收起，点标题展开**全文**（折叠只隐藏、不截断）；内容不进会话历史。
 - 多步任务会在对话区上方显示任务清单（模型经 `todo_write` 维护，`☐ / ◐ / ☑`），全部完成后自动折叠；清单随会话落盘，重开历史仍能看到。
 - 模型缺信息时经 `ask_user` 在对话区插一张提问卡（1~3 题、单选/多选 + 自定义答案），阻塞等作答后继续；跳过或界面不可用时带假设继续并标注假设。
 - 「历史」按钮列出本机保存的会话；关闭标签不等于删除历史，删除时才取消在跑任务并回收磁盘。
@@ -269,6 +274,26 @@ timeout_sec: 200
 - 角色级 `model` 只覆盖模型名，端点与密钥继续继承主代理；超时到点返回“已跳过”的失败报告，不拖住主任务。
 - 角色目录在 Core 启动时扫描并缓存，新增或修改 `SUBAGENT.md` 后需要重启 Core。
 
+### Agent 团队
+
+默认关闭。在输入区选一个团队后，主代理转为「项目经理」：它按 `team_dispatch` 把调研 / 实现 / 验证 / 审查分给成员，
+自己只做编排与收口。团队不是另一套子代理，而是**对角色的引用 + 能力授权**：
+
+| 成员能力 | 可得工具 | 说明 |
+|---|---|---|
+| `readonly` | 读类工具 + `git_log` / `git_diff` | 与临时子代理同级 |
+| `write` | 读类 + `write_file` / `edit_file` / `revert_file` | 写仍走 diff 卡或预审豁免 |
+| `command` | 读类 + `run_command` | 命令判定仍在 Core（白名单 / 危险命令拒绝） |
+
+- **预审（D-A）**：实现阶段前调 `team_preapprove` 出一次卡（计划 + 涉及文件 + 首个 diff）；允许后本阶段的常规写入转为自动，
+  删除与白名单外命令仍需逐次确认。未声明 `team` 能力的旧 Shell 收不到这张卡，退化为逐次确认。
+- **成本护栏**：单次最多 `team_max_members=4` 个成员，整轮最多 `team_turn_cap=12` 个成员任务。
+- **团队黑板**：`team_post` / `team_read` 传递交付物（`research` / `plan` / `impl` / `test` / `review` / `note`），
+  随会话落盘（store v3），重开会话仍能在「交付物」里回看。
+- **自定义**：内置 `software-dev-team`，自定义 `TEAM.md` 放 `~/.agent/teams/<name>/` 或 `<项目>/.agent/teams/<name>/`，
+  逐级覆盖内置；同一角色在 A 团队可只读、在 B 团队可写。
+- **不启用时零变化**：与 3.1.2 行为一致，`subagent_dispatch` 仍严格只读，`delete_file` 永不随能力授予。
+
 ### 数据落在哪
 
 | 内容 | 位置 |
@@ -302,7 +327,9 @@ timeout_sec: 200
 | `run_command` | 执行终端命令，输出截断到 8000 字符 | 白名单 auto，其余 confirm | 130 s |
 
 **Core 内置（本地执行）**：`semantic_search`、`build_index`、`memory_recall`、`memory_save`、
-`memory_delete`、`skill_list`、`skill_load`、`subagent_list`、`subagent_dispatch`、`todo_write`、`ask_user`。
+`memory_delete`、`skill_list`、`skill_load`、`subagent_list`、`subagent_dispatch`、`todo_write`、`ask_user`，
+以及团队工具 `team_list`、`team_dispatch`、`team_preapprove`、`team_post`、`team_read`（始终注册；未启用团队时
+`team_dispatch` / `team_preapprove` 直接返回「未启用团队」而不执行）。
 MCP 工具在运行时以 `mcp__<server>__<tool>` 动态注册。
 
 ---
@@ -324,8 +351,8 @@ powershell -File scripts/build_native.ps1
 
 | 产物 | 路径 | 说明 |
 |---|---|---|
-| 可安装 zip | `target/workreport-ai-assistant-3.1.2.zip` | 内置 `agent-core/agent-core.exe`，用户机器**不需要 Python** |
-| 插件 jar | `target/workreport-intellij-plugin-3.1.2.jar` | 插件本体，不含 Core 可执行文件 |
+| 可安装 zip | `target/workreport-ai-assistant-3.3.0.zip` | 内置 `agent-core/agent-core.exe`，用户机器**不需要 Python** |
+| 插件 jar | `target/workreport-intellij-plugin-3.3.0.jar` | 插件本体，不含 Core 可执行文件 |
 | Core 可执行文件 | `core/dist/agent-core.exe` | 也可单独被 `AGENT_CORE_EXE` 指定 |
 
 只跑 `mvn package` 而不先构建 Core 时，zip 不含可执行文件，插件会回退到开发模式（需要 Python + `AGENT_CORE_HOME`）。
@@ -334,7 +361,7 @@ powershell -File scripts/build_native.ps1
 
 | job | 矩阵 | 内容 |
 |---|---|---|
-| `core` | Ubuntu + Windows × Python 3.9 / 3.12 | 单测 + 8 个协议冒烟（tools / memory / mcp / subagent / command / todos / v3 / ask） |
+| `core` | Ubuntu + Windows × Python 3.9 / 3.12 | 单测 + 9 个协议冒烟（tools / memory / mcp / subagent / command / todos / v3 / ask / team） |
 | `intellij` | Ubuntu + JDK 25 | `mvn -DskipTests compile` |
 | `vscode` | Node 18 + Python 3.11 | 编译 + `npm run smoke` |
 | `native` | Ubuntu / Windows | 编译 Rust 扩展，并以 `AGENT_CORE_EXPECT_RUST=1` 跑单测 |
@@ -346,18 +373,18 @@ powershell -File scripts/build_native.ps1
 
 | 项 | 当前值 |
 |---|---|
-| 插件版本 | 3.1.2 |
+| 插件版本 | 3.3.0 |
 | 目标平台（编译用） | `intellij.version = 263.7307.259`（2026.3） |
 | 安装区间 | `since-build=252` / `until-build=263.*`（2025.2 ~ 2026.3） |
 | Kotlin | `2.4.21-RC`（平台内置 `kotlin-stdlib` 版本），必须与目标平台一致 |
 | VS Code | `^1.85.0` |
-| 验收基线 | Core 单测 **258 例**（跳过 1 个平台相关用例）、8 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过、渲染器与图标资源单测 **15 例**（`MarkdownParserTest` + `UiIconsResourceTest`） |
-| 性能基线 | 冷启动 343~398 ms、空闲 RSS 97.4~97.7 MB、单轮 20.6~22.1 ms、千条会话列表 105~110 ms（`core/scripts/bench_core.py`） |
+| 验收基线 | Core 单测 **298 例**（跳过 1 个平台相关用例）、9 个协议冒烟 PASS、VS Code 编译与冒烟 PASS、IntelliJ 编译通过、渲染器与图标资源单测 **15 例**（`MarkdownParserTest` + `UiIconsResourceTest`） |
+| 性能基线 | 冷启动 343~398 ms、空闲 RSS 97.4~97.7 MB、单轮 20.6~22.1 ms、千条会话列表 105~110 ms；传输层 800 段流式 = 1601 帧 / 152.8 KB，JSON 编解码仅占墙钟 2.0%（`core/scripts/bench_core.py`） |
 
 升级平台时 `pom.xml` 的 `intellij.version`、`kotlin.version` 与 `plugin.xml` 的 `since-build` /
 `until-build` 必须一起改；版本号规则与多版本测试方法见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
-### 版本演进（v2.0 → v3.1.2）
+### 版本演进（v2.0 → v3.3.0）
 
 | 版本 | 提交 | 主要变更 |
 |---|---|---|
@@ -385,7 +412,8 @@ powershell -File scripts/build_native.ps1
 | v3.0.0 | 本次提交 | 记忆候选人工确认、会话全文检索、本地用量统计、性能基线、中英双语 UI、Marketplace `change-notes` |
 | v3.1.0 | `e296136` | 对话渲染内核重写（块级 Markdown + 增量解析 + 高度缓存）、标签条/输入区/空态/清单全面重绘、历史与记忆共用 `PickerPopup`、MCP 确认改为内联卡片、模型提问工具 `ask_user` + `AskCard`、`-Dagent.ui.classic=true` 一键回退 |
 | v3.1.1 | `793b9be` | 适配 IntelliJ IDEA 2026.3（平台 263.7307.259 + Kotlin 2.4.21-RC），`until-build` 提到 `263.*`；功能无变化 |
-| v3.1.2 | 本次提交 | 修复标签条「新建会话」/「设置」按钮不显示（图标 SVG 缺失导致退化成空图标）；图标加载失败改写日志，新增 `UiIconsResourceTest` |
+| v3.1.2 | `793b9be` 之后 | 修复标签条「新建会话」/「设置」按钮不显示（图标 SVG 缺失导致退化成空图标）；图标加载失败写日志，新增 `UiIconsResourceTest` |
+| v3.3.0 | 本次提交 | Agent 团队（默认关闭）：角色引用 + 能力授权、预审检查点、团队黑板、`team/*` 协议；IntelliJ 与 VS Code 双端接入；bench 新增帧数/字节/编解码占比指标 |
 
 M1–M8 的从零落地集中在 `a49411f` ~ `47eafe6`；更早的 `bf89f58` 是重构前最后一次 CDN 下载修复。
 

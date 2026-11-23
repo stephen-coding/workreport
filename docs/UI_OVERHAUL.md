@@ -110,7 +110,8 @@ Core token 流 ─► ChatView.appendAssistantToken ─► 40 ms 合并窗口
 |---|---|
 | `UserMessageView` | 右对齐、主色气泡（深色主题转 `ACCENT_SOFT` + 正常文字）、最大宽度 72%、附件 chip 行 |
 | `AgentMessageView` | 左对齐卡片：头部 `Agent` chip + 模型名 + token + 耗时；hover 浮出「复制」（`ui.message.copy`，1.2 s 后变「已复制」）；流式期尾块闪烁光标（Timer 只在流式期运行） |
-| `StepGroupView` | 连续 `[工具]` / `[子代理]` 行合并成一条可折叠时间线；折叠态一行 `N 步 · 耗时 · 状态` |
+| `StepGroupView` | 连续的工具 / 子代理行（英文日志风格）合并成一条可折叠时间线；折叠态一行 `3 steps · running`（或 `done` / `failed`），失败数由结构化 `failed` 标记累计，不再嗅探文案 |
+| `ReasoningView` | 模型思考过程（`chat/reasoning`）：思考期间展开为 `muted` 纯文本，正文开始后折成一行 `思考过程 · 12.4s · 3204 字`（`Thinking`）；点标题展开/收起全文，`setColorOverride(UiTheme::muted)` 与 `UiTheme.small()` 与步骤行保持同一字号 |
 | `NoticeView` | 提示行：左侧 3 px `WARN` 条 + `SUBTLE` 底 |
 | `ErrorView` | 错误行：左侧 3 px `ERROR` 条 + `ERROR_SOFT` 底 + 「复制错误」 |
 | `ToolCallCard` | MCP 确认卡片：标题 + 描述 + 参数（`mono`，最多 4 行，超出加 `…`）+ `[拒绝] [允许]`；`Enter` 允许 / `Esc` 拒绝；`addNotify` 抢焦点，`removeNotify` 视为拒绝（不让 Core 一直等）；已答后按钮替换为「已允许 / 已拒绝」 |
@@ -119,9 +120,9 @@ Core token 流 ─► ChatView.appendAssistantToken ─► 40 ms 合并窗口
 
 | 组件 | 职责 |
 |---|---|
-| `ChatView` | 流式合并（40 ms）、尾块光标、贴底检测、「回到底部 ↓」胶囊、`KEEP_ROWS=120` 折叠 |
+| `ChatView` | 流式合并（40 ms，正文与思考各一个脏标记）、尾块光标、贴底检测、「回到底部 ↓」胶囊、`KEEP_ROWS=120` 折叠；`addToolLine(text, running, failed)` 结构化传状态，不再按中文关键词嗅探 |
 | `BlockListLayout` | `LayoutManager2`：按宽度缓存高度，只失效被改的块 |
-| `TranscriptView` | 实现接口（`addHint/addUserMessage/appendAssistantToken/.../addCard`），`ClassicTranscript` 为回退实现 |
+| `TranscriptView` | 实现接口（`addHint/addUserMessage/appendAssistantToken/appendReasoningToken/addToolLine/.../addCard`），`ClassicTranscript` 为回退实现 |
 | `ChatTranscript` | 门面，公开 API 与 3.0 一致（仅**新增** `addCard`），`ChatSessionPanel` 无需感知实现 |
 | `SessionTabsBar` | 自绘 pill 标签（选中指示条 140 ms 补间、运行中 1.2 s 呼吸点、hover 关闭、`Ctrl+Tab` / `Ctrl+1..8`、溢出折叠 `»`）、右侧图标组与「记忆」角标 |
 | `EmptyState` | 产品图标 + 标题 + 4 张建议卡（点击填入输入框） |
@@ -186,6 +187,7 @@ Core token 流 ─► ChatView.appendAssistantToken ─► 40 ms 合并窗口
 
 ## 11. i18n
 
-新增文案统一前缀 `ui.*`（`ui.chat.*` / `ui.composer.*` / `ui.empty.*` / `ui.steps.*` / `ui.code.*` /
+新增文案统一前缀 `ui.*`（`ui.chat.*` / `ui.composer.*` / `ui.empty.*` / `ui.steps.*` / `ui.reasoning.*` / `ui.code.*` /
 `ui.message.*` / `ui.picker.*` / `ui.confirm.*` / `ui.ask.*`），同时写入 `messages/AgentBundle.properties` 与
 `AgentBundle_en.properties`，两文件键必须等量（`verify_all.ps1` 会校验）。Core 的提示词与工具描述仍保持中文。
+工具 / 子代理进度行是为开发者看的时间线，刻意保持英文（`read_file · path · done · 0.4s`），不走 bundle。

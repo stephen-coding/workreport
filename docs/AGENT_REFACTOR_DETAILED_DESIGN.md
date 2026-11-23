@@ -49,7 +49,7 @@ workreport-intellij-plugin/
 │   ├── native/                    # Rust crates（tokenizer / codesoup，maturin）
 │   ├── packaging/agent-core.spec  # PyInstaller 单文件
 │   ├── scripts/                   # smoke_*.py、bench_core.py
-│   └── tests/                     # unittest（258 例）
+│   └── tests/                     # unittest（298 例）
 ├── src/                           # IntelliJ Shell（Java 21 字节码，JDK 25 编译；类结构见 §5.1）
 ├── vscode/                        # TypeScript Shell
 │   └── src/{extension,rpc,locator,panel,session,tools,diff,inline,secrets,settings}.ts
@@ -128,7 +128,8 @@ IDE  → { "method": "ide/hello", "params": {"protocolVersion": "1.0", "ide": "i
 |---|---|---|
 | `core/hello` | `{protocolVersion, coreVersion, projectId, capabilities[], native}` | 启动握手；capabilities 当前为 `chat / parallel-tools / tokenizer / codesoup / memory / skill / mcp / subagent / inline / code-index / session-store / terminal / session-search / memory-pending / usage / ask-user` |
 | `agent/ping` | `{}` | 心跳 |
-| `chat/token` | `{taskId, delta}` | 流式增量 |
+| `chat/token` | `{taskId, delta}` | 流式增量（正文） |
+| `chat/reasoning` | `{taskId, delta}` | 思考过程增量（`delta.reasoning_content` / `delta.reasoning` / Ollama `message.thinking`）；与 `chat/token` 分流，顺序先于正文，不进会话历史 |
 | `chat/toolStart` | `{taskId, toolCallId, toolName, args}` | 工具开始 |
 | `chat/toolEnd` | `{taskId, toolCallId, ok, summary}` | 工具结束 |
 | `chat/notice` | `{taskId, text}` | 非致命提示（降级、排队等） |
@@ -251,7 +252,8 @@ class LLMProvider(Protocol):
     async def chat_stream(self, messages: list[Message], tools: list[ToolDef] | None,
                           config: ChatConfig,
                           on_token: Callable[[str], Awaitable[None]],
-                          on_tool_call: Callable[[ToolCall], Awaitable[None]]) -> ChatResult: ...
+                          on_tool_call: Callable[[ToolCall], Awaitable[None]],
+                          on_reasoning: Callable[[str], Awaitable[None]] | None = None) -> ChatResult: ...
     def count_tokens(self, text: str) -> int: ...
 ```
 
@@ -572,10 +574,10 @@ com.workreport.agent/
 **对话区**（`ChatTranscript` → `ChatView`）
 
 - 3.1 起不再用 `JEditorPane` + 整段 HTML：Markdown 先解析成块模型，再由自绘块视图（`HeadingView` / `ParagraphView` / `ListView` / `CodeBlockView` / `QuoteView` / `TableView` / `DividerView`）排版；`BlockListLayout` 按宽度缓存每块高度，只失效被修改的块
-- 流式：`IncrementalParser` 40 ms 合并窗口，只重解析尾部块；`chat/token` 逐片追加不整体重排
+- 流式：`IncrementalParser` 40 ms 合并窗口，只重解析尾部块；`chat/token` 逐片追加不整体重排；`chat/reasoning` 走单独的 `ReasoningView`（正文与思考各一个脏标记，同一 40 ms 窗口）
 - 超过 120 块折叠为一行「查看更早的 N 条消息」，分批展开
 - 用户消息右对齐气泡；助手消息是卡片（角色 chip + 元信息 + hover 复制）
-- 连续的 `[工具]` / `[子代理]` 行合并为可折叠的 `StepGroupView` 时间线；单张 `ToolCallCard` 显示参数摘要、耗时与结果摘要
+- 连续的工具 / 子代理行（英文日志风格：`read_file · path · done · 0.4s`）合并为可折叠的 `StepGroupView` 时间线，折叠态 `3 steps · running|done|failed`；单张 `ToolCallCard` 显示参数摘要、耗时与结果摘要
 - `chat/notice` / `chat/error` 走 `NoticeView` / `ErrorView` 细状态行；`chat/todos` → `TodoStrip` 自绘清单
 
 **确认与提问**
@@ -726,8 +728,8 @@ powershell -File scripts/verify_all.ps1
 
 当前结果：
 
-- Core 单测 **258 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
-- 协议冒烟 8 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent` / `smoke_command` / `smoke_todos` / `smoke_v3` / `smoke_ask`
+- Core 单测 **298 个用例全绿**（`python -m unittest discover -s tests`，跳过 1 个平台相关用例）
+- 协议冒烟 9 个全部 PASS：`smoke_tools` / `smoke_memory` / `smoke_mcp` / `smoke_subagent` / `smoke_command` / `smoke_todos` / `smoke_v3` / `smoke_ask` / `smoke_team`
 - VS Code：`npm run compile` 通过，`npm run smoke` 与真实 Core 跑通
 - IntelliJ：`mvn -q -DskipTests compile` 通过（需 JDK 25；脚本先校验 `JAVA_HOME`，低于 25 记失败而不是静默 SKIP）；`mvn -B test` 15 个 JUnit 用例（Markdown 解析 14 + 图标资源 1）
 - 打包：PyInstaller 产物 `core/dist/agent-core(.exe)` 可启动，`AGENT_CORE_EXE` 模式下冒烟同样通过（证明 SKILL.md / SUBAGENT.md 已随包分发）
@@ -968,7 +970,7 @@ powershell -File scripts/build_plugin.ps1
 | `_run_task` | `asyncio.wait_for` 包住单个子任务；超时返回 `ok=False` 的「子代理超时」报告，并补齐 `role` / `model` / `duration_ms` |
 | `_execute` | `config.model_copy(update={"model": task.model or base.model, …})`：角色可钉在同端点的另一个模型上，端点/密钥继续继承 |
 | `_filtered_registry` | 第三道只读护栏：注册表层再剔一次写工具与递归派发 |
-| `rpc/server.py` | `chat/start` 传入 `catalog_text()`；`chat/subagent` 事件补 `role` / `model` / `durationMs`，Shell 状态行因此能显示 `[子代理] bug-hunter-1·qwen2.5-7b 完成（12.4s）` |
+| `rpc/server.py` | `chat/start` 传入 `catalog_text()`；`chat/subagent` 事件补 `role` / `model` / `durationMs`，Shell 时间线因此能显示 `agent bug-hunter · qwen2.5-7b · done · 12.4s · 摘要` |
 
 **为什么只读**：子代理的结论要回流给主代理汇总，如果它能自己改文件，「谁改的」就说不清，`ProjectWriteGate` 与 diff 确认也无从审计。改文件一律由主代理执行，子代理只产出结论与依据。
 
@@ -1113,3 +1115,49 @@ v2.4.10 只做发布工程：CI 覆盖 `develop` / `master`、About 文案、`ag
 
 - `_dark` 变体由 `IconLoader` 按主题自动选择：只补 `add.svg` 不补 `add_dark.svg`，暗色主题下会再次退化成空白
 - 新增图标时同步改 `UiIconsResourceTest.REFERENCED`，否则测试报「missing」，比 UI 上肉眼看不见要早得多
+
+---
+
+## 18. v3.3.0 增量：思考过程与工具时间线
+
+### 18.1 思考过程（`chat/reasoning`）
+
+**现象**：接 vLLM `--reasoning-parser`、DeepSeek-R1 或支持 thinking 的 Ollama 模型时，界面完全看不到思考。
+**根因**：Core 只读 `delta.content`，`delta.reasoning_content` / `delta.reasoning` / `message.thinking` 被整段丢弃——不是渲染截断，而是压根没到 Shell。
+
+| 层 | 位置 | 变化 |
+|---|---|---|
+| 流式累加器 | `llm/streaming.py` | `OpenAIStreamAccumulator` 读 `delta.reasoning_content`（兼容 `delta.reasoning`），`OllamaStreamAccumulator` 读 `message.thinking`；各自 `_reasoning_parts` 累计，`feed()` 一行未动（保护既有断言） |
+| Provider | `providers/openai_compat.py` / `ollama.py` | `chat_stream(..., on_reasoning: Optional[TokenCallback] = None)` 放末位可选参数，既有 5 位置参数调用不破；`_stream` 里**先**转发思考再转发正文，重试分支同样透传 |
+| 循环 | `agent/loop.py` | `run_chat(..., on_reasoning=...)` 透传给 provider |
+| 协议 | `rpc/server.py` | 新增 `emit_reasoning` → `chat/reasoning {taskId, delta}`；`chat/token` 与历史消息格式不变 |
+| Shell 接口 | `TranscriptView` / `ChatTranscript` | 新增 `appendReasoningToken(delta)` 与带状态的 `addToolLine(text, running, failed)`，均为 default 方法，`ClassicTranscript` 无需实现 |
+| 渲染 | `chat/ReasoningView` / `ChatView` | 思考与正文共用 40 ms 合并窗口（两个脏标记）；思考期间展开，正文开始调 `finish()` 收起为 `思考过程 · 12.4s · 3204 字`，点标题才用全文（只隐藏不截断） |
+
+要点：
+
+- **只增不改**：旧 Shell（含 VS Code）收不到 `chat/reasoning` 也能正常工作，`vscode/session.ts` 的 `switch` 默认分支直接忽略
+- **思考不进历史也不进用量**：只在流式期间展示，重开会话看不到；`usage` 只统 `content`
+- **`flushNow()` 必须同时看两个脏标记**：只看 `current` 会把「只有思考、还没有正文」的帧整段吞掉
+- **用户优先**：点过思考行标题后 `touched=true`，`finish()` 不再自动折叠
+
+### 18.2 工具时间线英文化与状态结构化
+
+工具 / 子代理进度行原本是中文硬编码（`[工具] read_file 执行中...`、`[子代理] x 开始：`、`[排队] 等待会话…`），
+而 `ChatView.isRunningTool()` 靠 `contains("执行中")`、`StepGroupView` 靠 `contains("失败")` 判断状态。
+改文案会同时挂掉这两处嗅探，所以两件事必须一起改：
+
+| 位置 | 旧 | 新 |
+|---|---|---|
+| 工具开始 | `[工具] read_file 执行中...` | `read_file · src/main/App.java` |
+| 工具结束 | `[工具] 完成：摘要` | `read_file · done · 0.4s · 摘要`（失败为 `failed`） |
+| 子代理 | `[子代理] id·model 开始：goal` | `agent code-reviewer · qwen2.5-7b · start · goal` |
+| MCP 需确认 | `[确认] MCP 服务 x 请求调用工具 y` | `mcp x · y · approval required` |
+| 写操作排队 | `[排队] 等待会话「2」写完文件后继续 edit_file` | `queued · waiting for session 2 · edit_file` |
+| 步骤组 | `3 步 · 1.2s · 完成` | `3 steps · running`（或 `done` / `failed`） |
+
+- 状态不再靠文案：`addToolLine(text, running, failed)` + `StepGroupView.failedCount`；行内参数取 `path` / `file` / `command` / `query` / `pattern` / `url` 第一个命中项，空白压成单空格、截 120 字
+- 并行调用用 `activeSteps` 计数：先返回的那个工具不会把步骤组提前标成 done；`chat/finish` / `chat/cancel` 清空在途表，取消后不会永远停在 running
+- **为什么英文**：这条时间线是给开发者看的构建日志，不是产品文案，所以刻意不走 `AgentBundle`；`[提示]` 与 `[错误:CODE]` 内容来自 Core，仍保持中文
+
+**验收**：`core/tests` 298 例（新增 `test_streaming` 2 例 + `test_llm_providers.TestReasoningStream` 2 例，含「思考先于正文」顺序断言）；`mvn test` 15 例；重包后的 zip 内置新的 `agent-core.exe`。

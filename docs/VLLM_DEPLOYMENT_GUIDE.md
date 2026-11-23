@@ -392,14 +392,17 @@ journalctl -u vllm-qwen27b -f
 | `--enable-prefix-caching` | 复用系统提示词/工具定义的 KV | **开启**，Agent 场景收益明显 |
 | `--enable-auto-tool-choice` | 允许模型自主选工具 | **必须开**，否则插件 400 |
 | `--tool-call-parser` | 解析模型输出的工具调用 | Qwen2.5/Qwen3 → `hermes`；Qwen3-Coder → `qwen3_coder` |
-| `--reasoning-parser` | 把"思考过程"与"正式回答"分开 | Qwen3 → `qwen3`（可选） |
+| `--reasoning-parser` | 把"思考过程"与"正式回答"分开 | Qwen3 → `qwen3`；DeepSeek-R1 类 → `deepseek_r1`。**3.3.0 起建议开启**，插件会把思考折成一行展示 |
 | `--chat-template` | 自定义聊天模板 | 一般不用，模型自带 |
 | `--quantization` | 量化方式 | `fp8` / `awq` / `gptq` |
 | `--api-key` | 服务端自带鉴权 | 经 New API 时不需要 |
 | `--trust-remote-code` | 允许加载模型自定义代码 | 私有模型可能需要 |
 
 > **关于 `--reasoning-parser qwen3`**：Qwen3 默认开思考模式。开启该参数后，"思考"内容走 `reasoning_content` 字段，正式回答走 `content`。
-> 本插件只渲染 `content`，因此你会看到"先静默几秒，然后出答案"——这是正常现象，不是卡死。
+> 插件 3.3.0 起会读取这两个字段：思考折成正文上方一行 `思考过程 · 12.4s · 3204 字`（英文 IDE 为 `Thinking`），
+> 思考期间展开随到随看，正文一开始自动收起，点标题仍可展开全文。
+> 不开启时思考会混在 `content` 里，表现为"先静默几秒，然后一次性出答案"——这不是卡死；
+> 若同时看到一大段推理文字混在回答开头，就是没开 parser 的典型现象。
 
 ### 5.10 没有服务器权限怎么办
 
@@ -456,7 +459,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/v1/chat/completio
 2. 模型名填 `--served-model-name` 的值（经网关时填网关渠道里的模型名）
 3. 类型选 **OpenAI 兼容**（2.2.2 起填错也会按端点自动纠正）
 4. **重启 IDE**——降级状态有 5 分钟假释（v2.3.1 起），重启可立即恢复
-5. 发「列出当前目录的文件」，看到 `[工具] list_dir 执行中...` 即全链路打通
+5. 发「列出当前目录的文件」，看到 `list_dir · . · done · 0.1s` 即全链路打通（3.3.0 前的旧版显示 `[工具] list_dir 执行中...`）
 
 ---
 
@@ -528,7 +531,7 @@ vllm serve /models/qwen-3.8-27b --served-model-name qwen-3.8-27b \
   --max-model-len 32768 --enable-prefix-caching \
   --enable-auto-tool-choice --tool-call-parser hermes
 
-# Qwen3 + 思考内容分离
+# Qwen3 + 思考内容分离（插件会把思考折成一行展示）
 vllm serve /models/qwen-3.8-27b --served-model-name qwen-3.8-27b \
   --max-model-len 32768 --enable-prefix-caching \
   --enable-auto-tool-choice --tool-call-parser hermes \

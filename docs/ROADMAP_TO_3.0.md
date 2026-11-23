@@ -484,6 +484,33 @@ ToolDef(
 首次建索引改用单连接批量写入（`SessionSearch.index_many`），并在 `bench_core.py` 里
 先等 `session/indexProgress` 的 `finished` 再测列表，避免把磁盘争用算进端点耗时。
 
+#### 传输格式：保持 JSON Lines（实测结论）
+
+`bench_core.py` 在 3.3.0 增补了协议侧指标：双向帧数、字节数、`chat/token` 帧数，以及
+JSON 编解码耗时占（预热+一轮+列表）墙钟时间的比例。实测（Windows 11 / 200 条会话）：
+
+| 场景 | 帧数 | 字节数 | `chat/token` 帧 | 编解码占比 | 单轮延迟 |
+|---|---|---|---|---|---|
+| 短回答（2 段） | 21 | 7.7 KB | 2 | 0.1% | 24.7 ms |
+| 长回答（800 段 ×2 轮） | 1601 | 152.8 KB | 1582 | 2.0% | 46.2 ms |
+
+结论：**不引入 protobuf**。即使按 800 段长回答压测，JSON 编解码也只占 2% 墙钟；
+成本大头是**帧数量**（1582 次进程唤醒 + 1582 次 UI 回调）而不是字节数。换二进制格式
+只能把 152.8 KB 降到 60~90 KB、2% 降到 1% 左右，却要付出三端 codegen、exe 体积、
+丢可读排障，以及 proto3 默认值破坏「部分字段合并」语义的代价（`active_team: ""`、
+`usage=None` 都会被静默当成零值）。
+
+性价比更高的四步（保持 JSON，均已列入待办）：
+1. `chat/token` 节流合并（攒 16~32 ms 或 ≥32 字符发一帧），帧数直接降一个数量级；
+2. 大 payload（文件内容/diff/搜索结果）改「引用 ID + 按需拉取」，不塞单帧；
+3. 超阈值大帧 gzip + `"enc":"gzip"` 标记，旧 Shell 忽略字段照旧读明文；
+4. 大 payload 只 `dumps` 一次，避免重复序列化。
+
+重新评估的门槛（满足任一才考虑二进制）：单帧 P95 > 64 KB 且每秒 > 10 帧；要支持远程
+Core（跨机器/容器）；出现第三个客户端需要强 schema；实测编解码占比 > 15%。真要上，
+先用 MessagePack/CBOR（无需 codegen），并同时切换成**长度前缀分帧**（否则 base64
+的 +33% 会吃掉全部收益）。
+
 ### 7.5 国际化
 
 - 范围：仅 Shell UI 文案（IntelliJ `AgentBundle.properties` + `AgentBundle_en.properties`；
@@ -499,6 +526,8 @@ ToolDef(
 - 覆盖范围：面板按钮与状态行（`AgentChatPanel`）、输入区与菜单（`ChatComposer`）、
   会话状态（`ChatSessionPanel`）、任务清单（`TodoStrip`）、设置页表头/分组/字段标签。
 - 未覆盖（刻意保留中文）：设置页括号里的长说明与 tooltip、Core 的提示词与工具描述。
+- 3.3.0 补充：工具 / 子代理进度行**刻意不走 bundle**，统一为英文日志风格（`read_file · path · done · 0.4s`），
+  因为它是面向开发者的时间线；思考行标题走 `ui.reasoning.title` / `ui.reasoning.chars`（中英两个包都有）。
 - VS Code：`panel.ts` 的 Webview 文案仍为中文，等其单独上架前再补 `package.nls.json`。
 
 ### 7.6 本地使用统计（D4）
@@ -533,6 +562,7 @@ ToolDef(
 | 方法 | 负载 | 引入版本 |
 |---|---|---|
 | `chat/todos` | `taskId`, `todos[]` | 2.6.0 |
+| `chat/reasoning` | `taskId`, `delta`（`delta.reasoning_content` / `delta.reasoning` / Ollama `message.thinking`） | 3.3.0 |
 | `memory/pendingChanged` | `count` | 3.0.0 |
 | `session/indexProgress` | `done`, `total`, `changed`, `finished` | 3.0.0 |
 

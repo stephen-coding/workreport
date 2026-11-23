@@ -3,6 +3,29 @@
 Mirror of `plugin.xml` `<change-notes>`: every released version gets one section here, and the
 Marketplace entry is copied from it. Core, Shell and VS Code Shell share the numbered release.
 
+## 3.3.0（开发中）
+
+Agent 团队：可创建、启用并由项目经理编排多成员协作；默认关闭，不启用时行为与 3.1.2 逐帧一致。
+
+- **内置团队**：`software-dev-team` = 调研员（只读）+ 全栈工程师（可写）+ 测试工程师（可写+终端）+ 代码审查员（只读）；团队说明与协作指令逐字取自需求，作为 PM 剧本注入主代理提示词。
+- **自由组合**：团队只是对角色的引用 + 能力授权，`TEAM.md` 支持 builtin → `~/.agent/teams` → `<项目>/.agent/teams` 逐级覆盖；同一角色可在 A 团队只读、在 B 团队授权写。
+- **能力模型**：`readonly` / `write` / `command` 三档只对启用团队的成员生效；临时 `subagent_dispatch` 仍然只读（D1 不被削弱），`delete_file` 永不随能力授予。
+- **预审检查点（D-A）**：实现阶段前 `team_preapprove` 出一次「计划 + 首个 diff」确认卡；通过后本阶段常规写自动执行，删除、白名单外命令与危险命令仍逐次确认/拒绝。
+- **团队黑板**：`team_post`/`team_read` 传递研究、计划、实现、测试、审查交付物，随会话落盘（store v3），重开会话可回看。
+- **协议（只增不改）**：`ChatConfig` 新增 `active_team` / `team_max_members` / `team_turn_cap` / `team_auto_after_preapprove`；新增 `team/list`、`team/artifacts`；`chat/subagent` 扩 `teamRunId`/`actor`/`capability`，新增 `chat/artifact`，`tool/invoke` 可带 `member`，`agent/confirm` 新增 `kind="preapprove"`，`core/hello` 能力加 `team`。
+- **IntelliJ 接入**：输入区新增「团队」下拉（Core 的 `team/list` 名册，含人数与说明）与「交付物」按钮（`team/artifacts` → 列表→只读全文窗）；预审卡是 `ToolCallCard` 的特化（计划 / 文件 / diff，多行可滚）；成员时间线显示「全栈工程师[write]」；i18n 新增 `ui.team.*` / `ui.preapprove.*`（265 键中英等量）。
+- **VS Code 对齐**：新增 `agentCoder.activeTeam` 设置项（与 IntelliJ 的 `settings/update.active_team` 字段对等，`check-settings` 断言 14 项一致）；Webview 团队下拉 + 「交付物」抽屉 + 预审卡（标题 + 多行正文）；`ide/hello` 声明 `team` 能力。
+- **兼容护栏**：Core 只在 Shell 声明 `team` 能力时才发预审卡；旧 Shell 收不到也不会把预审误当 MCP 确认。
+- **性能基线**：`bench_core.py` 新增帧数 / 字节 / 编解码占比三项指标并支持 `--stream-chunks`；800 段流式实测 1601 帧 / 152.8 KB，JSON 编解码仅占墙钟 2.0%，据此在 ROADMAP §7.4 定下「继续 JSON Lines」的结论。
+- **设置页重做**：一列到底的 `FormBuilder` + 表格换成圆角卡片分节（模型与端点 / Agent 行为 / 编辑器与索引 / Git 日报 / MCP 服务 / 命令白名单 / Core 运行环境）。模型改为「左侧列表 + 右侧表单」：新增类型下拉、`JBPasswordField` 密码框与「当前模型」下拉（不必回聊天面板切换）；API Key 字段留空即保持不变，MCP 配置边输边做 JSON 校验，保存时对空名 / 重名 / 缺端点直接报错。
+- **输入区**：发送与停止合并为一个按钮（运行中变方块并切换提示），工具栏用细竖线分成「附件 / 模型·团队·交付物 / 自动」三组；状态行耗时在运行期每秒刷新。
+- **流畅度**：Core 事件统一归一到 EDT——此前 `chat/todos` / `chat/artifact` / `chat/finish` 在 RPC 读线程直接改 Swing 组件；流式 token 改为入队合批、每批只投递一次 EDT 任务；输入框自增高 60 ms 去抖，底部滚动请求合并，长文本输入与高速流式不再堆积 EDT 队列。
+- **思考过程**：此前 Core 只读 `delta.content`，vLLM `--reasoning-parser` / DeepSeek / Qwen3 写在 `delta.reasoning_content`（部分端点用 `delta.reasoning`）与 Ollama 的 `message.thinking` 里的思考被整段丢弃，界面上看不到。现在两个流式累加器各自解析思考字段，经新增的 `chat/reasoning` 通知（`{taskId, delta}`，与 `chat/token` 并行、顺序先于正文）下发；Shell 新增 `ReasoningView` 折成正文上方一行，思考期间展开随到随看，正文一开始就收起为「思考过程 · 12.4s · 3204 字」，点标题仍是**全文**（折叠只隐藏、绝不截断）。历史消息与 `chat/token` 格式不受影响。
+- **工具时间线改英文**：`[工具] read_file 执行中...` / `完成|失败` / `[子代理] ... 开始：` / `[确认] MCP 服务 ...` 换成开发者日志风格——`read_file · src/main/App.java · done · 0.4s · summary`、`agent 全栈工程师[write] · start|done|failed · 3.2s · summary`、`mcp server · tool · approval required`、`queued · waiting for session 2 · edit_file`；参数取 `path/command/query/pattern/...` 中第一个命中项，空白压成单空格、超长截断到 120 字。步骤组标题也随之变成 `3 steps · running|done|failed`（`ui.steps.*` 中英两个包同值）。
+- **状态不再靠中文关键词嗅探**：删除 `ChatView.isRunningTool(String)` 的 `contains("执行中")`/`contains("开始：")` 与 `StepGroupView` 的 `contains("失败")`，改为 `addToolLine(text, running, failed)` / `add()` 结构化传参；并行调用用 `activeSteps` 计数，「还在跑」不再被先返回的那个工具提前置为 done；`chat/finish` 与 `chat/cancel` 清空在途表，步骤组不会永远停在 running。
+- **团队开关修复**：冷启动时 Core 还没起来、`team/list` 名册为空，按钮按 `!teams.isEmpty()` 置灰，而 `UiButton` 的 `isEnabled()` 判断直接把点击吞掉——表现就是「点了没反应」，且名册只在面板构造时拉一次，Core 起来后也不会自愈。现在按钮只随 `busy` 置灰，点击时按需启动 Core 并拉名册；名册为空改为时间线提示「读不到团队名册」，`core/hello` 后自动刷新一次（与 VS Code 对齐），重启 IDE 也能显示上次保存的团队名。
+- **验证**：Core 单测 **298 例**全绿（含 D1 只读回归护栏，新增 4 例 `reasoning_content` / `thinking` 分流与「思考先于正文」顺序断言）、9 个协议冒烟 PASS（含 `smoke_team.py`：预审一次 → 成员写自动执行 → 黑板回传）；`mvn -DskipTests compile` 与 `mvn test`（15 例）通过，`npm run compile` 通过，`node scripts/check-settings.js` = SETTINGS PARITY OK。
+
 ## 3.1.2
 
 修复标签条上「新建会话」（`+`）与「设置」按钮不显示。
