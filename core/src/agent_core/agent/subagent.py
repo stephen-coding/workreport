@@ -18,12 +18,14 @@ frontmatter format as skills::
 
 ``output`` 取 text / bullets / json，``model`` 留空即继承主代理的模型，
 ``timeout_sec`` 是单任务墙钟超时。
-子代理一律只读：写工具与 subagent_dispatch 会被剔除，改动文件仍由主代理做。
+默认只读：临时派发的子代理会剔除写工具与 subagent_dispatch；只有启用团队后，
+团队成员才能按 capability（write / command）拿到写与终端能力（见 agent/team.py）。
 
 Search order (later wins): builtin -> ``~/.agent/subagents`` -> ``<project>/.agent/subagents``.
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -54,9 +56,57 @@ DEFAULT_TOOLS = ("read_file", "list_dir", "search_code", "git_log", "git_diff",
 # 本版本子代理一律只读：旧定义里即使写了写工具也会在这里剔除，改文件仍由主代理统一做。
 WRITE_TOOLS = frozenset(("write_file", "edit_file", "delete_file", "revert_file",
                          "apply_patch", "create_file"))
+# Terminal execution is never part of a read-only role; it needs an explicit grant.
+COMMAND_TOOLS = frozenset(("run_command",))
+
+# Capability grants. A plain ``subagent_dispatch`` stays at ``readonly``; only an
+# enabled team member is granted ``write`` / ``command`` (see agent/team.py).
+# 能力档：临时派发的子代理仍是 readonly；只有启用团队后的成员才可能拿到 write/command。
+CAPABILITY_READONLY = "readonly"
+CAPABILITY_WRITE = "write"
+CAPABILITY_COMMAND = "command"
+CAPABILITIES = (CAPABILITY_READONLY, CAPABILITY_WRITE, CAPABILITY_COMMAND)
+
+# Extra shell tools a capability adds on top of a role's read-only set. ``delete_file``
+# is intentionally absent: members never auto-grant deletion (it stays a PM/user call).
+CAPABILITY_EXTRA_TOOLS = {
+    CAPABILITY_READONLY: frozenset(),
+    CAPABILITY_WRITE: frozenset(("write_file", "edit_file", "revert_file", "diagnostics")),
+    CAPABILITY_COMMAND: frozenset(("write_file", "edit_file", "revert_file",
+                                   "diagnostics", "run_command")),
+}
+
+
+def strip_by_capability(tools: List[str], capability: str) -> List[str]:
+    """Drop write/command/recursive tools a capability does not grant.
+
+    Read-only roles keep their full read set; a team member with ``write`` /
+    ``command`` may additionally use the tools its capability adds.
+    """
+    granted = CAPABILITY_EXTRA_TOOLS.get(capability, CAPABILITY_EXTRA_TOOLS[CAPABILITY_READONLY])
+    kept: List[str] = []
+    for name in tools:
+        if name == "subagent_dispatch":
+            continue
+        if name in WRITE_TOOLS and name not in granted:
+            continue
+        if name in COMMAND_TOOLS and name not in granted:
+            continue
+        kept.append(name)
+    return kept
 
 DEFAULT_TIMEOUT_SEC = 240.0
 REPORT_TOKENS = 500
+
+# The member currently executing, so the Shell can label write/confirm cards with
+# "来自 全栈工程师" instead of an anonymous tool call.
+# 当前正在执行的成员 role：Shell 据此把写/确认卡标注为「来自某成员」。
+_current_member: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "subagent_member", default="")
+
+
+def current_member() -> str:
+    return _current_member.get()
 
 # Output contracts: a role that reports back as JSON is far easier to merge than
 # free-form prose, and "bullets" keeps review findings one line each.
@@ -107,6 +157,9 @@ class SubagentTask(BaseModel):
     goal: str
     role: str = "general"
     allowed_tools: List[str] = Field(default_factory=list)
+    # Read-only unless a team deliberately grants write/command to this member.
+    # 默认只读；只有团队成员会被显式授予 write/command。
+    capability: str = CAPABILITY_READONLY
     system_prompt: str = ""
     max_iterations: int = 5
     model: str = ""
@@ -329,6 +382,12 @@ class SubagentService:
         for tool_def in SUBAGENT_TOOLS:
             registry.register(tool_def, handlers.get(tool_def.name))
 
+    async def run_tasks(self, tasks: List[SubagentTask],
+                        on_event: Optional[TERMINAL_EVENT] = None) -> List[SubagentReport]:
+        """Run pre-built tasks through the pool (reused by team dispatch)."""
+        pool = SubagentPool(self._get_config().subagent_concurrency)
+        return await pool.dispatch(tasks, self._run_task, on_event or self._on_event)
+
     # ------------------------------------------------------------- catalog
 
     def catalog_text(self) -> str:
@@ -388,9 +447,7 @@ class SubagentService:
             return ToolResult(tool_call_id=call.id, ok=False,
                               error="缺少参数：每个子任务都要有 goal")
 
-        config = self._get_config()
-        pool = SubagentPool(config.subagent_concurrency)
-        reports = await pool.dispatch(tasks, self._run_task, self._on_event)
+        reports = await self.run_tasks(tasks, self._on_event)
 
         ok_count = sum(1 for report in reports if report.ok)
         roles = "+".join(dict.fromkeys(task.role for task in tasks))
@@ -430,13 +487,17 @@ class SubagentService:
             "model": task.model or base.model,
         })
         session = Session("subagent-%s" % task.id)
-        registry = self._filtered_registry(task.allowed_tools)
+        registry = self._filtered_registry(task.allowed_tools, task.capability)
 
         async def emit_token(_delta: str) -> None:
             return None
 
-        result = await run_chat(session, task.goal, config, provider, emit_token,
-                                registry=registry, base_prompt=task.system_prompt)
+        member_token = _current_member.set(task.role)
+        try:
+            result = await run_chat(session, task.goal, config, provider, emit_token,
+                                    registry=registry, base_prompt=task.system_prompt)
+        finally:
+            _current_member.reset(member_token)
         text = (result.content or "").strip()
         summary = truncate_to_budget(text, REPORT_TOKENS) if text else "（子代理没有输出）"
         return SubagentReport(task_id=task.id, ok=True, summary=summary, detail=text)
@@ -476,10 +537,10 @@ class SubagentService:
                 id="%s-%d" % (role, counters[role]),
                 goal=goal,
                 role=role,
-                # A per-task override is still read-only: write tools never pass.
-                # 即便调用方临时指定了工具，写工具也一律被剔掉。
-                allowed_tools=[name for name in tools
-                               if name not in WRITE_TOOLS and name != "subagent_dispatch"],
+                # A per-task override is still capability-checked: write/command tools
+                # only survive when the capability grants them.
+                # 即便调用方临时指定了工具，也要过 capability 检查：写/命令工具只在该能力下保留。
+                allowed_tools=strip_by_capability(tools, CAPABILITY_READONLY),
                 system_prompt=self._prompt_for(definition),
                 max_iterations=definition.max_iterations if definition else 5,
                 model=definition.model if definition else "",
@@ -495,11 +556,10 @@ class SubagentService:
         return ("你现在是一个独立的子代理，只负责完成被分配的目标；"
                 "完成后用简洁中文给出结论与依据。你不能修改文件。")
 
-    def _filtered_registry(self, allowed: List[str]) -> ToolRegistry:
+    def _filtered_registry(self, allowed: List[str],
+                           capability: str = CAPABILITY_READONLY) -> ToolRegistry:
         filtered = ToolRegistry()
-        for name in allowed:
-            if name == "subagent_dispatch" or name in WRITE_TOOLS:
-                continue  # no recursive fan-out, no writes from a subagent
+        for name in strip_by_capability(allowed, capability):
             tool_def = self.registry.get(name)
             handler = self.registry.handler(name)
             if tool_def is not None and handler is not None:

@@ -55,6 +55,11 @@ class Session:
         # Checklist written by todo_write; persisted with the conversation.
         # todo_write 写入的任务清单，随会话一起落盘。
         self.todos: List[Dict[str, Any]] = []
+        # Team blackboard artifacts (research/plan/impl/test/review) and one record
+        # per team run; both persist with the conversation (store v3).
+        # 团队黑板交付物与团队运行记录，随会话落盘（store v3）。
+        self.artifacts: List[Dict[str, Any]] = []
+        self.team_runs: List[Dict[str, Any]] = []
         # Title and updated_at are what the history list shows.
         self.title: str = ""
         self.updated_at: int = 0

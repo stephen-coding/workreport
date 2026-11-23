@@ -82,6 +82,15 @@ class ChatConfig(BaseModel):
     # send their own list when the user overrides it.
     # 留空时使用内置白名单；用户覆盖后由 Shell 下发完整列表。
     command_allowlist: List[str] = Field(default_factory=list)
+    # ---- Agent team (multi-agent collaboration) --------------------------------
+    # Empty means "no team": behaviour is byte-for-byte the single-agent path.
+    # 空值 = 未启用团队，行为与单代理完全一致（D-B：默认关闭）。
+    active_team: str = ""
+    team_max_members: int = 4          # concurrent members per team dispatch
+    team_turn_cap: int = 12            # phase budget for one team run (anti-spin)
+    # D-A: once the pre-review checkpoint is approved, member writes/commands in
+    # that implementation phase run without per-edit diff cards.
+    team_auto_after_preapprove: bool = True
 
 
 class ContextSnapshot(BaseModel):

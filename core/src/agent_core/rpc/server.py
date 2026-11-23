@@ -17,13 +17,16 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent_core.agent import ask as ask_tools
+from agent_core.agent import subagent as subagent_tools
+from agent_core.agent import team as team_tools
 from agent_core.agent import todos as todo_tools
 from agent_core.agent.commands import decide as decide_command
-from agent_core.agent.loop import run_chat
+from agent_core.agent.loop import SYSTEM_PROMPT, run_chat
 from agent_core.agent.search import SessionSearch
 from agent_core.agent.session import Session, SessionManager, make_title
 from agent_core.agent.store import SessionStore
 from agent_core.agent.subagent import SubagentLoader, SubagentService
+from agent_core.agent.team import TeamLoader, TeamService
 from agent_core.codeindex import CodeIndexService
 from agent_core.llm import build_provider
 from agent_core.llm.completion import complete as complete_inline
@@ -58,6 +61,11 @@ CONFIRM_TIMEOUT = 120.0
 # interrupts the wait, and the Shell gets ask/withdraw so the card does not linger.
 # 提问不设短超时：人会离开。需要中断时走 chat/cancel，卡片会收到 ask/withdraw 收起。
 ASK_TIMEOUT = 1800.0
+
+# Tools whose diff card disappears once the implementation phase was pre-approved
+# (D-A). ``delete_file`` is deliberately absent: deletion is never auto-approved.
+# 预审通过后可自动执行的写工具；delete_file 不在其中，删除始终逐次确认。
+WRITE_TOOL_NAMES = frozenset(("write_file", "edit_file"))
 
 # The task id of the chat currently being executed (used when forwarding tool
 # invocations so the IDE can group UI cards per task).
@@ -123,6 +131,14 @@ class RpcServer:
             on_event=self._on_subagent_event,
         )
         self.subagents.register_tools(self.tools)
+        self.teams = TeamService(
+            TeamLoader(self.project_root), self.subagents,
+            get_config=lambda: self.config,
+            preapprove_fn=self._preapprove_via_shell,
+            on_artifact=self._publish_artifact,
+            on_event=self._on_subagent_event,
+        )
+        self.teams.register_tools(self.tools)
 
     def _register_shell_tools(self) -> None:
         proxy = RemoteToolProxy(self._invoke_shell_tool)
@@ -171,7 +187,7 @@ class RpcServer:
                              "memory", "skill", "mcp", "subagent", "inline",
                              "code-index", "session-store", "terminal",
                              "session-search", "memory-pending", "usage",
-                             "ask-user"],
+                             "ask-user", "team"],
             "native": native_info(),
         })
         LOGGER.info("agent core %s started (project=%s)", CORE_VERSION, self.project_id)
@@ -286,7 +302,22 @@ class RpcServer:
             return {"discarded": discarded, "remaining": len(self.memory.pending_list())}
         if method == "usage/report":
             return self.usage.report(int(params.get("days") or 7))
+        if method == "team/list":
+            return {"teams": self.teams.list_payload()}
+        if method == "team/artifacts":
+            return self._team_artifacts(params)
         raise RpcError(ErrorCode.PROTOCOL_ERROR, "unknown method: %s" % method)
+
+    def _team_artifacts(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Blackboard replay for a reopened conversation; unknown id reads empty."""
+        session = self.sessions.get(str(params.get("sessionId") or "default"))
+        items = session.artifacts if session is not None else []
+        kind = str(params.get("kind") or "").strip().lower()
+        runs = session.team_runs if session is not None else []
+        return {
+            "artifacts": [item for item in items if not kind or item.get("kind") == kind],
+            "teamRuns": list(runs),
+        }
 
     def _memory_promote(self, params: Dict[str, Any]) -> Dict[str, Any]:
         pending_id = str(params.get("id") or "")
@@ -513,6 +544,7 @@ class RpcServer:
         self.mcp.set_project_root(project_root)
         self._schedule_mcp_refresh()
         self.subagents.loader.set_project_root(project_root)
+        self.teams.loader.set_project_root(project_root)
 
     async def _run_task(self, task_id: str, session: Session, user_input: str,
                         skill_name: str = "") -> None:
@@ -521,6 +553,21 @@ class RpcServer:
         # todo_write writes into the session of the running chat.
         # todo_write 写入当前会话的清单，任务结束随会话落盘。
         todo_token = todo_tools.bind_session(session)
+        # Team tools share the same session; the run id scopes pre-approval.
+        # 团队工具写入同一会话；run id 用于限定预审通过的范围。
+        team_token = team_tools.bind_session(session)
+        run_token = team_tools.bind_run(task_id)
+        team = self.teams.active_team()
+        team_record: Optional[Dict[str, Any]] = None
+        if team is not None:
+            team_record = {
+                "teamRunId": task_id,
+                "team": team.name,
+                "startedAt": int(time.time() * 1000),
+                "members": [member.role for member in team.members],
+            }
+            session.team_runs.append(team_record)
+            del session.team_runs[:-20]
         started = time.monotonic()
         tool_calls = 0
         usage_total: Dict[str, Any] = {}
@@ -528,6 +575,12 @@ class RpcServer:
 
         async def emit_token(delta: str) -> None:
             self._send_notification("chat/token", {"taskId": task_id, "delta": delta})
+
+        async def emit_reasoning(delta: str) -> None:
+            # Thinking (reasoning_content / Ollama thinking) travels on its own channel so the
+            # Shell can fold it above the answer instead of mixing it into the text.
+            # 思考过程走独立通道：Shell 把它折在正文上方，而不是混进正文。
+            self._send_notification("chat/reasoning", {"taskId": task_id, "delta": delta})
 
         async def on_tool_start(call: ToolCall) -> None:
             nonlocal tool_calls
@@ -554,13 +607,21 @@ class RpcServer:
             self._send_notification("chat/notice", {"taskId": task_id, "text": text})
 
         try:
+            team_prompt = self.teams.active_prompt_text() if team is not None else None
+            # The playbook is appended to the default prompt, not replacing it: the
+            # team still needs the tool-use and reporting rules of the base agent.
+            # 剧本追加到默认提示词之后（不是替换），否则会丢掉工具使用与回报规范。
+            base_prompt = (SYSTEM_PROMPT + "\n\n" + team_prompt) if team_prompt else None
+            catalog = None if team_prompt else self.subagents.catalog_text()
             result = await run_chat(
                 session, user_input, self.config, provider, emit_token,
                 registry=self.tools, on_tool_start=on_tool_start, on_tool_end=on_tool_end,
                 on_notice=on_notice,
+                on_reasoning=emit_reasoning,
                 memory_overview=self.memory.overview_text(),
                 skill_instruction=self.skills.instruction_for(user_input, skill_name),
-                subagent_catalog=self.subagents.catalog_text(),
+                base_prompt=base_prompt,
+                subagent_catalog=catalog,
             )
             usage_total = result.usage_total if isinstance(result.usage_total, dict) else {}
             ok = True
@@ -592,6 +653,13 @@ class RpcServer:
             })
         finally:
             todo_tools.reset_session(todo_token)
+            team_tools.reset_session(team_token)
+            team_tools.reset_run(run_token)
+            self.teams.clear_run(task_id)
+            if team_record is not None:
+                team_record["ok"] = ok
+                team_record["toolCalls"] = tool_calls
+                team_record["durationMs"] = int((time.monotonic() - started) * 1000)
             _current_task.reset(task_token)
             self.sessions.save(session)
             self._record_usage(task_id, usage_total, started, tool_calls,
@@ -636,14 +704,36 @@ class RpcServer:
             "todos": todos,
         })
 
+    def _publish_artifact(self, artifact: Dict[str, Any]) -> None:
+        """Push a blackboard deliverable so the Shell can render it live."""
+        self._send_notification("chat/artifact", {
+            "taskId": _current_task.get(),
+            "teamRunId": _current_task.get(),
+            "kind": artifact.get("kind") or "note",
+            "title": artifact.get("title") or "",
+            "authorRole": artifact.get("authorRole") or "",
+            "refs": artifact.get("refs") or [],
+        })
+
     # Forward subagent lifecycle events so the Shell can show progress.
     # 转发子代理生命周期事件，供 Shell 展示进度。
     async def _on_subagent_event(self, kind: str, task, report=None) -> None:
+        team = self.teams.active_team()
+        role = getattr(task, "role", "") or ""
+        actor, capability = role, getattr(task, "capability", "") or ""
+        if team is not None:
+            member = team.member(role)
+            if member is not None:
+                actor = member.display_name()
+                capability = member.normalised_capability()
         payload = {
             "taskId": _current_task.get(),
+            "teamRunId": _current_task.get() if team is not None else "",
             "subagentId": task.id,
             "kind": kind,
-            "role": getattr(task, "role", "") or "",
+            "role": role,
+            "actor": actor,
+            "capability": capability,
             "model": getattr(task, "model", "") or "",
             "goal": task.goal[:200],
         }
@@ -674,17 +764,31 @@ class RpcServer:
                     ),
                 )
             permission = decision
+        elif call.name in WRITE_TOOL_NAMES and self.teams.active_team() is not None:
+            # D-A: an approved checkpoint covers this phase's routine writes only.
+            # 预审通过只豁免本阶段的常规写；未预审、跨范围、删除均保持原有确认。
+            path = str(call.arguments.get("path") or "")
+            if self.teams.should_auto_write(_current_task.get(), path):
+                permission = Permission.AUTO.value
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._pending_tools[call.id] = future
-        self._send_notification("tool/invoke", {
+        payload = {
             "taskId": _current_task.get(),
             "toolCallId": call.id,
             "toolName": call.name,
             "params": call.arguments,
             "permission": permission,
-        })
+        }
+        # Label member writes so the Shell can show "来自 全栈工程师" on the card.
+        # 成员发起的写带上 actor，Shell 在卡片上标注来源。
+        member = subagent_tools.current_member()
+        if member:
+            team = self.teams.active_team()
+            found = team.member(member) if team is not None else None
+            payload["member"] = found.display_name() if found is not None else member
+        self._send_notification("tool/invoke", payload)
         try:
             return await future
         finally:
@@ -711,6 +815,38 @@ class RpcServer:
             return False
         finally:
             self._pending_confirms.pop(confirm_id, None)
+
+    # One pre-review checkpoint for an implementation phase (decision D-A).
+    # The answer reuses agent/confirmResult; a Shell that cannot render it
+    # simply times out and the per-edit cards stay in place.
+    # 实现阶段的一次预审：应答走 agent/confirmResult；不支持的 Shell 超时后仍逐次确认。
+    async def _preapprove_via_shell(self, payload: Dict[str, Any]) -> bool:
+        # An older shell would render this as an MCP confirmation card (and answer "MCP" to a
+        # plan it cannot show), so without the capability the phase falls back to one
+        # confirmation per write instead.
+        # 旧 Shell 会把它当成 MCP 确认卡（对着看不到的计划回答「MCP」），因此没声明 team
+        # 能力时直接返回 False，退化成逐次确认。
+        if "team" not in self._shell_capabilities:
+            LOGGER.info("team preapprove skipped: shell did not advertise team")
+            return False
+        preapprove_id = uuid.uuid4().hex[:12]
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_confirms[preapprove_id] = future
+        self._send_notification("agent/confirm", {
+            "confirmId": preapprove_id,
+            "taskId": _current_task.get(),
+            "kind": "preapprove",
+            "preapproveId": preapprove_id,
+            "plan": str(payload.get("plan") or ""),
+            "firstDiff": str(payload.get("firstDiff") or ""),
+            "files": list(payload.get("files") or []),
+        })
+        try:
+            return bool(await asyncio.wait_for(future, timeout=CONFIRM_TIMEOUT))
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            self._pending_confirms.pop(preapprove_id, None)
 
     # Ask the user a question and wait for the answer (the ``ask_user`` tool).
     # Returns None when no Shell can render the card, so the model continues with

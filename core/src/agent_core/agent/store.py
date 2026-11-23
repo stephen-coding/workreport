@@ -18,13 +18,15 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from agent_core.agent.session import Session, make_title
 from agent_core.agent.todos import normalize_todos
+from agent_core.agent.blackboard import normalize_artifacts
 from agent_core.protocol import Message, Role, ToolCall
 
 LOGGER = logging.getLogger(__name__)
 
-# v2 adds the task checklist; older files simply have no ``todos`` key.
-# v2 增加任务清单字段；旧文件没有 todos，读出来就是空列表。
-STORE_VERSION = 2
+# v2 adds the task checklist; v3 adds the team blackboard (artifacts + team runs).
+# Older files simply have no ``artifacts`` / ``teamRuns`` key and read as empty lists.
+# v2 增加任务清单；v3 增加团队黑板（artifacts + teamRuns）。旧文件缺这些键时读为空列表。
+STORE_VERSION = 3
 # Newest messages kept on disk: enough to resume a long conversation, small enough
 # that the file stays a few hundred KB.  Trimming keeps whole rounds (see save()).
 MAX_MESSAGES = 240
@@ -92,6 +94,8 @@ class SessionStore:
         session.title = str(data.get("title") or "")
         session.updated_at = int(data.get("updatedAt") or 0)
         session.todos = normalize_todos(data.get("todos"))
+        session.artifacts = normalize_artifacts(data.get("artifacts"))
+        session.team_runs = _normalise_records(data.get("teamRuns"))
         for raw in data.get("messages") or []:
             message = _decode(raw)
             if message is not None:
@@ -112,6 +116,8 @@ class SessionStore:
             "updatedAt": session.updated_at or int(time.time() * 1000),
             "messages": [_encode(message) for message in messages],
             "todos": session.todos,
+            "artifacts": session.artifacts,
+            "teamRuns": session.team_runs,
         }
         path = self._path(session.session_id)
         tmp = path.with_name(path.name + ".tmp")
@@ -234,3 +240,10 @@ def _preview(messages: List[Dict[str, Any]]) -> str:
         if flat:
             return flat[:PREVIEW_CHARS]
     return ""
+
+
+def _normalise_records(raw: Any) -> List[Dict[str, Any]]:
+    """Keep only dict rows for team runs; a broken/legacy file reads as empty."""
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
