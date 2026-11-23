@@ -20,7 +20,8 @@ class FakeProvider:
         self._rounds = list(rounds)
         self.requests = 0
 
-    async def chat_stream(self, messages, tools, config, on_token, on_tool_call):
+    async def chat_stream(self, messages, tools, config, on_token, on_tool_call,
+                          on_reasoning=None):
         index = min(self.requests, len(self._rounds) - 1)
         self.requests += 1
         return self._rounds[index]

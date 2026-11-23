@@ -10,6 +10,10 @@ from agent_core.protocol import Message, Role, ToolCall, ToolDef
 
 TokenCallback = Callable[[str], Awaitable[None]]
 ToolCallCallback = Callable[[ToolCall], Awaitable[None]]
+# Optional channel for the model's thinking process (reasoning_content / thinking).
+# Some models stream it next to the answer; providers forward it here so the Shell
+# can show it without mixing it into the answer text.
+# 思考过程的可选通道：模型把它和正文分开流式下发，这里单独转给 Shell，不混进正文。
 
 # Endpoints that refuse tool definitions (vLLM without --enable-auto-tool-choice,
 # Ollama models without tool support ...) answer 400 with one of these phrases.
@@ -47,6 +51,7 @@ class LLMProvider(Protocol):
         config: Any,
         on_token: TokenCallback,
         on_tool_call: ToolCallCallback,
+        on_reasoning: Optional[TokenCallback] = None,
     ) -> ChatResult:
         ...
 

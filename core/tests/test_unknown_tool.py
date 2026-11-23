@@ -55,7 +55,8 @@ class StubbornProvider:
     def __init__(self):
         self.rounds = 0
 
-    async def chat_stream(self, messages, tools, config, on_token, on_tool_call):
+    async def chat_stream(self, messages, tools, config, on_token, on_tool_call,
+                          on_reasoning=None):
         self.rounds += 1
         call = ToolCall(id="c%d" % self.rounds, name="bash", arguments={"cmd": "git status"})
         return ChatResult(tool_calls=[call])

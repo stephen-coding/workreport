@@ -265,6 +265,58 @@ async def _collect(sink, token):
     sink.append(token)
 
 
+class TestReasoningStream(unittest.TestCase):
+    """The thinking process must reach the Shell, not disappear with the delta."""
+
+    def setUp(self):
+        llm_base._tools_suppressed.clear()
+        llm_base._notice_shown.clear()
+
+    def test_openai_reasoning_content_is_forwarded_first(self):
+        def handler(request):
+            return httpx.Response(200, content=_sse(
+                {"choices": [{"delta": {"reasoning_content": "先读"}}]},
+                {"choices": [{"delta": {"reasoning_content": "文件"}}]},
+                {"choices": [{"delta": {"content": "结论"}, "finish_reason": "stop"}]}))
+
+        provider = OpenAICompatProvider(transport=httpx.MockTransport(handler))
+        config = ChatConfig(provider="openai_compat", model="qwen3",
+                            base_url="https://host/v1/chat/completions")
+        reasoning, tokens = [], []
+
+        async def scenario():
+            return await provider.chat_stream(
+                [], [], config, lambda t: _collect(tokens, t), _noop_tool_call,
+                lambda t: _collect(reasoning, t))
+
+        result = asyncio.run(scenario())
+
+        self.assertEqual("".join(reasoning), "先读文件")
+        self.assertEqual("".join(tokens), "结论")
+        self.assertEqual(result.content, "结论")
+
+    def test_ollama_thinking_is_forwarded(self):
+        def handler(request):
+            return httpx.Response(200, content=_ndjson(
+                {"message": {"thinking": "想一想"}, "done": False},
+                {"message": {"content": "答案"}, "done": True}))
+
+        provider = OllamaProvider(transport=httpx.MockTransport(handler))
+        config = ChatConfig(provider="ollama", model="qwen3",
+                            base_url="http://localhost:11434/api/chat")
+        reasoning, tokens = [], []
+
+        async def scenario():
+            return await provider.chat_stream(
+                [], [], config, lambda t: _collect(tokens, t), _noop_tool_call,
+                lambda t: _collect(reasoning, t))
+
+        result = asyncio.run(scenario())
+
+        self.assertEqual("".join(reasoning), "想一想")
+        self.assertEqual(result.content, "答案")
+
+
 async def _noop_token(token):
     return None
 

@@ -24,9 +24,28 @@ class OpenAIStreamAccumulator:
 
     def __init__(self) -> None:
         self._content_parts: List[str] = []
+        self._reasoning_parts: List[str] = []
         self._slots: Dict[int, Dict[str, str]] = {}
         self.finish_reason: Optional[str] = None
         self.usage: Optional[Dict[str, Any]] = None
+
+    def reasoning_delta(self, chunk: Dict[str, Any]) -> str:
+        """Reasoning text carried by one chunk, or "".
+
+        vLLM ``--reasoning-parser`` (deepseek_r1 / qwen3 ...), DeepSeek and most
+        gateways put the thinking process in ``delta.reasoning_content`` instead of
+        ``delta.content``; newer parsers use ``delta.reasoning``. Dropping these
+        fields is why the Shell showed no thinking at all.
+        """
+        choices = chunk.get("choices") or []
+        if not choices:
+            return ""
+        delta = choices[0].get("delta") or {}
+        piece = delta.get("reasoning_content") or delta.get("reasoning") or ""
+        if not isinstance(piece, str) or not piece:
+            return ""
+        self._reasoning_parts.append(piece)
+        return piece
 
     def feed(self, chunk: Dict[str, Any]) -> List[str]:
         """Consume one SSE JSON chunk; return newly arrived text tokens."""
@@ -83,15 +102,29 @@ class OpenAIStreamAccumulator:
     def content(self) -> str:
         return "".join(self._content_parts)
 
+    @property
+    def reasoning(self) -> str:
+        return "".join(self._reasoning_parts)
+
 
 class OllamaStreamAccumulator:
     """Accumulates one Ollama /api/chat streaming response."""
 
     def __init__(self) -> None:
         self._content_parts: List[str] = []
+        self._reasoning_parts: List[str] = []
         self._tool_calls: List[ToolCall] = []
         self.done = False
         self.usage: Optional[Dict[str, Any]] = None
+
+    def reasoning_delta(self, chunk: Dict[str, Any]) -> str:
+        """Thinking text of one NDJSON chunk: ``message.thinking`` on think-enabled models."""
+        msg = chunk.get("message") or {}
+        piece = msg.get("thinking") or ""
+        if not isinstance(piece, str) or not piece:
+            return ""
+        self._reasoning_parts.append(piece)
+        return piece
 
     def feed(self, chunk: Dict[str, Any]) -> List[str]:
         tokens: List[str] = []
@@ -134,6 +167,10 @@ class OllamaStreamAccumulator:
     @property
     def content(self) -> str:
         return "".join(self._content_parts)
+
+    @property
+    def reasoning(self) -> str:
+        return "".join(self._reasoning_parts)
 
 
 def parse_sse_line(line: str) -> Optional[str]:

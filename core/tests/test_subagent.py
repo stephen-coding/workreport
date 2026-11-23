@@ -56,7 +56,8 @@ class FakeProvider:
         self.answer = answer
         self.calls = []
 
-    async def chat_stream(self, messages, tools, config, on_token, on_tool_call):
+    async def chat_stream(self, messages, tools, config, on_token, on_tool_call,
+                          on_reasoning=None):
         self.calls.append({"messages": list(messages), "tools": list(tools or []),
                            "max_iterations": config.max_iterations,
                            "model": config.model})
@@ -296,10 +297,12 @@ class TestService(unittest.TestCase):
 
     def test_timeout_becomes_failed_report(self):
         class SlowProvider(FakeProvider):
-            async def chat_stream(self, messages, tools, config, on_token, on_tool_call):
+            async def chat_stream(self, messages, tools, config, on_token, on_tool_call,
+                                  on_reasoning=None):
                 await asyncio.sleep(0.3)
                 return await super().chat_stream(messages, tools, config,
-                                                 on_token, on_tool_call)
+                                                 on_token, on_tool_call,
+                                                 on_reasoning)
 
         service = SubagentService(self.loader, self.registry,
                                   get_config=lambda: self.config,

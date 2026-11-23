@@ -97,6 +97,7 @@ async def run_chat(
     on_tool_start: Optional[ToolStartCallback] = None,
     on_tool_end: Optional[ToolEndCallback] = None,
     on_notice: Optional[NoticeCallback] = None,
+    on_reasoning: Optional[TokenCallback] = None,
     memory_overview: Optional[str] = None,
     skill_instruction: Optional[str] = None,
     base_prompt: Optional[str] = None,
@@ -143,6 +144,7 @@ async def run_chat(
             config=config,
             on_token=emit_token,
             on_tool_call=_noop_tool_call,
+            on_reasoning=on_reasoning,
         )
         await _flush_notice(provider, on_notice)
         _add_usage(usage_total, result.usage)

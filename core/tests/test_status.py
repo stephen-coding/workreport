@@ -96,7 +96,8 @@ class FakeProvider:
     def __init__(self):
         self.calls = []
 
-    async def chat_stream(self, messages, tools, config, on_token, on_tool_call):
+    async def chat_stream(self, messages, tools, config, on_token, on_tool_call,
+                          on_reasoning=None):
         self.calls.append(list(messages))
         if len(self.calls) == 1:
             return ChatResult(tool_calls=[_call()])

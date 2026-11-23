@@ -65,6 +65,18 @@ class TestOpenAIAccumulator(unittest.TestCase):
         calls = acc.finalize()
         self.assertEqual(calls[0].arguments, {"_raw": "{oops"})
 
+    def test_reasoning_content_stays_out_of_content(self):
+        # vLLM --reasoning-parser sends the thinking process in reasoning_content;
+        # it must reach the Shell on its own channel, never in the answer text.
+        acc = OpenAIStreamAccumulator()
+        reasoning = acc.reasoning_delta({"choices": [{"delta": {"reasoning_content": "先看"}}]})
+        reasoning += acc.reasoning_delta({"choices": [{"delta": {"reasoning": "文件"}}]})
+        tokens = acc.feed({"choices": [{"delta": {"content": "结论"}}]})
+        self.assertEqual(reasoning, "先看文件")
+        self.assertEqual(acc.reasoning, "先看文件")
+        self.assertEqual(tokens, ["结论"])
+        self.assertEqual(acc.content, "结论")
+
 
 class TestOllamaAccumulator(unittest.TestCase):
     def test_text_and_usage(self):
@@ -91,6 +103,14 @@ class TestOllamaAccumulator(unittest.TestCase):
             {"function": {"name": "x", "arguments": json.dumps({"k": 1})}},
         ]}})
         self.assertEqual(acc.finalize()[0].arguments, {"k": 1})
+
+    def test_thinking_field_is_separate_from_content(self):
+        acc = OllamaStreamAccumulator()
+        self.assertEqual(acc.reasoning_delta({"message": {"thinking": "想一下"}}), "想一下")
+        tokens = acc.feed({"message": {"content": "答案"}, "done": True})
+        self.assertEqual(tokens, ["答案"])
+        self.assertEqual(acc.reasoning, "想一下")
+        self.assertEqual(acc.content, "答案")
 
 
 if __name__ == "__main__":

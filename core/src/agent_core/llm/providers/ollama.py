@@ -80,6 +80,7 @@ class OllamaProvider(LLMProvider):
         config: ChatConfig,
         on_token: TokenCallback,
         on_tool_call: ToolCallCallback,
+        on_reasoning: Optional[TokenCallback] = None,
     ) -> ChatResult:
         url = resolve_chat_url(config.base_url)
         if not url:
@@ -114,7 +115,7 @@ class OllamaProvider(LLMProvider):
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT,
                                          transport=self._transport) as client:
                 try:
-                    accumulator = await self._stream(client, url, body, emit)
+                    accumulator = await self._stream(client, url, body, emit, on_reasoning)
                     if wants_tools:
                         # The model accepted tool definitions again: end the probation.
                         # 模型又接受工具定义：结束假释。
@@ -126,7 +127,7 @@ class OllamaProvider(LLMProvider):
                     suppress_tools(*tools_key)
                     self._warn_once(tools_key)
                     body.pop("tools", None)
-                    return await self._stream(client, url, body, emit)
+                    return await self._stream(client, url, body, emit, on_reasoning)
 
         # Connect failures and 429/5xx are retried only before the first token.
         # 只在首个 token 之前重试连接失败与 429/5xx。
@@ -153,7 +154,8 @@ class OllamaProvider(LLMProvider):
         )
 
     async def _stream(self, client: httpx.AsyncClient, url: str, body: dict,
-                      on_token: TokenCallback) -> OllamaStreamAccumulator:
+                      on_token: TokenCallback,
+                      on_reasoning: Optional[TokenCallback] = None) -> OllamaStreamAccumulator:
         accumulator = OllamaStreamAccumulator()
         async with client.stream("POST", url, json=body) as response:
             if response.status_code >= 400:
@@ -177,6 +179,11 @@ class OllamaProvider(LLMProvider):
                 except json.JSONDecodeError:
                     LOGGER.warning("drop invalid NDJSON chunk: %r", payload[:200])
                     continue
+                # Think-enabled models stream the process in ``message.thinking``.
+                # 开启思考的模型把过程放在 message.thinking 里，单独转发。
+                reasoning = accumulator.reasoning_delta(chunk)
+                if reasoning and on_reasoning is not None:
+                    await on_reasoning(reasoning)
                 for token in accumulator.feed(chunk):
                     await on_token(token)
         return accumulator

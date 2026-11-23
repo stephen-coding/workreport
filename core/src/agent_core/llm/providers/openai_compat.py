@@ -82,6 +82,7 @@ class OpenAICompatProvider(LLMProvider):
         config: ChatConfig,
         on_token: TokenCallback,
         on_tool_call: ToolCallCallback,
+        on_reasoning: Optional[TokenCallback] = None,
     ) -> ChatResult:
         url = resolve_chat_url(config.base_url)
         if not url:
@@ -122,7 +123,7 @@ class OpenAICompatProvider(LLMProvider):
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT,
                                          transport=self._transport) as client:
                 try:
-                    accumulator = await self._stream(client, url, headers, body, emit)
+                    accumulator = await self._stream(client, url, headers, body, emit, on_reasoning)
                     if wants_tools:
                         # The endpoint took the tool definitions again: end the probation.
                         # 端点又接受工具定义：结束假释，后续请求继续带工具。
@@ -135,7 +136,7 @@ class OpenAICompatProvider(LLMProvider):
                     self._warn_once(tools_key)
                     body.pop("tools", None)
                     body.pop("tool_choice", None)
-                    return await self._stream(client, url, headers, body, emit)
+                    return await self._stream(client, url, headers, body, emit, on_reasoning)
 
         # Connect failures and 429/5xx are retried only before the first token.
         # 只在首个 token 之前重试连接失败与 429/5xx。
@@ -162,7 +163,8 @@ class OpenAICompatProvider(LLMProvider):
         )
 
     async def _stream(self, client: httpx.AsyncClient, url: str, headers: dict, body: dict,
-                      on_token: TokenCallback) -> OpenAIStreamAccumulator:
+                      on_token: TokenCallback,
+                      on_reasoning: Optional[TokenCallback] = None) -> OpenAIStreamAccumulator:
         accumulator = OpenAIStreamAccumulator()
         async with client.stream("POST", url, headers=headers, json=body) as response:
             if response.status_code >= 400:
@@ -186,6 +188,12 @@ class OpenAICompatProvider(LLMProvider):
                 except json.JSONDecodeError:
                     LOGGER.warning("drop invalid SSE chunk: %r", payload[:200])
                     continue
+                # Thinking arrives in its own delta field; forward it before the answer text
+                # so the panel can show it first instead of dropping it.
+                # 思考过程在单独的 delta 字段里：先于正文转发给界面，否则会被直接丢掉。
+                reasoning = accumulator.reasoning_delta(chunk)
+                if reasoning and on_reasoning is not None:
+                    await on_reasoning(reasoning)
                 for token in accumulator.feed(chunk):
                     await on_token(token)
         return accumulator
