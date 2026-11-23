@@ -1,6 +1,6 @@
 # Agent Coding Assistant 使用手册
 
-> 适用版本：**3.3.0** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.3**（`since-build=252` / `until-build=263.*`）
+> 适用版本：**3.3.1** ｜ 适用 IDE：**IntelliJ IDEA 2025.2 ~ 2026.3**（`since-build=252` / `until-build=263.*`）
 >
 > 本手册面向使用者。想了解内部实现（RPC 协议、FIM 补全原理、向量检索细节），
 > 请看 [技术详情文档](docs/INLINE_COMPLETION_AND_SEMANTIC_INDEX.md)。
@@ -63,7 +63,7 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 
 ### 2.2 安装步骤
 
-1. 拿到 `workreport-ai-assistant-3.3.0.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
+1. 拿到 `workreport-ai-assistant-3.3.1.zip`（Release 下载，或本地 `powershell -File scripts/build_plugin.ps1` 生成）
 2. IDEA → `Settings` → `Plugins` → ⚙️ → `Install Plugin from Disk...`
 3. 选择该 zip → `Restart IDE`
 4. 重启后底部出现 **AgentCoder** 工具窗口；菜单 `Tools` 下多出 **「模型设置…」** 与 `生成今日日报`
@@ -84,7 +84,7 @@ JetBrains 官方文档称它为 **Inline Completion**，本插件统一译作 **
 - Agent 面板输入区工具栏的 **「设置」** 按钮
 
 > 找不到入口时也可以按 **`Ctrl+Shift+A`**，输入 `模型设置` 直接跳转；
-> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `3.3.0` 的 zip。
+> 如果 `Tools` 菜单里没有这一项，说明装的是 v2.2.0 或更早的包，需重新安装 `3.3.1` 的 zip。
 
 ### 3.2 配置模型（必做）
 
@@ -892,7 +892,7 @@ v2.4.7 及更早版本：同一个会话聊得越久，下一次发送前的等�
 - **端点没把思考单独返回**：`chat/reasoning` 只转发 `delta.reasoning_content` / `delta.reasoning`（vLLM 需 `--reasoning-parser qwen3`，DeepSeek-R1 类用 `deepseek_r1`）与 Ollama 的 `message.thinking`（需模型自身支持 thinking）。都没开时，模型把思考混在 `content` 里，界面上就是普通正文，不会有折叠行
 - **只有折叠行、没有正文**：这一轮以工具调用结束，思考行会留着；点标题随时可展开全文
 - **思考不进历史**：Core 只把思考实时发给界面，不写进会话历史，重开会话看不到；需要留档就让 Agent 把结论落到文件
-- **旧版 Core 不读思考字段**：3.3.0 之前的 Core 会直接丢弃；确认插件与 `AGENT_CORE_EXE` 指向的是新构建（`agent-core --version` 应为 3.3.0）
+- **旧版 Core 不读思考字段**：3.3.0 之前的 Core 会直接丢弃；确认插件与 `AGENT_CORE_EXE` 指向的是新构建（`agent-core --version` 应为 3.3.1）
 
 ---
 

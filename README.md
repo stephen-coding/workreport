@@ -4,7 +4,7 @@
 
 **IntelliJ IDEA 插件 + VS Code 扩展 · 由语言无关的 Python Agent Core 驱动**
 
-[![Version](https://img.shields.io/badge/version-3.3.0-blue.svg)](https://github.com/stephen-coding/workreport)
+[![Version](https://img.shields.io/badge/version-3.3.1-blue.svg)](https://github.com/stephen-coding/workreport)
 [![IntelliJ](https://img.shields.io/badge/IntelliJ-2025.2--2026.3-green.svg)](https://www.jetbrains.com/idea/)
 ![Build](https://img.shields.io/badge/since--build-252%20%7C%20until--build-263.*-lightgrey.svg)
 [![JDK](https://img.shields.io/badge/JDK-25%20build%20%2F%2021%20bytecode-orange.svg)](https://adoptium.net/)
@@ -351,8 +351,8 @@ powershell -File scripts/build_native.ps1
 
 | 产物 | 路径 | 说明 |
 |---|---|---|
-| 可安装 zip | `target/workreport-ai-assistant-3.3.0.zip` | 内置 `agent-core/agent-core.exe`，用户机器**不需要 Python** |
-| 插件 jar | `target/workreport-intellij-plugin-3.3.0.jar` | 插件本体，不含 Core 可执行文件 |
+| 可安装 zip | `target/workreport-ai-assistant-3.3.1.zip` | 内置 `agent-core/agent-core.exe`，用户机器**不需要 Python** |
+| 插件 jar | `target/workreport-intellij-plugin-3.3.1.jar` | 插件本体，不含 Core 可执行文件 |
 | Core 可执行文件 | `core/dist/agent-core.exe` | 也可单独被 `AGENT_CORE_EXE` 指定 |
 
 只跑 `mvn package` 而不先构建 Core 时，zip 不含可执行文件，插件会回退到开发模式（需要 Python + `AGENT_CORE_HOME`）。
@@ -373,7 +373,7 @@ powershell -File scripts/build_native.ps1
 
 | 项 | 当前值 |
 |---|---|
-| 插件版本 | 3.3.0 |
+| 插件版本 | 3.3.1 |
 | 目标平台（编译用） | `intellij.version = 263.7307.259`（2026.3） |
 | 安装区间 | `since-build=252` / `until-build=263.*`（2025.2 ~ 2026.3） |
 | Kotlin | `2.4.21-RC`（平台内置 `kotlin-stdlib` 版本），必须与目标平台一致 |
@@ -384,7 +384,7 @@ powershell -File scripts/build_native.ps1
 升级平台时 `pom.xml` 的 `intellij.version`、`kotlin.version` 与 `plugin.xml` 的 `since-build` /
 `until-build` 必须一起改；版本号规则与多版本测试方法见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
-### 版本演进（v2.0 → v3.3.0）
+### 版本演进（v2.0 → v3.3.1）
 
 | 版本 | 提交 | 主要变更 |
 |---|---|---|
@@ -414,6 +414,7 @@ powershell -File scripts/build_native.ps1
 | v3.1.1 | `793b9be` | 适配 IntelliJ IDEA 2026.3（平台 263.7307.259 + Kotlin 2.4.21-RC），`until-build` 提到 `263.*`；功能无变化 |
 | v3.1.2 | `793b9be` 之后 | 修复标签条「新建会话」/「设置」按钮不显示（图标 SVG 缺失导致退化成空图标）；图标加载失败写日志，新增 `UiIconsResourceTest` |
 | v3.3.0 | 本次提交 | Agent 团队（默认关闭）：角色引用 + 能力授权、预审检查点、团队黑板、`team/*` 协议；IntelliJ 与 VS Code 双端接入；bench 新增帧数/字节/编解码占比指标 |
+| v3.3.1 | 3.3.0 之后 | 维护构建：功能与 3.3.0 一致，仅版本号递增（`pom.xml` / `plugin.xml` / 内置 Core 同步 3.3.1），用于 Marketplace 重新发布 |
 
 M1–M8 的从零落地集中在 `a49411f` ~ `47eafe6`；更早的 `bf89f58` 是重构前最后一次 CDN 下载修复。
 

@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.workreport.ai-assistant</id>
     <name>Agent Coding Assistant</name>
-    <version>3.3.0</version>
+    <version>3.3.1</version>
     <vendor url="https://github.com/stephen-coding/workreport">WeeklyReport</vendor>
     <description><![CDATA[
         AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
@@ -36,6 +36,13 @@
     <resource-bundle>messages.AgentBundle</resource-bundle>
 
     <change-notes><![CDATA[
+<h3>3.3.1</h3>
+<ul>
+  <li>Maintenance build of 3.3.0: same feature set, republished under a new version number so the
+      Marketplace entry can carry the current build. No functional changes.</li>
+</ul>
+<p>中文说明：3.3.0 的维护构建，功能与 3.3.0 完全一致，仅递增版本号以便在 Marketplace 上重新发布。</p>
+
 <h3>3.3.0</h3>
 <ul>
   <li>Agent teams (off by default): pick a team in the composer and a lead agent dispatches

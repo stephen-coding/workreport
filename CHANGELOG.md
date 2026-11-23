@@ -3,7 +3,14 @@
 Mirror of `plugin.xml` `<change-notes>`: every released version gets one section here, and the
 Marketplace entry is copied from it. Core, Shell and VS Code Shell share the numbered release.
 
-## 3.3.0（开发中）
+## 3.3.1
+
+3.3.0 的维护构建：功能与 3.3.0 完全一致，仅递增版本号，用于在 Marketplace 上承载新的构建。
+
+- **版本号收口**：`pom.xml`、`plugin.xml` 与内置 Core 可执行文件同步 3.3.1（`agent-core --version` 与 `core/hello.coreVersion` 都应是 3.3.1）。
+- **无功能变更**：代码、协议、设置页与 UI 均与 3.3.0 相同。
+
+## 3.3.0
 
 Agent 团队：可创建、启用并由项目经理编排多成员协作；默认关闭，不启用时行为与 3.1.2 逐帧一致。
 
