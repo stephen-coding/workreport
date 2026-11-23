@@ -40,6 +40,9 @@ export function collectSettings(apiKey: string): Record<string, unknown> {
     max_tokens: config.get<number>("maxTokens", 4096),
     tool_concurrency: config.get<number>("toolConcurrency", 4),
     subagent_concurrency: config.get<number>("subagentConcurrency", 3),
+    // Team switch: empty string means "no team", the 3.3.0 default.
+    // 团队开关：空串表示不启用，即 3.3.0 的默认值。
+    active_team: config.get<string>("activeTeam", "") ?? "",
   };
 
   if (apiKey) {

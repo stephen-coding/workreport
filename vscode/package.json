@@ -122,6 +122,11 @@
           "default": false,
           "description": "自动接受文件修改（跳过 diff 确认）"
         },
+        "agentCoder.activeTeam": {
+          "type": "string",
+          "default": "",
+          "description": "启用的 Agent 团队名称（留空表示不启用）；可选团队见输入区「团队」下拉。启用后成员可调研/实现/验证/审查，预审通过后写入不再逐次确认"
+        },
         "agentCoder.commandAllowlist": {
           "type": "array",
           "default": [],

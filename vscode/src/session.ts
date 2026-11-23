@@ -6,7 +6,7 @@ import { homedir } from "os";
 import { join } from "path";
 import * as vscode from "vscode";
 import { locateCoreExe, locateCoreHome, locatePython } from "./locator";
-import { ChatPanel, HistoryEntry, PendingMemory, TodoItem } from "./panel";
+import { ArtifactEntry, ChatPanel, HistoryEntry, PendingMemory, TeamEntry, TodoItem } from "./panel";
 import { RpcConnection, RpcMessage } from "./rpc";
 import { collectSettings } from "./settings";
 import { ensureApiKey } from "./secrets";
@@ -44,6 +44,9 @@ export class CoreSession {
       onMemoryList: () => void this.loadMemories(),
       onMemoryResolve: (id, approve, content) => void this.resolveMemory(id, approve, content),
       onNewSession: () => this.newSession(),
+      onTeamList: () => void this.loadTeams(),
+      onTeamSelect: (name) => void this.setTeam(name),
+      onArtifacts: () => void this.loadArtifacts(),
     });
   }
 
@@ -98,7 +101,14 @@ export class CoreSession {
       this.panel.appendSystem("[系统] Agent Core 已退出，可执行 “Agent: 重启 Agent Core”。");
     });
     this.connection = connection;
-    connection.notify("ide/hello", { protocolVersion: "1.0", ide: "vscode" });
+    // ``team`` promises the Core that this shell can render the pre-review card;
+    // without it the Core falls back to one confirmation per write.
+    // team 表示本 Shell 能渲染预审卡；不声明时 Core 会退化成逐次确认。
+    connection.notify("ide/hello", {
+      protocolVersion: "1.0",
+      ide: "vscode",
+      capabilities: ["ask-user", "team"],
+    });
     connection.notify("settings/update", collectSettings(this.apiKey));
     this.panel.setStatus("正在启动 Agent Core...");
   }
@@ -310,6 +320,60 @@ export class CoreSession {
     }
   }
 
+  // ------------------------------------------------------------------ team
+
+  // Roster for the toolbar selector. The Core owns the list; until it answers
+  // the selector only shows 「不启用」, which is also the shipped default.
+  // 名册由 Core 维护；未答复前下拉只有「不启用」，这也是发布的默认值。
+  private async loadTeams(): Promise<void> {
+    const connection = await this.connected();
+    if (!connection) {
+      return;
+    }
+    try {
+      const response = await connection.request("team/list", {});
+      const teams = toTeams(response.result?.teams);
+      const active = teams.find((team) => team.active)?.name ?? "";
+      this.panel.setTeams(teams, active);
+    } catch (error) {
+      this.panel.appendSystem(`[错误] 读取团队名簿失败：${describe(error)}`);
+    }
+  }
+
+  // Switching teams is a user knob, so it is persisted and pushed like the model.
+  // 团队开关属于用户配置：与模型选择一样持久化并下发。
+  private async setTeam(name: string): Promise<void> {
+    const target = name.trim();
+    try {
+      await vscode.workspace.getConfiguration("agentCoder")
+        .update("activeTeam", target, vscode.ConfigurationTarget.Workspace);
+    } catch (error) {
+      this.panel.appendSystem(`[错误] 保存团队设置失败：${describe(error)}`);
+      return;
+    }
+    this.pushSettings();
+    this.panel.setStatus(target ? `已启用团队：${target}` : "已停用团队：写操作逐次确认");
+    this.panel.appendSystem(target
+      ? `\n  [团队] 已启用「${target}」：成员按 capability 授权，实现阶段先给一次预审。`
+      : "\n  [团队] 已停用：回到单人逐次确认。");
+    await this.loadTeams();
+  }
+
+  // Blackboard drawer: every artifact of this conversation, newest last.
+  // 黑板抽屉：本会话的全部交付物。
+  private async loadArtifacts(): Promise<void> {
+    const connection = await this.connected();
+    if (!connection) {
+      return;
+    }
+    try {
+      const response = await connection.request("team/artifacts", { sessionId: this.sessionId });
+      this.panel.showArtifacts(toArtifacts(response.result?.artifacts));
+    } catch (error) {
+      this.panel.appendSystem(`[错误] 读取交付物失败：${describe(error)}`);
+    }
+  }
+
   // Shared "start if needed, then hand over the connection" step.
   // 历史操作共用：必要时启动 Core，再把连接交给调用方。
   private async connected(): Promise<RpcConnection | undefined> {
@@ -342,6 +406,9 @@ export class CoreSession {
       case "core/hello":
         this.panel.setStatus("就绪");
         this.pushSettings();
+        // The roster is Core-owned, so read it as soon as the Core is up.
+        // 名册在 Core 里，Core 一就绪就读一次。
+        void this.loadTeams();
         break;
       case "session/indexProgress":
         this.panel.setStatus(params.finished === true
@@ -368,10 +435,15 @@ export class CoreSession {
         break;
       }
       case "chat/subagent": {
-        const id = String(params.subagentId ?? "?");
-        // A role may run on its own model, so show it next to the task id.
+        const subagentId = String(params.subagentId ?? "?");
+        // A team member carries an alias and its capability, so the timeline reads
+        // 「全栈工程师[write]」 instead of the bare role id.
+        // 团队成员会带别名与能力，时间线因此能显示「全栈工程师[write]」。
+        const actor = String(params.actor ?? "");
+        const capability = String(params.capability ?? "");
         const model = String(params.model ?? "");
-        const label = model ? `${id}·${model}` : id;
+        const who = actor || subagentId;
+        const label = (model ? `${who}·${model}` : who) + (capability ? `[${capability}]` : "");
         if (params.kind === "start") {
           this.panel.appendSystem(`\n  [子代理] ${label} 开始：${String(params.goal ?? "")}`);
         } else if (params.kind === "end") {
@@ -381,6 +453,16 @@ export class CoreSession {
           const summary = String(params.summary ?? "").slice(0, 120);
           this.panel.appendSystem(`  [子代理] ${label} ${ok ? "完成" : "失败"}${cost}${summary ? `：${summary}` : ""}`);
         }
+        break;
+      }
+      case "chat/artifact": {
+        // Blackboard post: one line in the timeline, full text behind 「交付物」.
+        // 黑板投稿：时间线一行，全文在「交付物」里看。
+        const kind = String(params.kind ?? "note");
+        const title = String(params.title ?? "");
+        const author = String(params.authorRole ?? "");
+        this.panel.appendSystem(`\n  [交付物] [${kind}] ${title || "-"}${author ? " · " + author : ""}`);
+        this.panel.setStatus("有新交付物，点「交付物」查看");
         break;
       }
       case "chat/finish":
@@ -417,6 +499,14 @@ export class CoreSession {
         const confirmId = String(params.confirmId ?? "");
         if (!confirmId) {
           return;
+        }
+        // One card per implementation phase (D-A): allow it and this phase's
+        // writes run automatically; deletes and dangerous commands still stop.
+        // 每个实现阶段一张预审卡（D-A）：允许后本阶段写入自动执行，删除与危险命令仍拦。
+        if (String(params.kind ?? "") === "preapprove") {
+          this.panel.showConfirm(confirmId, "团队预审", preapproveDetail(params));
+          this.panel.setStatus("等待预审确认：允许后本阶段写入自动执行");
+          break;
         }
         const server = String(params.server ?? "MCP");
         const tool = String(params.tool ?? "");
@@ -520,6 +610,52 @@ function toMemories(value: unknown): PendingMemory[] {
       source: String(item.source ?? ""),
     }))
     .filter((item) => item.id.length > 0);
+}
+
+// team/list carries members as a list; the selector only needs the count.
+// team/list 的 members 是列表，下拉只需要人数。
+function toTeams(value: unknown): TeamEntry[] {
+  return asArray(value)
+    .map((item) => ({
+      name: String(item.name ?? ""),
+      description: String(item.description ?? ""),
+      members: Array.isArray(item.members) ? item.members.length : 0,
+      active: item.active === true,
+    }))
+    .filter((team) => team.name.length > 0);
+}
+
+// team/artifacts returns the blackboard in post order; the drawer expands one.
+// team/artifacts 按投稿顺序返回黑板，抽屉里展开单条。
+function toArtifacts(value: unknown): ArtifactEntry[] {
+  return asArray(value).map((item) => ({
+    kind: String(item.kind ?? "note"),
+    title: String(item.title ?? ""),
+    authorRole: String(item.authorRole ?? ""),
+    body: String(item.body ?? ""),
+  }));
+}
+
+// Build the multi-line body of the pre-review card: plan, files, first diff.
+// The Core sends these three fields; any of them may be empty.
+// 预审卡正文：计划、涉及文件与首个 diff，任一可为空。
+function preapproveDetail(params: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const plan = String(params.plan ?? "").trim();
+  const diff = String(params.firstDiff ?? "").trim();
+  const files = Array.isArray(params.files)
+    ? params.files.map((item) => String(item ?? "").trim()).filter((item) => item.length > 0)
+    : [];
+  if (plan) {
+    parts.push("实现计划：\n" + plan);
+  }
+  if (files.length) {
+    parts.push("涉及文件：\n" + files.map((path) => "- " + path).join("\n"));
+  }
+  if (diff) {
+    parts.push("首个改动：\n" + diff);
+  }
+  return parts.length ? parts.join("\n\n") : "（未提供计划与 diff）";
 }
 
 function formatSize(bytes: number): string {

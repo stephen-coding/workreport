@@ -54,6 +54,7 @@ npm run smoke        # boots the real Core and runs one chat round
 | `agentCoder.commandAllowlist` | `[]` | Command prefixes that run without confirmation; empty keeps the Core's built-in list (dangerous commands are always refused) |
 | `agentCoder.inlineCompletion.enabled` | true | Ghost-text completion after a 300 ms pause |
 | `agentCoder.mcpServers` | `[]` | MCP servers (array or name map) |
+| `agentCoder.activeTeam` | empty | Enabled Agent team; empty keeps teams off (mirrors IntelliJ's `settings/update.active_team`) |
 
 Project-level `.agent/mcp.json` wins over `agentCoder.mcpServers`, matching the
 IntelliJ shell.
@@ -74,6 +75,17 @@ IntelliJ shell.
 - A multi-step task shows the Core-owned checklist above the transcript
   (`☐ / ◐ / ☑`); it folds away once everything is finished and is replayed when
   you reopen the conversation.
+- `团队` selects the Agent team (same roster as IntelliJ's `team/list`); while a
+  turn is running the selector is disabled so it cannot race the Core's snapshot.
+  Switching writes `agentCoder.activeTeam` and pushes the full settings payload.
+- `交付物` opens the team blackboard (`team/artifacts`); click a row to expand the
+  body inline. A new artifact also prints one `[交付物] [impl] …` line in the
+  transcript.
+- The team pre-review card arrives as `agent/confirm` with `kind="preapprove"`;
+  it shows the plan, the touched files and the first diff, and `允许` turns this
+  phase's routine writes automatic (deletes and dangerous commands still stop).
+  The webview declares `team` in `ide/hello`, so an older shell simply keeps
+  per-write confirmations.
 
 ## Capability matrix (after 2.7.0)
 
@@ -85,6 +97,8 @@ IntelliJ shell.
 | Multiple chat tabs | yes (up to 8) | single conversation (accepted difference, see FAQ) |
 | History of conversations | yes | **yes** |
 | Secret storage | PasswordSafe | **SecretStorage** |
+| Agent teams (picker / pre-review / blackboard) | yes | **yes** (3.3.0) |
+| Reasoning / thinking stream (`chat/reasoning`) | yes (folded row above the answer) | **no** — the notification is additive and silently ignored; `chat/token` still carries the answer |
 
 ## Packaged Core
 

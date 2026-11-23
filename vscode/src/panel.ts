@@ -11,6 +11,9 @@ type HistoryOpenHandler = (id: string) => void;
 type HistoryDeleteHandler = (id: string) => void;
 type HistorySearchHandler = (query: string) => void;
 type MemoryResolveHandler = (id: string, approve: boolean, content?: string) => void;
+type TeamListHandler = () => void;
+type TeamSelectHandler = (name: string) => void;
+type ArtifactHandler = () => void;
 
 // One row of the Core-owned checklist (chat/todos).
 // Core 维护的任务清单的一行（chat/todos）。
@@ -42,6 +45,24 @@ export interface PendingMemory {
   source: string;
 }
 
+// One roster entry from ``team/list``.
+// 团队名册的一项（team/list）。
+export interface TeamEntry {
+  name: string;
+  description: string;
+  members: number;
+  active: boolean;
+}
+
+// One blackboard item from ``team/artifacts``.
+// 团队黑板的一条（team/artifacts）。
+export interface ArtifactEntry {
+  kind: string;
+  title: string;
+  authorRole: string;
+  body: string;
+}
+
 export class ChatPanel implements vscode.WebviewViewProvider {
   static readonly viewId = "agentCoder.chatView";
 
@@ -57,6 +78,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   private onMemoryList?: HistoryHandler;
   private onMemoryResolve?: MemoryResolveHandler;
   private onNewSession?: HistoryHandler;
+  private onTeamList?: TeamListHandler;
+  private onTeamSelect?: TeamSelectHandler;
+  private onArtifacts?: ArtifactHandler;
 
   constructor(private readonly extensionUri: vscode.Uri) {}
 
@@ -71,6 +95,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     onMemoryList?: HistoryHandler;
     onMemoryResolve?: MemoryResolveHandler;
     onNewSession?: HistoryHandler;
+    onTeamList?: TeamListHandler;
+    onTeamSelect?: TeamSelectHandler;
+    onArtifacts?: ArtifactHandler;
   }): void {
     this.onSend = handlers.onSend;
     this.onStop = handlers.onStop;
@@ -82,6 +109,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     this.onMemoryList = handlers.onMemoryList;
     this.onMemoryResolve = handlers.onMemoryResolve;
     this.onNewSession = handlers.onNewSession;
+    this.onTeamList = handlers.onTeamList;
+    this.onTeamSelect = handlers.onTeamSelect;
+    this.onArtifacts = handlers.onArtifacts;
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -117,6 +147,12 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         this.onMemoryResolve?.(String(message.id ?? ""), Boolean(message.approve), content);
       } else if (type === "newSession") {
         this.onNewSession?.();
+      } else if (type === "teamList") {
+        this.onTeamList?.();
+      } else if (type === "teamSelect") {
+        this.onTeamSelect?.(String(message.name ?? ""));
+      } else if (type === "artifacts") {
+        this.onArtifacts?.();
       }
     });
   }
@@ -193,6 +229,18 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     this.post({ type: "confirm", id, title, detail });
   }
 
+  // Roster for the toolbar selector; ``active`` is the team the Core reports as on.
+  // 工具栏下拉的名册；active 是 Core 报告的当前团队。
+  setTeams(teams: TeamEntry[], active: string): void {
+    this.post({ type: "teams", teams, active });
+  }
+
+  // Blackboard items; the webview expands one inline when it is clicked.
+  // 黑板交付物；点击某一条时在面板内展开全文。
+  showArtifacts(items: ArtifactEntry[]): void {
+    this.post({ type: "artifacts", items });
+  }
+
   private render(): string {
     const nonce = Array.from({ length: 16 }, () =>
       "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]).join("");
@@ -238,11 +286,26 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   .user { color: var(--vscode-textLink-foreground); margin-top: 8px; }
   .system { color: var(--vscode-descriptionForeground); font-style: italic; }
   .confirm { border: 1px solid var(--vscode-input-border, #555); padding: 6px; margin: 6px 0; }
-  .confirm button { margin-right: 6px; }
+  .confirm .ctitle { font-weight: bold; margin-bottom: 4px; }
+  .confirm .cdetail { white-space: pre-wrap; word-break: break-word;
+                      font-family: var(--vscode-editor-font-family, monospace); }
+  .confirm button { margin-right: 6px; margin-top: 6px; }
   #input { width: 100%; box-sizing: border-box; height: 48px; resize: vertical;
            background: var(--vscode-input-background); color: var(--vscode-input-foreground);
            border: 1px solid var(--vscode-input-border, #555); }
   #row { display: flex; gap: 6px; margin-top: 6px; }
+  #teamRow { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px;
+             color: var(--vscode-descriptionForeground); }
+  #team { flex: 1; min-width: 0; background: var(--vscode-dropdown-background, var(--vscode-input-background));
+          color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+          border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, #555)); }
+  #artifacts { max-height: 40vh; overflow-y: auto; margin-bottom: 6px;
+               border: 1px solid var(--vscode-input-border, #555); }
+  .arow { padding: 4px 6px; border-bottom: 1px solid var(--vscode-panel-border, #444); cursor: pointer; }
+  .arow:hover { background: var(--vscode-list-hoverBackground); }
+  .ameta { color: var(--vscode-descriptionForeground); font-size: 11px; }
+  .abody { white-space: pre-wrap; word-break: break-word; font-family: var(--vscode-editor-font-family, monospace);
+           background: var(--vscode-textCodeBlock-background, transparent); padding: 4px; margin-top: 4px; }
   button { background: var(--vscode-button-background); color: var(--vscode-button-foreground);
            border: none; padding: 4px 10px; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
@@ -253,8 +316,11 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   <div id="bar">
     <button id="historyBtn">历史</button>
     <button id="memoryBtn">记忆</button>
+    <button id="artifactsBtn">交付物</button>
     <button id="newBtn">新会话</button>
   </div>
+  <div id="teamRow"><span>团队</span><select id="team"><option value="">不启用</option></select></div>
+  <div id="artifacts" hidden></div>
   <div id="history" hidden>
     <input id="historySearch" placeholder="搜索历史会话：标题与正文" />
     <div id="historyList"></div>
@@ -279,6 +345,9 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   const memoryBox = document.getElementById("memory");
   const memoryBtn = document.getElementById("memoryBtn");
   const newBtn = document.getElementById("newBtn");
+  const artifactsBtn = document.getElementById("artifactsBtn");
+  const artifactsBox = document.getElementById("artifacts");
+  const teamSelect = document.getElementById("team");
   const input = document.getElementById("input");
   const send = document.getElementById("send");
   const stop = document.getElementById("stop");
@@ -288,6 +357,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
   let historyEntries = [];
   let historySearchTimer = null;
   let memoryItems = [];
+  let artifactItems = [];
 
   const TODO_MARKS = {
     pending: "☐",
@@ -479,6 +549,61 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     area.focus();
   }
 
+  // Roster rows for the toolbar selector. The active name comes from the Core;
+  // an empty roster still keeps the 「不启用」 entry so the control never disappears.
+  // 工具栏团队下拉：名册为空时保留「不启用」项，active 以 Core 为准。
+  function renderTeams(teams, active) {
+    const list = Array.isArray(teams) ? teams : [];
+    teamSelect.textContent = "";
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "不启用";
+    teamSelect.appendChild(none);
+    for (const team of list) {
+      const option = document.createElement("option");
+      option.value = team.name || "";
+      const count = Number(team.members || 0);
+      option.textContent = count > 0 ? team.name + "（" + count + " 人）" : team.name;
+      if (team.description) option.title = team.description;
+      teamSelect.appendChild(option);
+    }
+    teamSelect.value = String(active || "");
+  }
+
+  // Blackboard rows: one line per artifact, clicking expands the body inline.
+  // 黑板行：每条一行，点击在下方展开全文。
+  function renderArtifacts(items) {
+    artifactItems = Array.isArray(items) ? items : [];
+    artifactsBox.textContent = "";
+    if (!artifactItems.length) {
+      const empty = document.createElement("div");
+      empty.className = "system";
+      empty.textContent = "暂无团队交付物";
+      artifactsBox.appendChild(empty);
+      return;
+    }
+    for (const item of artifactItems) {
+      const row = document.createElement("div");
+      row.className = "arow";
+      const head = document.createElement("div");
+      head.textContent = "[" + (item.kind || "note") + "] " + (item.title || "未命名");
+      row.appendChild(head);
+      if (item.authorRole) {
+        const meta = document.createElement("div");
+        meta.className = "ameta";
+        meta.textContent = "作者：" + item.authorRole;
+        row.appendChild(meta);
+      }
+      const body = document.createElement("pre");
+      body.className = "abody";
+      body.textContent = item.body || "";
+      body.hidden = true;
+      row.addEventListener("click", () => { body.hidden = !body.hidden; });
+      row.appendChild(body);
+      artifactsBox.appendChild(row);
+    }
+  }
+
   send.addEventListener("click", () => {
     const text = input.value.trim();
     if (!text) return;
@@ -525,6 +650,20 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     vscode.postMessage({ type: "memoryList" });
   });
   newBtn.addEventListener("click", () => vscode.postMessage({ type: "newSession" }));
+  artifactsBtn.addEventListener("click", () => {
+    if (!artifactsBox.hidden) {
+      artifactsBox.hidden = true;
+      return;
+    }
+    artifactsBox.hidden = false;
+    artifactsBox.textContent = "加载中…";
+    vscode.postMessage({ type: "artifacts" });
+  });
+  // Switching back to 「不启用」 sends an empty name, same as IntelliJ.
+  // 切回「不启用」时下发空名，与 IntelliJ 一致。
+  teamSelect.addEventListener("change", () => {
+    vscode.postMessage({ type: "teamSelect", name: teamSelect.value || "" });
+  });
 
   window.addEventListener("message", (event) => {
     const message = event.data;
@@ -548,6 +687,7 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         renderTodos();
         historyBox.hidden = true;
         memoryBox.hidden = true;
+        artifactsBox.hidden = true;
         break;
       case "history":
         renderHistory(message.entries);
@@ -557,6 +697,12 @@ export class ChatPanel implements vscode.WebviewViewProvider {
         break;
       case "memory":
         renderMemories(message.items);
+        break;
+      case "teams":
+        renderTeams(message.teams, message.active);
+        break;
+      case "artifacts":
+        renderArtifacts(message.items);
         break;
       case "delta":
         if (!current) current = block("assistant", "助手：");
@@ -580,11 +726,25 @@ export class ChatPanel implements vscode.WebviewViewProvider {
       case "busy":
         send.disabled = !!message.value;
         stop.disabled = !message.value;
+        // Switching teams mid-turn would race the Core's roster snapshot.
+        // 一轮进行中不允许换团队，避免与 Core 的名册快照打架。
+        teamSelect.disabled = !!message.value;
         break;
       case "confirm": {
         const card = document.createElement("div");
         card.className = "confirm";
-        card.textContent = message.detail || "确认操作";
+        // The title separates the team pre-review card from MCP confirmations.
+        // 标题用来区分团队预审卡与 MCP 确认卡。
+        if (message.title) {
+          const head = document.createElement("div");
+          head.className = "ctitle";
+          head.textContent = message.title;
+          card.appendChild(head);
+        }
+        const detail = document.createElement("div");
+        detail.className = "cdetail";
+        detail.textContent = message.detail || "确认操作";
+        card.appendChild(detail);
         const yes = document.createElement("button");
         yes.textContent = "允许";
         const no = document.createElement("button");
