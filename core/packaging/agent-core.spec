@@ -29,6 +29,8 @@ datas = [
      os.path.join("agent_core", "skills", "builtin")),
     (os.path.join(SRC, "agent_core", "agent", "subagents_builtin"),
      os.path.join("agent_core", "agent", "subagents_builtin")),
+    (os.path.join(SRC, "agent_core", "agent", "teams_builtin"),
+     os.path.join("agent_core", "agent", "teams_builtin")),
     (_build_info, "."),
 ]
 

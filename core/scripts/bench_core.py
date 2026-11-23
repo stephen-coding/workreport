@@ -8,6 +8,12 @@ endpoint and a throw-away data directory:
   single round    ``chat/start`` -> ``chat/finish``          target < 300 ms
   session list    ``session/list`` over 1000 conversations   target < 150 ms
 
+The protocol codec is reported as well: wire frames, wire bytes, ``chat/token``
+frames and the share of wall time spent in JSON encode/decode.  Those numbers
+decide whether a binary format would help at all: if the codec share stays in the
+low single digits, the cost sits in frame *count* and payload *size*, not in the
+format.
+
 The one-time search index build is reported as well, but it is measured before
 the list benchmark: running them together would measure disk contention rather
 than the endpoint.
@@ -49,6 +55,16 @@ SSE = [
     {"choices": [{"delta": {"content": "pong"}}]},
     {"choices": [{"delta": {}, "finish_reason": "stop"}]},
 ]
+# Rebuilt from ``--stream-chunks`` so the token-frame count matches a real answer
+# instead of the two-chunk default.
+STREAM_SSE = list(SSE)
+
+
+def build_stream(chunks: int):
+    """One delta per chunk, like a slow endpoint streaming a long reply."""
+    body = [{"choices": [{"delta": {"content": "字"}}]} for _ in range(max(0, chunks))]
+    body.append({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+    return body
 
 
 class MockLLMHandler(BaseHTTPRequestHandler):
@@ -58,7 +74,7 @@ class MockLLMHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        for chunk in SSE:
+        for chunk in STREAM_SSE:
             self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode("utf-8"))
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
@@ -144,7 +160,12 @@ def main() -> int:
     parser.add_argument("--json", default="", help="also write the numbers to this file")
     parser.add_argument("--sessions", type=int, default=HISTORY_SESSIONS)
     parser.add_argument("--idle-seconds", type=float, default=IDLE_SECONDS)
+    parser.add_argument("--stream-chunks", type=int, default=0,
+                        help="delta frames per answer (0 = the short default)")
     args = parser.parse_args()
+
+    global STREAM_SSE
+    STREAM_SSE = build_stream(args.stream_chunks) if args.stream_chunks else list(SSE)
 
     mock = ThreadingHTTPServer(("127.0.0.1", 0), MockLLMHandler)
     port = mock.server_address[1]
@@ -168,29 +189,46 @@ def main() -> int:
         stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1,
     )
     incoming: queue.Queue = queue.Queue()
+    # Protocol cost accounting: frames and bytes both ways, plus the time spent
+    # turning lines into dicts and dicts into lines.
+    # 协议开销统计：双向帧数/字节数，以及 JSON 编解码本身花掉的时间。
+    stats = {"framesIn": 0, "framesOut": 0, "bytesIn": 0, "bytesOut": 0,
+             "decodeMs": 0.0, "encodeMs": 0.0, "tokenFrames": 0}
 
     def reader():
         for line in proc.stdout:
-            incoming.put(line.strip())
+            line = line.strip()
+            if not line:
+                continue
+            parsed_at = time.perf_counter()
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            stats["decodeMs"] += (time.perf_counter() - parsed_at) * 1000
+            stats["framesIn"] += 1
+            stats["bytesIn"] += len(line.encode("utf-8"))
+            if message.get("method") == "chat/token":
+                stats["tokenFrames"] += 1
+            incoming.put(message)
 
     threading.Thread(target=reader, daemon=True).start()
 
     def send(payload):
-        proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        encoded_at = time.perf_counter()
+        text = json.dumps(payload, ensure_ascii=False)
+        stats["encodeMs"] += (time.perf_counter() - encoded_at) * 1000
+        stats["framesOut"] += 1
+        stats["bytesOut"] += len(text.encode("utf-8"))
+        proc.stdin.write(text + "\n")
         proc.stdin.flush()
 
     def wait_for(predicate, timeout=60.0):
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
-                line = incoming.get(timeout=max(0.05, deadline - time.time()))
+                message = incoming.get(timeout=max(0.05, deadline - time.time()))
             except queue.Empty:
-                continue
-            if not line:
-                continue
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
                 continue
             if predicate(message):
                 return message
@@ -198,7 +236,8 @@ def main() -> int:
 
     numbers = {"coldStartMs": 0.0, "idleRssMb": 0.0, "roundTripMs": 0.0,
                "sessionListMs": 0.0, "indexMs": 0.0, "coreVersion": "",
-               "sessions": args.sessions}
+               "sessions": args.sessions, "wireFrames": 0, "wireBytes": 0,
+               "tokenFrames": 0, "codecMs": 0.0, "codecSharePct": 0.0}
     try:
         hello = wait_for(lambda m: m.get("method") == "core/hello", timeout=60)
         if hello is None:
@@ -220,6 +259,11 @@ def main() -> int:
             "model": "bench",
         }})
 
+        # The codec share is measured over warm-up + one round + one list call: the
+        # idle wait and the index build would only dilute the ratio.
+        # 编解码占比只在预热+一轮+一次列表的窗口里统计，避免空闲与建索引稀释分母。
+        bench_started = time.perf_counter()
+
         # Warm up once so the round trip measures the loop, not the first import.
         send({"id": "warm", "method": "chat/start",
               "params": {"sessionId": "bench-warm", "message": "ping"}})
@@ -239,6 +283,15 @@ def main() -> int:
         answer = wait_for(lambda m: m.get("id") == "list", timeout=60)
         numbers["sessionListMs"] = (time.perf_counter() - list_started) * 1000
         listed = len(((answer or {}).get("result") or {}).get("sessions") or [])
+
+        bench_elapsed_ms = (time.perf_counter() - bench_started) * 1000
+        codec_ms = stats["encodeMs"] + stats["decodeMs"]
+        numbers["wireFrames"] = stats["framesIn"] + stats["framesOut"]
+        numbers["wireBytes"] = stats["bytesIn"] + stats["bytesOut"]
+        numbers["tokenFrames"] = stats["tokenFrames"]
+        numbers["codecMs"] = codec_ms
+        numbers["codecSharePct"] = (codec_ms / bench_elapsed_ms * 100.0) \
+            if bench_elapsed_ms > 0 else 0.0
 
         time.sleep(max(0.0, args.idle_seconds))
         numbers["idleRssMb"] = rss_mb(proc.pid)
@@ -271,6 +324,14 @@ def main() -> int:
         status = "ok" if value <= target else "over"
         print("%-16s %10.1f %-2s %10.0f %-2s %s"
               % (label, value, unit, target, unit, status))
+
+    print("%-16s %10.0f    %s" % ("wire frames", numbers["wireFrames"], "in + out"))
+    print("%-16s %10.1f KB %s"
+          % ("wire bytes", numbers["wireBytes"] / 1024.0, "in + out"))
+    print("%-16s %10.0f    %s"
+          % ("token frames", numbers["tokenFrames"], "chat/token"))
+    print("%-16s %10.1f %%  %s"
+          % ("codec share", numbers["codecSharePct"], "of warm+round+list"))
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as handle:

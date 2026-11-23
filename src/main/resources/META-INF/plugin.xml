@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.workreport.ai-assistant</id>
     <name>Agent Coding Assistant</name>
-    <version>3.1.2</version>
+    <version>3.3.0</version>
     <vendor url="https://github.com/stephen-coding/workreport">WeeklyReport</vendor>
     <description><![CDATA[
         AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
@@ -36,6 +36,58 @@
     <resource-bundle>messages.AgentBundle</resource-bundle>
 
     <change-notes><![CDATA[
+<h3>3.3.0</h3>
+<ul>
+  <li>Agent teams (off by default): pick a team in the composer and a lead agent dispatches
+      members to research, implement, test and review. Teams are just role references plus
+      capability grants, so one role can be read-only in one team and write-enabled in another.</li>
+  <li>Capabilities: <code>readonly</code> / <code>write</code> / <code>command</code> apply only to
+      members of an enabled team; ad-hoc subagents stay read-only and <code>delete_file</code> is
+      never granted.</li>
+  <li>Pre-review checkpoint: before an implementation phase the team asks once with the plan,
+      the touched files and the first diff. Allowing it makes this phase's routine writes
+      automatic; deletes and dangerous commands still stop for an answer.</li>
+  <li>Team blackboard: research, plans, implementations, tests and reviews are posted as
+      artifacts, shown inline in the timeline and reopenable from the「Artifacts」button.</li>
+  <li>Protocol (additive): <code>team/list</code>, <code>team/artifacts</code>,
+      <code>chat/artifact</code>, <code>agent/confirm</code> with
+      <code>kind="preapprove"</code>, and <code>actor</code>/<code>capability</code> on
+      <code>chat/subagent</code> events.</li>
+  <li>Settings page rebuilt as rounded cards (models, agent limits, editor, git, MCP, command
+      allow-list, core runtime). Models are a list plus a form with a provider combo, a masked API
+      key field and a "current model" picker; the MCP box validates JSON as you type.</li>
+  <li>Composer: send and stop share one button, the toolbar is split into attachment / model-team /
+      auto groups, and the status line timer ticks while a task runs.</li>
+  <li>Smoother streaming: core events are marshalled onto the EDT, tokens are batched into one
+      invoke per flush window, auto-grow height is debounced and scroll requests are coalesced.</li>
+  <li>The model's thinking is shown now: reasoning streams (<code>reasoning_content</code> /
+      <code>thinking</code>) used to be dropped by the core. They arrive on a new
+      <code>chat/reasoning</code> notification and fold into one row above the answer
+      ("Thinking · 12.4s · 3,204 chars"); expanding it still shows the whole text — folding only
+      hides, never trims.</li>
+  <li>Tool timeline speaks English: <code>read_file · src/main/App.java · done · 0.4s</code>,
+      <code>agent 全栈工程师[write] · start</code>, <code>mcp server · tool · approval required</code>,
+      <code>queued · waiting for session 2</code>. Step groups report
+      <code>3 steps · running|done|failed</code> from structured flags instead of sniffing Chinese
+      keywords, so parallel calls keep the group running until the last one returns.</li>
+  <li>Fixed the team switch: on a cold IDE the roster had not been read yet, so the button was
+      greyed out and the first click did nothing (and it never recovered until the tool window was
+      reopened). The button is now always clickable, loads the roster on demand and refreshes once
+      the Core reports ready.</li>
+</ul>
+<p>中文说明：新增可开关的 Agent 团队（默认关闭）——在输入区选择团队后由项目经理派发成员调研/
+实现/验证/审查；团队只是角色引用加能力授权，同一角色可在不同团队里获得不同能力。实现阶段前给一次
+预审卡（计划 + 涉及文件 + 首个 diff），通过后本阶段写入自动执行，删除与危险命令仍需确认；
+研究/计划/实现/测试/审查写入团队黑板，时间线可见并在「交付物」里回看。设置页重做为圆角卡片分节，
+模型改为「列表 + 表单」并新增类型下拉、密码框与「当前模型」选择；输入区发送与停止合一，工具栏分组；
+流式 token 合批投递、事件统一到 EDT，长文本输入与高速流式不再卡顿。
+模型的思考过程（<code>reasoning_content</code> / <code>thinking</code>）此前被 Core 整段丢弃，
+现在走 <code>chat/reasoning</code> 通道，折成正文上方一行（思考期间展开、正文开始后收起，点开仍是全文）；
+工具与子代理时间线改为英文日志风格（工具名 · 参数 · 结果 · 耗时），步骤组按结构化状态显示
+<code>running / done / failed</code>，并行调用不会被先返回的工具提前标为完成。
+修复团队开关：冷启动时名册还没读到，按钮被置灰，首次点击没有任何反应，且只有重开工具窗口才会恢复；
+现在按钮始终可点，点击时按需启动 Core 并拉取名册，Core 就绪后自动刷新一次。</p>
+
 <h3>3.1.2</h3>
 <ul>
   <li>Fixed the missing "new session" and settings buttons in the tab strip: both icons shipped

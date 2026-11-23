@@ -26,4 +26,5 @@ agent_core = [
     "py.typed",
     "skills/builtin/*/SKILL.md",
     "agent/subagents_builtin/*/SUBAGENT.md",
+    "agent/teams_builtin/*/TEAM.md",
 ]
