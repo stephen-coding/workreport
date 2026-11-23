@@ -15,6 +15,7 @@ import java.awt.event.MouseEvent;
 import java.awt.geom.RoundRectangle2D;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Consumer;
 
 // The conversation surface: a scrolling stack of message rows on top of the block renderer.
@@ -44,6 +45,16 @@ public final class ChatView extends JPanel implements TranscriptView {
 
     private final List<ChatRowView> rows = new ArrayList<>();
     private final StringBuilder buffer = new StringBuilder();
+    // Tokens arrive on the RPC reader thread. They are parked here and drained by a single EDT
+    // task, so a fast stream posts one task per frame instead of one task per token.
+    // token 来自 RPC 读线程：先缓在这里，由单个 EDT 任务取走；高速流因此每帧一个任务，而不是每个 token 一个。
+    private final ConcurrentLinkedQueue<String> pendingTokens = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<String> pendingReasoning = new ConcurrentLinkedQueue<>();
+    // Written from the RPC thread and cleared on the EDT, so both flags are volatile.
+    // 一个在读线程写、另一个在 EDT 清，两个标志声明为 volatile。
+    private volatile boolean drainScheduled;
+    private volatile boolean scrollScheduled;
+    private volatile boolean reasoningDrainScheduled;
 
     private int hiddenFrom;
     private MoreView moreView;
@@ -53,6 +64,12 @@ public final class ChatView extends JPanel implements TranscriptView {
     private AgentMessageView current;
     private StepGroupView steps;
     private boolean dirty;
+
+    // Thinking process of the current model round; folded away as soon as the answer starts.
+    // 本轮模型的思考过程；正文一开始就折叠收起。
+    private ReasoningView reasoning;
+    private final StringBuilder reasoningBuffer = new StringBuilder();
+    private boolean reasoningDirty;
 
     private Consumer<String> onSuggestion;
 
@@ -125,18 +142,114 @@ public final class ChatView extends JPanel implements TranscriptView {
         if (delta == null || delta.isEmpty()) {
             return;
         }
-        runOnEdt(() -> {
-            ensureAssistantRow();
-            buffer.append(delta);
-            dirty = true;
-            if (!flushTimer.isRunning()) {
-                flushTimer.start();
+        if (!SwingUtilities.isEventDispatchThread()) {
+            pendingTokens.add(delta);
+            if (!drainScheduled) {
+                drainScheduled = true;
+                SwingUtilities.invokeLater(this::drainTokens);
             }
-        });
+            return;
+        }
+        appendTokenOnEdt(delta);
+    }
+
+    // Hand every parked token to the current row in one go.
+    // 把缓存的 token 一次性交给当前行。
+    private void drainTokens() {
+        drainScheduled = false;
+        StringBuilder batch = new StringBuilder();
+        String token;
+        while ((token = pendingTokens.poll()) != null) {
+            batch.append(token);
+        }
+        if (batch.length() > 0) {
+            appendTokenOnEdt(batch.toString());
+        }
+    }
+
+    private void appendTokenOnEdt(String delta) {
+        ensureAssistantRow();
+        buffer.append(delta);
+        dirty = true;
+        if (!flushTimer.isRunning()) {
+            flushTimer.start();
+        }
+    }
+
+    // ---------------------------------------------------------------- reasoning
+
+    // The thinking process takes the same batching path as tokens: one EDT task per drain, and a
+    // shared 40 ms flush, so a fast reasoner cannot flood the queue.
+    // 思考过程与正文同一套合批机制：一次 drain 一个 EDT 任务，共用 40ms 刷新。
+    @Override
+    public void appendReasoningToken(String delta) {
+        if (delta == null || delta.isEmpty()) {
+            return;
+        }
+        if (!SwingUtilities.isEventDispatchThread()) {
+            pendingReasoning.add(delta);
+            if (!reasoningDrainScheduled) {
+                reasoningDrainScheduled = true;
+                SwingUtilities.invokeLater(this::drainReasoning);
+            }
+            return;
+        }
+        appendReasoningOnEdt(delta);
+    }
+
+    private void drainReasoning() {
+        reasoningDrainScheduled = false;
+        StringBuilder batch = new StringBuilder();
+        String token;
+        while ((token = pendingReasoning.poll()) != null) {
+            batch.append(token);
+        }
+        if (batch.length() > 0) {
+            appendReasoningOnEdt(batch.toString());
+        }
+    }
+
+    private void appendReasoningOnEdt(String delta) {
+        ensureReasoningRow();
+        reasoningBuffer.append(delta);
+        reasoningDirty = true;
+        if (!flushTimer.isRunning()) {
+            flushTimer.start();
+        }
+    }
+
+    private void ensureReasoningRow() {
+        if (reasoning != null) {
+            return;
+        }
+        // A new thinking phase closes the previous tool group before opening its own row.
+        // 新一段思考开始前先结束上一组工具步骤。
+        breakSteps();
+        ReasoningView row = new ReasoningView();
+        appendRow(row);
+        reasoning = row;
+    }
+
+    // Land the parked thinking text, freeze its clock and fold it away.
+    // 把缓存的思考文本落盘、冻结计时并收起。
+    private void finishReasoningInternal() {
+        drainReasoning();
+        if (reasoning != null) {
+            reasoning.setText(reasoningBuffer.toString());
+            reasoning.finish();
+        }
+        reasoning = null;
+        reasoningBuffer.setLength(0);
+        reasoningDirty = false;
     }
 
     @Override
     public void addToolLine(String text) {
+        addToolLine(text, false, false);
+    }
+
+    @Override
+    public void addToolLine(String text, boolean running, boolean failed) {
         runOnEdt(() -> {
             finishAssistantInternal();
             if (text == null || text.isEmpty()) {
@@ -146,17 +259,10 @@ public final class ChatView extends JPanel implements TranscriptView {
                 steps = new StepGroupView();
                 appendRow(steps);
             }
-            steps.add(text);
-            steps.setRunning(isRunningTool(text));
+            steps.add(text, failed);
+            steps.setRunning(running);
             followTail();
         });
-    }
-
-    // The tool lines the session panel emits carry their own state; only these two shapes mean
-    // "still working", everything else is a finished step.
-    // 会话面板发出的工具行自带状态，只有这两种形态表示“还在跑”。
-    private static boolean isRunningTool(String text) {
-        return text.contains("执行中") || text.contains("开始：");
     }
 
     @Override
@@ -202,10 +308,18 @@ public final class ChatView extends JPanel implements TranscriptView {
     public void clear() {
         runOnEdt(() -> {
             flushTimer.stop();
+            pendingTokens.clear();
+            pendingReasoning.clear();
+            drainScheduled = false;
+            scrollScheduled = false;
+            reasoningDrainScheduled = false;
             current = null;
             steps = null;
+            reasoning = null;
             buffer.setLength(0);
+            reasoningBuffer.setLength(0);
             dirty = false;
+            reasoningDirty = false;
             rows.clear();
             hiddenFrom = 0;
             moreView = null;
@@ -228,6 +342,9 @@ public final class ChatView extends JPanel implements TranscriptView {
         if (current != null) {
             return;
         }
+        // The answer always sits below its thinking: fold the reasoning row first.
+        // 答案始终在思考之后：先把思考行收起。
+        finishReasoningInternal();
         breakSteps();
         AgentMessageView row = new AgentMessageView();
         row.setStreaming(true);
@@ -243,13 +360,21 @@ public final class ChatView extends JPanel implements TranscriptView {
     }
 
     private void flushNow() {
-        if (current == null || !dirty) {
+        boolean pinned = isPinnedToBottom();
+        boolean changed = false;
+        if (reasoningDirty && reasoning != null) {
+            reasoningDirty = false;
+            reasoning.setText(reasoningBuffer.toString());
+            changed = true;
+        }
+        if (current != null && dirty) {
             dirty = false;
+            current.setMarkdown(buffer.toString());
+            changed = true;
+        }
+        if (!changed) {
             return;
         }
-        dirty = false;
-        boolean pinned = isPinnedToBottom();
-        current.setMarkdown(buffer.toString());
         content.revalidate();
         content.repaint();
         if (pinned) {
@@ -259,6 +384,13 @@ public final class ChatView extends JPanel implements TranscriptView {
     }
 
     private void finishAssistantInternal() {
+        // Parked tokens belong to the row we are about to close: land them first, otherwise they
+        // would show up under whatever comes next.
+        // 缓存里的 token 属于即将收尾的这一行，先落盘，否则会显示到后面那一条下面。
+        drainTokens();
+        // Thinking has nowhere to go once the answer is closed; fold it here as well.
+        // 正文收尾后思考行也没必要再长，一并收起。
+        finishReasoningInternal();
         flushTimer.stop();
         if (current != null) {
             if (buffer.length() == 0) {
@@ -372,7 +504,18 @@ public final class ChatView extends JPanel implements TranscriptView {
     }
 
     private void scrollToBottom(boolean smooth) {
+        // Several flushes can land in one frame; one scroll request is enough.
+        // 一帧内可能来了多次刷新，一次滚动请求就够了。
+        if (!smooth) {
+            if (scrollScheduled) {
+                return;
+            }
+            scrollScheduled = true;
+        }
         SwingUtilities.invokeLater(() -> {
+            if (!smooth) {
+                scrollScheduled = false;
+            }
             JScrollBar bar = scrollPane.getVerticalScrollBar();
             int target = bar.getMaximum() - bar.getVisibleAmount();
             if (target <= bar.getValue()) {

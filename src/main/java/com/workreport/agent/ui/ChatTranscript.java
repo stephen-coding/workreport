@@ -61,8 +61,16 @@ public final class ChatTranscript extends JPanel {
         view.appendAssistantToken(delta);
     }
 
+    public void appendReasoningToken(String delta) {
+        view.appendReasoningToken(delta);
+    }
+
     public void addToolLine(String text) {
         view.addToolLine(text);
+    }
+
+    public void addToolLine(String text, boolean running, boolean failed) {
+        view.addToolLine(text, running, failed);
     }
 
     public void addNotice(String text) {

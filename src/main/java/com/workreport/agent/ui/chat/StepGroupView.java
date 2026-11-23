@@ -32,6 +32,7 @@ public final class StepGroupView extends ChatRowView {
     private boolean expanded;
     private boolean running;
     private boolean hovered;
+    private int failedCount;
 
     public StepGroupView() {
         super(1d, false);
@@ -41,10 +42,20 @@ public final class StepGroupView extends ChatRowView {
     }
 
     public void add(String line) {
+        add(line, false);
+    }
+
+    // Failed steps are flagged by the caller: the timeline text is English now, so sniffing for a
+    // word inside it would silently stop marking failures.
+    // 失败状态由调用方传入：时间线已是英文，靠文本里找词判断失败会静默失灵。
+    public void add(String line, boolean failed) {
         if (line == null || line.isEmpty()) {
             return;
         }
         items.add(line);
+        if (failed) {
+            failedCount++;
+        }
         layouts.clear();
         contentChanged();
     }
@@ -80,7 +91,7 @@ public final class StepGroupView extends ChatRowView {
         String status;
         if (running) {
             status = AgentBundle.message("ui.steps.running");
-        } else if (items.stream().anyMatch(item -> item.contains("失败"))) {
+        } else if (failedCount > 0) {
             status = AgentBundle.message("ui.steps.failed");
         } else {
             status = AgentBundle.message("ui.steps.done");

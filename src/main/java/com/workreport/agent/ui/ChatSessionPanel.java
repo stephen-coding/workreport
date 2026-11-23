@@ -8,9 +8,13 @@ import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.OnePixelSplitter;
+import com.intellij.ui.components.JBScrollPane;
+import com.intellij.ui.components.JBTextArea;
 import com.workreport.agent.AgentBundle;
 import com.workreport.agent.rpc.AgentCoreService;
 import com.workreport.agent.rpc.JsonRpcConnection;
@@ -18,9 +22,11 @@ import com.workreport.agent.tools.ToolDispatcher;
 import com.workreport.agent.ui.chat.AskCard;
 import com.workreport.agent.ui.chat.ToolCallCard;
 import com.workreport.agent.ui.design.UiMetrics;
+import com.workreport.agent.ui.design.UiTheme;
 import com.workreport.plugin.settings.ModelProfile;
 import com.workreport.plugin.settings.ModelProfiles;
 import com.workreport.plugin.settings.ReportSettingsState;
+import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
 import java.awt.*;
@@ -30,6 +36,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 // One chat session: transcript + draggable divider + composer.
 // Each session owns its own Core sessionId and taskId, so several of them can run at once.
@@ -75,12 +82,23 @@ public final class ChatSessionPanel extends JPanel {
     // Questions the Core is currently blocked on, keyed by askId.
     // Core 正在等待回答的提问，按 askId 索引。
     private final Map<String, AskCard> pendingAsks = new HashMap<>();
+    // In-flight tool calls: the timeline needs the tool name and a start time, and "still running"
+    // must stay true while any of several parallel calls is unfinished.
+    // 正在执行的工具：时间线要名字与起始时间；并行调用时只要还有一个没完，就仍算“在跑”。
+    private final Map<String, ToolTrace> toolTraces = new HashMap<>();
+    private int activeSteps;
     private boolean composerSized;
     private String autoTitle;
     private String modelLabel = "";
     private long turnStartMs;
+    // Wall-clock of the last finished turn, frozen for the chip once the ticker stops.
+    // 上一轮已结束任务的耗时；计时器停下后由它把时间定住。
+    private long turnElapsedMs;
     private long turnIn;
     private long turnOut;
+    // Counts the turn clock up once a second while it runs, so the chip never freezes between events.
+    // 运行期间每秒刷新一次本轮耗时，事件之间 chip 不会停住不动。
+    private final Timer metaTicker = new Timer(1000, event -> refreshMeta());
 
     public ChatSessionPanel(Project project, String sessionId, String defaultTitle, Owner owner) {
         super(new BorderLayout());
@@ -133,6 +151,7 @@ public final class ChatSessionPanel extends JPanel {
 
         setStatus(AgentBundle.message("status.ready"));
         refreshModelCombo();
+        refreshTeamButton();
         composer.setAutoAccept(ReportSettingsState.getInstance().autoAcceptEdits);
     }
 
@@ -152,11 +171,11 @@ public final class ChatSessionPanel extends JPanel {
             }
             meta.append(formatTokens(turnIn)).append('/').append(formatTokens(turnOut));
         }
-        if (turnStartMs > 0) {
+        long elapsed = turnStartMs > 0 ? System.currentTimeMillis() - turnStartMs : turnElapsedMs;
+        if (elapsed > 0) {
             if (meta.length() > 0) {
                 meta.append(" · ");
             }
-            long elapsed = System.currentTimeMillis() - turnStartMs;
             meta.append(String.format(java.util.Locale.ROOT, "%.1fs", elapsed / 1000.0));
         }
         statusRow.setMeta(meta.toString());
@@ -285,6 +304,191 @@ public final class ChatSessionPanel extends JPanel {
         setStatus(value ? AgentBundle.message("session.autoOn") : AgentBundle.message("session.autoOff"));
     }
 
+    // ------------------------------------------------------------------ team
+
+    // The roster lives in the Core. Until it answers (or while no Core is up) the button shows
+    // the persisted choice and stays clickable: the click itself starts the Core.
+    // 名册在 Core 里；Core 未启动或未答复前显示上次保存的选择，按钮保持可点——
+    // 点击本身就是「启动 Core + 拉名册」的入口。
+    void refreshTeamButton() {
+        JsonRpcConnection conn = coreService.connectionOrNull();
+        if (conn == null) {
+            composer.setTeams(List.of(), ReportSettingsState.getInstance().activeTeam);
+            return;
+        }
+        conn.request("team/list", new HashMap<>()).thenAccept(this::applyTeams).exceptionally(ex -> {
+            LOG.warn("team/list failed", ex);
+            return null;
+        });
+    }
+
+    // Start the Core if needed, then read the roster; "thenShowMenu" opens the dropdown once
+    // the button knows its items.
+    // 需要时先启动 Core 再读名册；thenShowMenu 表示拿到名册后直接弹出下拉。
+    private void requestTeams(boolean thenShowMenu) {
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            try {
+                ensureStarted();
+                JsonRpcConnection conn = coreService.connectionOrNull();
+                if (conn == null) {
+                    return;
+                }
+                JsonObject response = conn.request("team/list", new HashMap<>()).get(8, TimeUnit.SECONDS);
+                boolean loaded = applyTeams(response);
+                if (thenShowMenu) {
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        if (loaded) {
+                            composer.showTeamMenu();
+                        } else {
+                            // An empty roster used to open nothing at all, which reads as
+                            // "the click did nothing" - say it out loud instead.
+                            // 名册为空时过去是「静默不弹」，看起来就是点击没反应，这里明说一句。
+                            transcript.addNotice(AgentBundle.message("ui.team.unavailable"));
+                        }
+                    });
+                }
+            } catch (Exception ex) {
+                LOG.warn("team/list failed", ex);
+                ApplicationManager.getApplication().invokeLater(() ->
+                        transcript.addNotice(AgentBundle.message("ui.team.unavailable")));
+            }
+        });
+    }
+
+    private boolean applyTeams(@Nullable JsonObject response) {
+        if (response == null || !response.has("ok") || !response.get("ok").getAsBoolean()
+                || !response.has("result") || !response.get("result").isJsonObject()) {
+            return false;
+        }
+        JsonObject result = response.getAsJsonObject("result");
+        List<ChatComposer.TeamOption> options = new ArrayList<>();
+        String active = "";
+        if (result.has("teams") && result.get("teams").isJsonArray()) {
+            for (JsonElement element : result.getAsJsonArray("teams")) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject team = element.getAsJsonObject();
+                String name = textOf(team, "name");
+                if (name.isEmpty()) {
+                    continue;
+                }
+                int members = team.has("members") && team.get("members").isJsonArray()
+                        ? team.getAsJsonArray("members").size() : 0;
+                options.add(new ChatComposer.TeamOption(name, textOf(team, "description"), members));
+                if (team.has("active") && team.get("active").getAsBoolean()) {
+                    active = name;
+                }
+            }
+        }
+        String activeTeam = active;
+        ApplicationManager.getApplication().invokeLater(() -> {
+            composer.setTeams(options, activeTeam);
+            composer.setArtifactsAvailable(!activeTeam.isEmpty());
+        });
+        return !options.isEmpty();
+    }
+
+    // The switch itself is a user knob, so it is persisted and pushed like the model choice.
+    // 团队开关属于用户配置：与模型选择一样持久化并下发。
+    private void switchTeam(String name) {
+        ReportSettingsState state = ReportSettingsState.getInstance();
+        state.activeTeam = name == null ? "" : name;
+        coreService.pushSettings();
+        boolean off = state.activeTeam.isEmpty();
+        setStatus(off ? AgentBundle.message("ui.team.status.off")
+                : AgentBundle.message("ui.team.status.on", state.activeTeam));
+        transcript.addNotice(off ? AgentBundle.message("ui.team.off")
+                : AgentBundle.message("ui.team.on", state.activeTeam));
+    }
+
+    // Blackboard drawer: list every artifact of this session by kind, show the chosen one.
+    // 黑板抽屉：按类别列出本会话的全部交付物，选中后展示全文。
+    private void showArtifacts() {
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            try {
+                ensureStarted();
+                JsonRpcConnection conn = coreService.connectionOrNull();
+                if (conn == null) {
+                    return;
+                }
+                Map<String, Object> params = new HashMap<>();
+                params.put("sessionId", sessionId);
+                JsonObject response = conn.request("team/artifacts", params).get(8, TimeUnit.SECONDS);
+                List<JsonObject> items = new ArrayList<>();
+                if (response != null && response.has("ok") && response.get("ok").getAsBoolean()
+                        && response.has("result") && response.get("result").isJsonObject()) {
+                    JsonObject result = response.getAsJsonObject("result");
+                    if (result.has("artifacts") && result.get("artifacts").isJsonArray()) {
+                        for (JsonElement element : result.getAsJsonArray("artifacts")) {
+                            if (element.isJsonObject()) {
+                                items.add(element.getAsJsonObject());
+                            }
+                        }
+                    }
+                }
+                ApplicationManager.getApplication().invokeLater(() -> openArtifactsPopup(items));
+            } catch (Exception ex) {
+                LOG.warn("team/artifacts failed", ex);
+                ApplicationManager.getApplication().invokeLater(() ->
+                        transcript.addNotice(AgentBundle.message("ui.team.artifacts.empty")));
+            }
+        });
+    }
+
+    private void openArtifactsPopup(List<JsonObject> items) {
+        if (items.isEmpty()) {
+            transcript.addNotice(AgentBundle.message("ui.team.artifacts.empty"));
+            return;
+        }
+        List<String> labels = new ArrayList<>();
+        for (JsonObject item : items) {
+            String author = textOf(item, "authorRole");
+            labels.add(AgentBundle.message("ui.team.artifacts.item", textOf(item, "kind"),
+                    textOf(item, "title"), author.isEmpty() ? "-" : author));
+        }
+        JBPopupFactory.getInstance()
+                .createPopupChooserBuilder(labels)
+                .setTitle(AgentBundle.message("ui.team.artifacts"))
+                .setItemChosenCallback(chosen -> {
+                    int index = labels.indexOf(chosen);
+                    if (index < 0) {
+                        return;
+                    }
+                    JsonObject item = items.get(index);
+                    showArtifactDialog(textOf(item, "kind"), textOf(item, "title"), textOf(item, "body"));
+                })
+                .createPopup()
+                .showInFocusCenter();
+    }
+
+    // Read-only viewer: plans/diffs/patch notes are multi-line, which a notice row cannot show.
+    // 只读查看窗：计划与 diff 是多行文本，提示条渲染不了。
+    private void showArtifactDialog(String kind, String title, String body) {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            DialogWrapper dialog = new DialogWrapper(project, false) {
+                private final JBTextArea area = new JBTextArea(body.isEmpty() ? "（空）" : body);
+
+                {
+                    init();
+                    setTitle(AgentBundle.message("ui.team.artifacts.window", kind,
+                            title.isEmpty() ? "-" : title));
+                }
+
+                @Override
+                protected @Nullable JComponent createCenterPanel() {
+                    area.setEditable(false);
+                    area.setLineWrap(true);
+                    area.setFont(UiTheme.mono());
+                    JBScrollPane scroll = new JBScrollPane(area);
+                    scroll.setPreferredSize(new Dimension(760, 460));
+                    return scroll;
+                }
+            };
+            dialog.show();
+        });
+    }
+
     // ------------------------------------------------------------------ messaging
 
     // Pre-fill the input and send immediately (e.g. the daily-report action).
@@ -325,8 +529,11 @@ public final class ChatSessionPanel extends JPanel {
         // Start the clock and reset the counters for the meta chip of this turn.
         // 开始本轮计时并清零用量，供右侧 chip 展示。
         turnStartMs = System.currentTimeMillis();
+        turnElapsedMs = 0;
         turnIn = 0;
         turnOut = 0;
+        toolTraces.clear();
+        activeSteps = 0;
         refreshMeta();
         setBusy(true);
         setStatus(AgentBundle.message("status.thinking"));
@@ -415,10 +622,32 @@ public final class ChatSessionPanel extends JPanel {
     // Deliver one Core notification that the container routed to this session.
     // 处理容器按 taskId 路由给本会话的一条 Core 通知。
     void onCoreMessage(String method, JsonObject params) {
+        // Core notifications arrive on the RPC reader thread. Everything except stream tokens is
+        // cheap, so hop to the EDT once and keep Swing state single-threaded; tokens are batched
+        // inside the transcript instead of posting one task per token.
+        // Core 通知来自 RPC 读线程：除流式 token 外都切到 EDT 执行，避免跨线程改 Swing；
+        // token 在对话区内部合批，而不是每条投递一个任务。
+        if (!SwingUtilities.isEventDispatchThread()) {
+            if ("chat/token".equals(method)) {
+                String delta = params.has("delta") ? params.get("delta").getAsString() : "";
+                transcript.appendAssistantToken(delta);
+            } else if ("chat/reasoning".equals(method)) {
+                String delta = params.has("delta") ? params.get("delta").getAsString() : "";
+                transcript.appendReasoningToken(delta);
+            } else {
+                SwingUtilities.invokeLater(() -> onCoreMessage(method, params));
+            }
+            return;
+        }
         switch (method) {
             case "chat/token": {
                 String delta = params.has("delta") ? params.get("delta").getAsString() : "";
                 transcript.appendAssistantToken(delta);
+                break;
+            }
+            case "chat/reasoning": {
+                String delta = params.has("delta") ? params.get("delta").getAsString() : "";
+                transcript.appendReasoningToken(delta);
                 break;
             }
             case "tool/invoke": {
@@ -431,41 +660,66 @@ public final class ChatSessionPanel extends JPanel {
                 break;
             }
             case "chat/toolStart": {
-                String toolName = params.has("toolName") ? params.get("toolName").getAsString() : "?";
-                transcript.addToolLine("[工具] " + toolName + " 执行中...");
+                String toolName = textOf(params, "toolName");
+                JsonObject args = params.has("args") && params.get("args").isJsonObject()
+                        ? params.getAsJsonObject("args") : null;
+                emitToolStart(toolName, textOf(params, "toolCallId"), args);
                 break;
             }
             case "chat/toolEnd": {
                 boolean ok = params.has("ok") && params.get("ok").getAsBoolean();
                 String summary = params.has("summary") ? params.get("summary").getAsString() : "";
-                if (summary.length() > 120) {
-                    summary = summary.substring(0, 120) + "...";
-                }
-                transcript.addToolLine("[工具] " + (ok ? "完成" : "失败")
-                        + (summary.isEmpty() ? "" : "：" + summary));
+                emitToolEnd(textOf(params, "toolCallId"), ok, summary);
                 break;
             }
             case "chat/subagent": {
                 String kind = params.has("kind") ? params.get("kind").getAsString() : "";
                 String subagentId = params.has("subagentId") ? params.get("subagentId").getAsString() : "?";
+                // A team member carries an alias and its capability, so the timeline reads
+                // "code-reviewer · qwen3 [review]" instead of the bare role id.
+                // 团队成员会带别名与能力，时间线因此能显示「code-reviewer · qwen3 [review]」。
+                String actor = params.has("actor") ? params.get("actor").getAsString() : "";
+                String capability = params.has("capability") ? params.get("capability").getAsString() : "";
                 // A role may run on its own model, so show it next to the task id.
                 // 角色可能跑在独立模型上，提示里带上模型名便于核实。
                 String model = params.has("model") ? params.get("model").getAsString() : "";
-                String label = model.isEmpty() ? subagentId : subagentId + "·" + model;
+                String who = actor.isEmpty() ? subagentId : actor;
+                String label = model.isEmpty() ? who : who + " · " + model;
+                if (!capability.isEmpty()) {
+                    label = label + " [" + capability + "]";
+                }
                 if ("start".equals(kind)) {
                     String goal = params.has("goal") ? params.get("goal").getAsString() : "";
-                    transcript.addToolLine("[子代理] " + label + " 开始：" + goal);
+                    activeSteps++;
+                    String line = "agent " + label + " · start"
+                            + (goal.isBlank() ? "" : " · " + shorten(goal, 72));
+                    transcript.addToolLine(line, activeSteps > 0, false);
                 } else if ("end".equals(kind)) {
                     boolean ok = params.has("ok") && params.get("ok").getAsBoolean();
                     long durationMs = params.has("durationMs") ? params.get("durationMs").getAsLong() : 0L;
-                    String cost = durationMs > 0 ? String.format("（%.1fs）", durationMs / 1000.0) : "";
                     String summary = params.has("summary") ? params.get("summary").getAsString() : "";
-                    if (summary.length() > 120) {
-                        summary = summary.substring(0, 120) + "...";
+                    activeSteps = Math.max(0, activeSteps - 1);
+                    StringBuilder line = new StringBuilder("agent ").append(label)
+                            .append(ok ? " · done" : " · failed");
+                    if (durationMs > 0) {
+                        line.append(" · ").append(seconds(durationMs));
                     }
-                    transcript.addToolLine("[子代理] " + label + (ok ? " 完成" : " 失败") + cost
-                            + (summary.isEmpty() ? "" : "：" + summary));
+                    if (!summary.isBlank()) {
+                        line.append(" · ").append(shorten(summary, 120));
+                    }
+                    transcript.addToolLine(line.toString(), activeSteps > 0, !ok);
                 }
+                break;
+            }
+            case "chat/artifact": {
+                // Blackboard post: one line in the timeline, full text behind the drawer.
+                // 黑板投稿：时间线一行，全文在「交付物」里看。
+                String author = textOf(params, "authorRole");
+                transcript.addNotice(AgentBundle.message("ui.team.artifact.posted",
+                        textOf(params, "kind"),
+                        textOf(params, "title").isEmpty() ? "-" : textOf(params, "title"),
+                        author.isEmpty() ? "-" : author));
+                composer.setArtifactsAvailable(true);
                 break;
             }
             case "chat/notice": {
@@ -551,6 +805,11 @@ public final class ChatSessionPanel extends JPanel {
         if (confirmId.isEmpty()) {
             return;
         }
+        String kind = params.has("kind") ? params.get("kind").getAsString() : "";
+        if ("preapprove".equals(kind)) {
+            handlePreapprove(confirmId, params);
+            return;
+        }
         String server = params.has("server") ? params.get("server").getAsString() : "MCP";
         String tool = params.has("tool") ? params.get("tool").getAsString() : "";
         String args = params.has("args") && params.get("args").isJsonObject()
@@ -578,10 +837,72 @@ public final class ChatSessionPanel extends JPanel {
         });
     }
 
+    // One card per phase: the plan, the files it touches and the first diff. Allowing it turns
+    // this phase's writes into "auto"; deletes and dangerous commands still stop for an answer.
+    // 每个阶段一张卡：计划 + 涉及文件 + 首个 diff。允许后本阶段的写入转为自动，删除与危险命令仍会拦。
+    private void handlePreapprove(String confirmId, JsonObject params) {
+        String team = composer.activeTeam().isEmpty()
+                ? AgentBundle.message("ui.team.none") : composer.activeTeam();
+        String plan = params.has("plan") ? params.get("plan").getAsString() : "";
+        String diff = params.has("firstDiff") ? params.get("firstDiff").getAsString() : "";
+        List<String> files = new ArrayList<>();
+        if (params.has("files") && params.get("files").isJsonArray()) {
+            for (JsonElement element : params.getAsJsonArray("files")) {
+                if (!element.isJsonNull()) {
+                    String path = element.getAsString().trim();
+                    if (!path.isEmpty()) {
+                        files.add(path);
+                    }
+                }
+            }
+        }
+        StringBuilder detail = new StringBuilder();
+        if (!plan.isEmpty()) {
+            detail.append(AgentBundle.message("ui.preapprove.plan")).append('\n')
+                    .append(plan).append("\n\n");
+        }
+        if (!files.isEmpty()) {
+            detail.append(AgentBundle.message("ui.preapprove.files")).append('\n');
+            for (String path : files) {
+                detail.append("- ").append(path).append('\n');
+            }
+            detail.append('\n');
+        }
+        if (!diff.isEmpty()) {
+            detail.append(AgentBundle.message("ui.preapprove.diff")).append('\n').append(diff);
+        }
+        String body = detail.length() == 0 ? AgentBundle.message("ui.preapprove.empty") : detail.toString();
+        String label = team;
+
+        ApplicationManager.getApplication().invokeLater(() -> {
+            ToolCallCard card = ToolCallCard.preapprove(label, body);
+            card.setDecisionHandler(approved -> {
+                pendingConfirms.remove(confirmId);
+                sendConfirmResult(confirmId, approved);
+                transcript.addNotice(approved
+                        ? AgentBundle.message("ui.preapprove.allowed")
+                        : AgentBundle.message("ui.preapprove.rejected"));
+                setStatus(AgentBundle.message("status.thinking"));
+            });
+            if (transcript.isShowing() && transcript.addCard(card)) {
+                pendingConfirms.put(confirmId, card);
+                setStatus(AgentBundle.message("ui.preapprove.status"));
+                return;
+            }
+            int answer = Messages.showYesNoDialog(project,
+                    AgentBundle.message("ui.preapprove.dialog", label, body),
+                    AgentBundle.message("ui.preapprove.title"),
+                    AgentBundle.message("ui.preapprove.allow"),
+                    AgentBundle.message("ui.preapprove.reject"),
+                    Messages.getQuestionIcon());
+            sendConfirmResult(confirmId, answer == Messages.YES);
+        });
+    }
+
     // Fallback path: a dialog is the only option when no transcript is on screen.
     // 保底路径：对话区不在屏幕上时只能用弹框。
     private void askConfirmInDialog(String confirmId, String server, String tool, String detail) {
-        transcript.addToolLine("[确认] MCP 服务 " + server + " 请求调用 " + tool + "...");
+        transcript.addToolLine("mcp " + server + " · " + tool + " · approval required", true, false);
         int answer = Messages.showYesNoDialog(project,
                 "会话「" + displayTitle() + "」\n\nMCP 服务 \"" + server + "\" 请求调用工具 \"" + tool
                         + "\"\n\n参数：" + detail,
@@ -673,6 +994,101 @@ public final class ChatSessionPanel extends JPanel {
             return "";
         }
         return object.get(field).getAsString().trim();
+    }
+
+    // ------------------------------------------------------------------ tool trace
+
+    // Tool progress reads like a developer log on purpose: tool names, paths and durations stay
+    // English, because wrapping Latin identifiers in Chinese sentences makes the timeline harder
+    // to scan than either language alone.
+    // 工具进度刻意按开发者日志的风格写：工具名、路径、耗时一律英文。
+    // 用中文句式包住拉丁标识，比两种语言任一单独使用都更难扫读。
+    private void emitToolStart(String toolName, String toolCallId, JsonObject args) {
+        if (!toolCallId.isEmpty()) {
+            toolTraces.put(toolCallId, new ToolTrace(toolName));
+        }
+        activeSteps++;
+        transcript.addToolLine(toolLine(toolName, args), true, false);
+    }
+
+    private void emitToolEnd(String toolCallId, boolean ok, String summary) {
+        ToolTrace trace = toolCallId.isEmpty() ? null : toolTraces.remove(toolCallId);
+        activeSteps = Math.max(0, activeSteps - 1);
+        String name = trace == null || trace.name.isEmpty() ? "tool" : trace.name;
+        StringBuilder line = new StringBuilder(name).append(ok ? " · done" : " · failed");
+        if (trace != null) {
+            line.append(" · ").append(seconds(System.currentTimeMillis() - trace.startedAt));
+        }
+        if (!summary.isBlank()) {
+            line.append(" · ").append(shorten(summary, 120));
+        }
+        transcript.addToolLine(line.toString(), activeSteps > 0, !ok);
+    }
+
+    // `read_file · src/main/java/App.java`: the tool name plus its most telling argument.
+    // 工具名 + 最能说明问题的一个参数。
+    private static String toolLine(String toolName, JsonObject args) {
+        String name = toolName == null || toolName.isEmpty() ? "tool" : toolName;
+        String preview = primaryArg(args);
+        return preview.isEmpty() ? name : name + " · " + preview;
+    }
+
+    private static final String[] ARG_HINTS = {
+            "path", "file", "filePath", "command", "cmd", "query",
+            "pattern", "url", "type", "name", "goal"};
+
+    private static String primaryArg(JsonObject args) {
+        if (args == null) {
+            return "";
+        }
+        for (String hint : ARG_HINTS) {
+            String value = primitive(args, hint);
+            if (!value.isEmpty()) {
+                return shorten(value, 72);
+            }
+        }
+        for (Map.Entry<String, JsonElement> entry : args.entrySet()) {
+            if (!entry.getValue().isJsonPrimitive()
+                    || !entry.getValue().getAsJsonPrimitive().isString()) {
+                continue;
+            }
+            String value = entry.getValue().getAsString().trim();
+            if (!value.isEmpty()) {
+                return shorten(value, 72);
+            }
+        }
+        return "";
+    }
+
+    private static String primitive(JsonObject object, String field) {
+        if (!object.has(field) || object.get(field).isJsonNull()
+                || !object.get(field).isJsonPrimitive()) {
+            return "";
+        }
+        return object.get(field).getAsString().trim();
+    }
+
+    // One line only: tool summaries can carry newlines and megabytes from a command's output.
+    // 只留一行：工具摘要可能带换行，命令输也可能很长。
+    private static String shorten(String value, int limit) {
+        String flat = value.replaceAll("\\s+", " ").trim();
+        return flat.length() <= limit ? flat : flat.substring(0, limit) + "…";
+    }
+
+    private static String seconds(long millis) {
+        return String.format(java.util.Locale.ROOT, "%.1fs", millis / 1000.0);
+    }
+
+    // Name and start time of a tool call that is still running.
+    // 还在跑的工具调用的名字与起始时间。
+    private static final class ToolTrace {
+        final String name;
+        final long startedAt;
+
+        ToolTrace(String name) {
+            this.name = name == null ? "" : name;
+            this.startedAt = System.currentTimeMillis();
+        }
     }
 
     // Fallback path: one dialog per question. Multi-select degrades to single choice.
@@ -776,6 +1192,18 @@ public final class ChatSessionPanel extends JPanel {
 
     private void finishTask() {
         currentTaskId = null;
+        // Nothing is running any more: a cancelled or failed call would otherwise leave the step
+        // group "running" forever, because its end event never arrives.
+        // 任务已结束：被取消或失败的调用不会再有结束事件，不清空就会让步骤组永远显示“执行中”。
+        toolTraces.clear();
+        activeSteps = 0;
+        // Freeze the turn clock so a later repaint (model switch, usage event) does not keep
+        // counting past the end of the task.
+        // 把本轮耗时定住，避免之后的重绘（换模型、用量事件）把时间继续往后算。
+        if (turnStartMs > 0) {
+            turnElapsedMs = System.currentTimeMillis() - turnStartMs;
+            turnStartMs = 0;
+        }
         setBusy(false);
         refreshMeta();
         owner.onTaskCleared(this);
@@ -813,6 +1241,11 @@ public final class ChatSessionPanel extends JPanel {
         ApplicationManager.getApplication().invokeLater(() -> {
             composer.setBusy(busy);
             statusRow.setBusy(busy);
+            if (busy) {
+                metaTicker.start();
+            } else {
+                metaTicker.stop();
+            }
             owner.onBusyChanged(this);
         });
     }
@@ -868,12 +1301,28 @@ public final class ChatSessionPanel extends JPanel {
         public void onAutoAcceptChanged(boolean autoAccept) {
             setAutoAccept(autoAccept);
         }
+
+        @Override
+        public void onTeamChanged(String teamName) {
+            switchTeam(teamName);
+        }
+
+        @Override
+        public void onTeamRequested() {
+            requestTeams(true);
+        }
+
+        @Override
+        public void onArtifactsRequested() {
+            showArtifacts();
+        }
     }
 
     // Cancel the running task (if any) and release UI resources when the tab closes.
     // 关闭标签时取消仍在跑的任务并释放界面资源。
     public void dispose() {
         onStop();
+        metaTicker.stop();
         // Never leave a Core confirmation unanswered when the tab goes away.
         // 标签关闭时不能把 Core 的确认请求悬空:统一按拒绝回传。
         for (ToolCallCard card : new ArrayList<>(pendingConfirms.values())) {

@@ -57,6 +57,32 @@ public final class ChatComposer extends JPanel {
         void onModelChanged(String modelName);
 
         void onAutoAcceptChanged(boolean autoAccept);
+
+        // A team was picked (empty name = switched off).
+        // 用户选定了团队（空名表示关闭）。
+        void onTeamChanged(String teamName);
+
+        // The roster lives in the Core, so the panel fetches it and calls back with setTeams.
+        // 团队名册在 Core 里，由面板拉取后再回填（setTeams）。
+        void onTeamRequested();
+
+        // Open the team blackboard (research/plan/impl/test/review/note).
+        // 打开团队黑板（调研/计划/实现/测试/审查/备注）。
+        void onArtifactsRequested();
+    }
+
+    // One roster entry as the Core describes it (``team/list``); no RPC types leak in here.
+    // 名册的一项（来自 Core 的 ``team/list``），这里不引入任何 RPC 类型。
+    public static final class TeamOption {
+        public final String name;
+        public final String description;
+        public final int members;
+
+        public TeamOption(String name, String description, int members) {
+            this.name = name;
+            this.description = description == null ? "" : description;
+            this.members = members;
+        }
     }
 
     // Height request sent to the owner; force=true means "collapse me now" (after sending).
@@ -79,18 +105,29 @@ public final class ChatComposer extends JPanel {
 
     private final UiButton attachButton;
     private final UiButton settingsButton;
-    private final UiButton stopButton;
     private final UiButton sendButton;
     private final UiButton modelButton;
     private final UiButton autoButton;
+    private final UiButton teamButton;
+    private final UiButton artifactsButton;
     private final ComposerBox box;
     private final JPanel toolbar;
 
+    // One round button does both jobs: arrow sends, square stops the running task.
+    // 一个圆形按钮兼任两职：箭头发送，方块停止当前任务。
+    private final Icon sendIcon = new ArrowIcon(JBUI.scale(14));
+    private final Icon stopIcon = new StopIcon(JBUI.scale(12));
+
     private List<String> models = List.of();
     private String activeModel = "";
+    private List<TeamOption> teams = List.of();
+    private String activeTeam = "";
     private boolean busy;
     private boolean collapseAfterSend;
     private int lastNotifiedHeight;
+    // Typing coalescing: a full re-measure runs once the user pauses briefly.
+    // 输入合并：用户短暂停顿后才做一次完整测量。
+    private final Timer heightTimer = new Timer(60, event -> refreshHeight());
 
     public ChatComposer(Project project, Listener listener, HeightSink heightSink) {
         super(new BorderLayout(0, UiMetrics.s()));
@@ -121,16 +158,17 @@ public final class ChatComposer extends JPanel {
         settingsButton.setPadding(5, 5);
         settingsButton.addActionListener(e -> listener.onOpenSettings());
 
-        stopButton = new UiButton(AgentBundle.message("composer.stop"), UiButton.Kind.GHOST);
-        stopButton.setToolTipText(AgentBundle.message("ui.composer.stop.tip"));
-        stopButton.setEnabled(false);
-        stopButton.addActionListener(e -> listener.onStop());
-
-        sendButton = new UiButton(null, new ArrowIcon(JBUI.scale(14)), UiButton.Kind.SOLID);
+        sendButton = new UiButton(null, sendIcon, UiButton.Kind.SOLID);
         sendButton.setCircular(true);
         sendButton.setPadding(7, 7);
         sendButton.setToolTipText(AgentBundle.message("ui.composer.send.tip"));
-        sendButton.addActionListener(e -> triggerSend());
+        sendButton.addActionListener(e -> {
+            if (busy) {
+                listener.onStop();
+                return;
+            }
+            triggerSend();
+        });
 
         modelButton = new UiButton("", new ChevronIcon(JBUI.scale(9)), UiButton.Kind.GHOST);
         modelButton.setPadding(5, 3);
@@ -146,6 +184,20 @@ public final class ChatComposer extends JPanel {
             listener.onAutoAcceptChanged(next);
         });
 
+        // Team switch: "no team" is a real choice, so the menu always has that first row.
+        // 团队开关：「不启用」也是一个真实选项，菜单第一行总是它。
+        teamButton = new UiButton(AgentBundle.message("ui.team.none"), new ChevronIcon(JBUI.scale(9)),
+                UiButton.Kind.GHOST);
+        teamButton.setPadding(5, 3);
+        teamButton.setToolTipText(AgentBundle.message("ui.team.tip"));
+        teamButton.addActionListener(e -> listener.onTeamRequested());
+
+        artifactsButton = new UiButton(AgentBundle.message("ui.team.artifacts"), UiButton.Kind.GHOST);
+        artifactsButton.setPadding(5, 3);
+        artifactsButton.setToolTipText(AgentBundle.message("ui.team.artifacts.tip"));
+        artifactsButton.setEnabled(false);
+        artifactsButton.addActionListener(e -> listener.onArtifactsRequested());
+
         toolbar = buildToolbar();
         box = new ComposerBox(inputScroll);
 
@@ -155,20 +207,21 @@ public final class ChatComposer extends JPanel {
 
         installInputBindings();
         installDropSupport();
+        heightTimer.setRepeats(false);
         input.getDocument().addDocumentListener(new DocumentListener() {
             @Override
             public void insertUpdate(DocumentEvent e) {
-                refreshHeight();
+                onInputChanged();
             }
 
             @Override
             public void removeUpdate(DocumentEvent e) {
-                refreshHeight();
+                onInputChanged();
             }
 
             @Override
             public void changedUpdate(DocumentEvent e) {
-                refreshHeight();
+                onInputChanged();
             }
         });
         addComponentListener(new ComponentAdapter() {
@@ -178,6 +231,7 @@ public final class ChatComposer extends JPanel {
             }
         });
         refreshHeight();
+        updateSendState();
     }
 
     // ------------------------------------------------------------------ public API
@@ -199,11 +253,111 @@ public final class ChatComposer extends JPanel {
         autoButton.setSelected(value);
     }
 
+    // Roster arrived from the Core: show the active team (or the "none" label) and keep the list.
+    // 名册已从 Core 返回：按钮显示当前团队（或「不启用」）并缓存列表。
+    public void setTeams(List<TeamOption> options, String active) {
+        teams = options == null ? List.of() : List.copyOf(options);
+        activeTeam = active == null ? "" : active;
+        // The roster is fetched on click, so "not loaded yet" must not disable the button:
+        // on a cold IDE there is no roster yet and the very first click was swallowed.
+        // 名册是点击时才去 Core 取的，因此「还没拿到名册」不能把按钮置灰，
+        // 否则冷启动后第一次点击会被直接吞掉。
+        teamButton.setText(activeTeam.isEmpty() ? AgentBundle.message("ui.team.none") : activeTeam);
+        teamButton.setEnabled(!busy);
+        teamButton.setToolTipText(activeTeam.isEmpty()
+                ? AgentBundle.message("ui.team.tip")
+                : AgentBundle.message("ui.team.active.tip", activeTeam));
+        artifactsButton.setEnabled(!activeTeam.isEmpty());
+        teamButton.revalidate();
+        teamButton.repaint();
+    }
+
+    public String activeTeam() {
+        return activeTeam;
+    }
+
+    // Dropdown under the team button; called on the EDT once the roster is known.
+    // 团队按钮下的下拉菜单；名册就绪后在 EDT 上调。
+    public void showTeamMenu() {
+        if (teams.isEmpty() || busy) {
+            return;
+        }
+        List<String> items = new ArrayList<>();
+        items.add(AgentBundle.message("ui.team.none"));
+        for (TeamOption team : teams) {
+            items.add(labelOf(team));
+        }
+        String selected = items.get(0);
+        for (int i = 0; i < teams.size(); i++) {
+            if (teams.get(i).name.equals(activeTeam)) {
+                selected = items.get(i + 1);
+                break;
+            }
+        }
+        JBPopupFactory.getInstance()
+                .createPopupChooserBuilder(items)
+                .setTitle(AgentBundle.message("ui.team.menu.title"))
+                .setSelectedValue(selected, true)
+                .setItemChosenCallback(chosen -> {
+                    if (chosen == null) {
+                        return;
+                    }
+                    // Row 0 is "off"; row i+1 maps to teams.get(i).
+                    // 第 0 行是「不启用」，第 i+1 行对应 teams.get(i)。
+                    int row = items.indexOf(chosen);
+                    if (row < 0) {
+                        return;
+                    }
+                    String name = row == 0 ? "" : teams.get(row - 1).name;
+                    if (name.equals(activeTeam)) {
+                        return;
+                    }
+                    activeTeam = name;
+                    teamButton.setText(name.isEmpty() ? AgentBundle.message("ui.team.none") : name);
+                    artifactsButton.setEnabled(!name.isEmpty());
+                    listener.onTeamChanged(name);
+                })
+                .createPopup()
+                .showUnderneathOf(teamButton);
+    }
+
+    private static String labelOf(TeamOption team) {
+        return team.members > 0
+                ? AgentBundle.message("ui.team.item", team.name, team.members)
+                : team.name;
+    }
+
+    // Enable the blackboard button once a team is on (or an artifact already exists).
+    // 有团队启用（或已有交付物）时点亮黑板按钮。
+    public void setArtifactsAvailable(boolean available) {
+        artifactsButton.setEnabled(available && !busy);
+    }
+
     public void setBusy(boolean busy) {
         this.busy = busy;
-        sendButton.setEnabled(!busy);
-        stopButton.setEnabled(busy);
+        sendButton.setIcon(busy ? stopIcon : sendIcon);
+        sendButton.setToolTipText(AgentBundle.message(busy ? "ui.composer.stop.tip" : "ui.composer.send.tip"));
+        sendButton.setEnabled(true);
+        // Switching teams mid-run would only confuse the next dispatch.
+        // 运行中切团队只会让下一次派发混乱，因此直接置灰。
+        // The roster being unknown is not a reason to grey it out: the click loads it.
+        // 名册未知不该成为置灰理由——点击本身就会去拉名册。
+        teamButton.setEnabled(!busy);
+        artifactsButton.setEnabled(!busy && !activeTeam.isEmpty());
+        updateSendState();
         box.repaint();
+    }
+
+    // Idle with an empty box and no attachment means nothing to send; while a task runs the same
+    // button stops it.
+    // 空闲、无输入也没有附件时无可发送内容；任务运行时同一个按钮用来停止。
+    private void updateSendState() {
+        sendButton.setEnabled(busy || !input.getText().trim().isEmpty() || !attachments.isEmpty());
+    }
+
+    private void onInputChanged() {
+        updateSendState();
+        scheduleHeight();
     }
 
     public void setText(String text) {
@@ -331,6 +485,7 @@ public final class ChatComposer extends JPanel {
         attachmentStrip.revalidate();
         attachmentStrip.repaint();
         refreshHeight();
+        updateSendState();
     }
 
     // ------------------------------------------------------------------ layout helpers
@@ -348,18 +503,41 @@ public final class ChatComposer extends JPanel {
         JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, UiMetrics.xs(), 0));
         left.setOpaque(false);
         left.add(attachButton);
+        left.add(toolbarDivider());
         left.add(modelButton);
+        left.add(teamButton);
+        left.add(artifactsButton);
+        left.add(toolbarDivider());
         left.add(autoButton);
 
         JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, UiMetrics.xs(), 0));
         right.setOpaque(false);
         right.add(settingsButton);
-        right.add(stopButton);
         right.add(sendButton);
 
         bar.add(left, BorderLayout.WEST);
         bar.add(right, BorderLayout.EAST);
         return bar;
+    }
+
+    // Hairline between toolbar groups, so five pill buttons do not read as one blob.
+    // 工具栏分组之间的细竖线，五个胶囊按钮不再糊成一片。
+    private static JComponent toolbarDivider() {
+        return new JComponent() {
+            @Override
+            public Dimension getPreferredSize() {
+                return new Dimension(JBUI.scale(5), JBUI.scale(16));
+            }
+
+            @Override
+            protected void paintComponent(Graphics g) {
+                g.setColor(UiTheme.BORDER);
+                int x = getWidth() / 2;
+                int height = JBUI.scale(13);
+                int y = (getHeight() - height) / 2;
+                g.drawLine(x, y, x, y + height);
+            }
+        };
     }
 
     // Compact model picker: a list popup under the button, no default combo chrome.
@@ -408,6 +586,17 @@ public final class ChatComposer extends JPanel {
                 triggerSend();
             }
         });
+    }
+
+    // Typing should not pay for a whole-document measure on every keystroke; the timer collapses
+    // a burst of edits into one measurement after the user pauses for 60 ms.
+    // 打字不必每次按键都整篇测量：定时器把一串连续编辑合并成停顿后的一次测量。
+    private void scheduleHeight() {
+        if (heightTimer.isRunning()) {
+            heightTimer.restart();
+        } else {
+            heightTimer.start();
+        }
     }
 
     private int lineHeight() {
@@ -742,6 +931,38 @@ public final class ChatComposer extends JPanel {
             Graphics2D g2 = (Graphics2D) g.create();
             g2.translate(x, y);
             UiIcons.paintUpArrow(g2, new Rectangle(0, 0, size, size), Color.WHITE);
+            g2.dispose();
+        }
+    }
+
+    // Rounded square inside the round button while a task is running.
+    // 任务运行中，圆形按钮里显示圆角方块。
+    private static final class StopIcon implements Icon {
+
+        private final int size;
+
+        StopIcon(int size) {
+            this.size = size;
+        }
+
+        @Override
+        public int getIconWidth() {
+            return size;
+        }
+
+        @Override
+        public int getIconHeight() {
+            return size;
+        }
+
+        @Override
+        public void paintIcon(Component c, Graphics g, int x, int y) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.translate(x, y);
+            g2.setColor(Color.WHITE);
+            g2.fill(new RoundRectangle2D.Float(0, 0, size, size,
+                    JBUI.scale(3), JBUI.scale(3)));
             g2.dispose();
         }
     }

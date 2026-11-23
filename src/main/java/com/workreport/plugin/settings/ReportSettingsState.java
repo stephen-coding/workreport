@@ -50,6 +50,11 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
     // 自动执行：写文件不再弹 diff 确认
     public boolean autoAcceptEdits = false;
 
+    // Active agent team by name; empty means teams are off (the 3.3.0 default).
+    // Shell 只负责记住用户选的那个团队；名册与成员能力全在 Core 侧。
+    // 当前启用的 Agent 团队（按名称）；空表示不启用（3.3.0 的默认值）。
+    public String activeTeam = "";
+
     // Editor inline completion (ghost text, fill-in-the-middle)
     // 编辑器行内补全（Ghost text，FIM）
     public boolean inlineCompletionEnabled = true;
@@ -104,6 +109,7 @@ public final class ReportSettingsState implements PersistentStateComponent<Repor
         this.modelProfilesJson = state.modelProfilesJson != null ? state.modelProfilesJson : "";
         this.activeProfile = state.activeProfile != null ? state.activeProfile : "";
         this.autoAcceptEdits = state.autoAcceptEdits;
+        this.activeTeam = state.activeTeam != null ? state.activeTeam : "";
         this.inlineCompletionEnabled = state.inlineCompletionEnabled;
         this.embeddingModel = state.embeddingModel != null ? state.embeddingModel : "nomic-embed-text";
         // Older XML files have no value here (deserializes as 0) — keep the default.

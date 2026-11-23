@@ -885,6 +885,16 @@ public final class AgentChatPanel extends SimpleToolWindowPanel implements Dispo
             // 全局事件（还没有任务）：例如 core/hello。
             if ("core/hello".equals(method)) {
                 setStatus(AgentBundle.message("status.ready"));
+                // The roster is Core-owned, so read it as soon as the Core is up - otherwise the
+                // team button keeps showing a stale "off" until the tool window is reopened.
+                // VS Code does the same in its core/hello branch.
+                // 名册在 Core 里：Core 一就绪就读一次，否则按钮会一直停在旧状态，
+                // 直到重开工具窗口；VS Code 的 core/hello 分支也是这样做的。
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    for (ChatSessionPanel session : sessions.values()) {
+                        session.refreshTeamButton();
+                    }
+                });
             } else if ("memory/pendingChanged".equals(method)) {
                 int count = params.has("count") ? params.get("count").getAsInt() : 0;
                 // The badge on the memory button carries the number; no status line needed.

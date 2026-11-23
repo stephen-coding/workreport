@@ -72,7 +72,9 @@ public final class ToolDispatcher {
             if (writeOp) {
                 String waitedFor = writeGate.acquire(label);
                 if (waitedFor != null && notice != null) {
-                    notice.accept("[排队] 等待会话「" + waitedFor + "」写完文件后继续 " + toolName + "...");
+                    // Same English-log style as the rest of the tool timeline.
+                    // 与工具时间线其余部分一致：按英文日志风格写。
+                    notice.accept("queued · waiting for session " + waitedFor + " · " + toolName);
                 }
             }
             ToolResult result;

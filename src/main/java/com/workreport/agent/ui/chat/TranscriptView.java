@@ -15,7 +15,20 @@ public interface TranscriptView {
 
     void appendAssistantToken(String delta);
 
+    // The model's thinking process, streamed on its own channel. Renderers without a foldable
+    // thinking row simply ignore it; the answer text never contains it.
+    // 模型的思考过程，走独立通道；没有思考行的渲染器直接忽略，正文不含它。
+    default void appendReasoningToken(String delta) {
+    }
+
     void addToolLine(String text);
+
+    // Tool / sub-agent progress with explicit state. `running` keeps the step group busy,
+    // `failed` marks the group as failed; the one-argument form means "finished successfully".
+    // 带状态的工具/子代理进度行：running 表示还在跑，failed 表示失败；单参版本等价于“已完成且成功”。
+    default void addToolLine(String text, boolean running, boolean failed) {
+        addToolLine(text);
+    }
 
     void addNotice(String text);
 

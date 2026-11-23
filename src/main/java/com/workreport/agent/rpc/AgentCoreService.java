@@ -145,6 +145,9 @@ public final class AgentCoreService implements Disposable {
         settings.put("subagent_concurrency", state.subagentConcurrency);
         settings.put("temperature", state.temperature);
         settings.put("max_tokens", state.maxTokens);
+        // Team switch: empty string means "no team", which the Core treats as the 3.3.0 default.
+        // 团队开关：空串表示不启用，也是 Core 3.3.0 的默认值。
+        settings.put("active_team", state.activeTeam == null ? "" : state.activeTeam);
         // Empty allowlist means "use the Core's built-in defaults".
         // 白名单留空时下空数组，Core 会回退到内置默认值。
         settings.put("command_allowlist", splitAllowlist(state.commandAllowlist));
@@ -177,9 +180,11 @@ public final class AgentCoreService implements Disposable {
         hello.put("ide", "intellij");
         // Optional notifications this shell can actually render. The Core only sends
         // ask/user when "ask-user" is listed, so an older shell never waits for an answer
-        // that has no UI.
-        // 本 Shell 能渲染的可选通知；列出 "ask-user" 后 Core 才会发提问，旧版 Shell 不会白等。
-        hello.put("capabilities", List.of("ask-user"));
+        // that has no UI. "team" gates the team pre-approval card: without it the Core falls
+        // back to one diff confirmation per write instead of one card per phase.
+        // 本 Shell 能渲染的可选通知；列出 "ask-user" 后 Core 才会发提问。
+        // "team" 决定预审卡：不声明时 Core 退化为每次写入单独确认，而不是每阶段一张卡。
+        hello.put("capabilities", List.of("ask-user", "team"));
         conn.notify("ide/hello", hello);
     }
 

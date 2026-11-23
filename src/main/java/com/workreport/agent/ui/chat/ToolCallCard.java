@@ -18,17 +18,23 @@ import java.util.function.Consumer;
 // In-place confirmation for a Core-initiated sensitive call (an MCP tool call).
 // The modal dialog it replaces hid the conversation and could only be answered with the mouse;
 // this card stays inside the transcript, so the context that led to the call is still visible.
+// The team pre-approval checkpoint reuses the card with its own title/copy and a taller body,
+// because it carries a plan plus the first diff rather than one JSON argument block.
 // 就地确认 Core 发起的敏感操作（MCP 工具调用）。
 // 卡片留在对话区里，调用前的上下文不被遮挡，Enter 允许 / Esc 拒绝，键盘即可答复。
+// 团队预审检查点复用本卡片，只替换标题/说明并把正文放高：它要展示计划与首个 diff。
 public final class ToolCallCard extends ChatRowView {
-
-    // Arguments are shown as a short pre: enough to recognise the call, never a wall of JSON.
-    // 参数只展示前几行：够认出这次调用了什么，又不至于把对话区铺满 JSON。
-    private static final int MAX_ARG_LINES = 4;
 
     private final String server;
     private final String tool;
     private final String args;
+    private final String titleKey;
+    private final String descKey;
+    private final String argsLabelKey;
+
+    // Arguments are shown as a short pre: enough to recognise the call, never a wall of JSON.
+    // 参数只展示前几行：够认出这次调用了什么，又不至于把对话区铺满 JSON。
+    private final int maxArgLines;
 
     private final int padX = UiMetrics.scale(12);
     private final int padY = UiMetrics.scale(10);
@@ -51,13 +57,30 @@ public final class ToolCallCard extends ChatRowView {
     private int hoverButton;
 
     public ToolCallCard(String server, String tool, String args) {
+        this(server, tool, args, "ui.confirm.title", "ui.confirm.desc",
+                "ui.confirm.args", 4, "ui.confirm.tip");
+    }
+
+    // Team pre-approval: plan + files + first diff, then one "allow" that unlocks the phase.
+    // 团队预审：计划 + 文件 + 首个 diff，允许后本阶段的写操作不再逐次确认。
+    public static ToolCallCard preapprove(String team, String detail) {
+        return new ToolCallCard(team, "", detail, "ui.preapprove.title", "ui.preapprove.desc",
+                "ui.preapprove.args", 14, "ui.preapprove.tip");
+    }
+
+    private ToolCallCard(String server, String tool, String args, String titleKey, String descKey,
+                         String argsLabelKey, int maxArgLines, String tipKey) {
         super(1d, false);
         this.server = server == null || server.isBlank() ? "MCP" : server;
         this.tool = tool == null ? "" : tool;
         this.args = args == null || args.isBlank() ? "{}" : args;
+        this.titleKey = titleKey;
+        this.descKey = descKey;
+        this.argsLabelKey = argsLabelKey;
+        this.maxArgLines = maxArgLines;
         setOpaque(false);
         setFocusable(true);
-        setToolTipText(AgentBundle.message("ui.confirm.tip"));
+        setToolTipText(AgentBundle.message(tipKey));
         installKeys();
         installMouse();
     }
@@ -117,17 +140,17 @@ public final class ToolCallCard extends ChatRowView {
         }
         layoutWidth = width;
         int inner = innerWidth(width);
-        descLines = wrap(AgentBundle.message("ui.confirm.desc", server, tool),
+        descLines = wrap(AgentBundle.message(descKey, server, tool),
                 UiMetrics.metrics(UiTheme.font()), inner);
         argLines = clipArgs(wrap(args, UiMetrics.metrics(UiTheme.mono()), inner - UiMetrics.scale(12)));
     }
 
-    private static List<String> clipArgs(List<String> raw) {
-        if (raw.size() <= MAX_ARG_LINES) {
+    private List<String> clipArgs(List<String> raw) {
+        if (raw.size() <= maxArgLines) {
             return raw;
         }
-        List<String> clipped = new ArrayList<>(raw.subList(0, MAX_ARG_LINES));
-        clipped.set(MAX_ARG_LINES - 1, clipped.get(MAX_ARG_LINES - 1) + " …");
+        List<String> clipped = new ArrayList<>(raw.subList(0, maxArgLines));
+        clipped.set(maxArgLines - 1, clipped.get(maxArgLines - 1) + " …");
         return clipped;
     }
 
@@ -214,7 +237,7 @@ public final class ToolCallCard extends ChatRowView {
         FontMetrics titleMetrics = UiMetrics.metrics(titleFont);
         g2.setFont(titleFont);
         g2.setColor(UiTheme.text());
-        g2.drawString(AgentBundle.message("ui.confirm.title"), padX, y + titleMetrics.getAscent());
+        g2.drawString(AgentBundle.message(titleKey), padX, y + titleMetrics.getAscent());
         y += titleMetrics.getHeight() + gap;
 
         Font bodyFont = UiTheme.font();
@@ -230,7 +253,7 @@ public final class ToolCallCard extends ChatRowView {
         Font smallFont = UiTheme.small();
         g2.setFont(smallFont);
         g2.setColor(UiTheme.muted());
-        g2.drawString(AgentBundle.message("ui.confirm.args"), padX, y + UiMetrics.metrics(smallFont).getAscent());
+        g2.drawString(AgentBundle.message(argsLabelKey), padX, y + UiMetrics.metrics(smallFont).getAscent());
 
         paintArgs(g2);
         paintFooter(g2, width);
