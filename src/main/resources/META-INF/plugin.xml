@@ -1,7 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <idea-plugin>
     <id>com.workreport.ai-assistant</id>
     <name>Agent Coding Assistant</name>
-    <version>3.3.1</version>
+    <version>3.3.2</version>
     <vendor url="https://github.com/stephen-coding/workreport">WeeklyReport</vendor>
     <description><![CDATA[
         AI coding agent for IntelliJ-based IDEs. Chat with a language-agnostic agent core
@@ -36,6 +37,21 @@
     <resource-bundle>messages.AgentBundle</resource-bundle>
 
     <change-notes><![CDATA[
+<h3>3.3.2</h3>
+<ul>
+  <li>The task checklist keeps itself up to date now: the per-round status block repeats the
+      checklist and asks for a rewrite once it goes stale, and <code>todo_write</code> treats an
+      empty array as "clear" instead of an error.</li>
+  <li>Fixed the「back to bottom」pill ignoring clicks: it is a real button now, the list is laid out
+      before measuring and the scroll target is re-measured on every frame.</li>
+  <li>Per-task diagnostic traces (<code>~/.agent/logs/tasks/*.jsonl</code>) plus a mirrored core log
+      make dispatch, tool and LLM failures traceable; <code>AGENT_TRACE=0</code> turns them off.</li>
+</ul>
+<p>中文说明：修复长任务中任务清单进度不回写（状态栏每轮重复清单并在多轮未回写时明确催写，
+<code>todo_write</code> 传空数组现在表示清空而不是报错）；修复对话区「回到底部」悬浮按钮点击无效
+（改为真正的按钮，滚动前先布局、动画每帧重算终点）；新增任务级诊断日志，按任务落盘到
+<code>~/.agent/logs/tasks</code>，便于排查派发与工具调用失败。</p>
+
 <h3>3.3.1</h3>
 <ul>
   <li>Maintenance build of 3.3.0: same feature set, republished under a new version number so the

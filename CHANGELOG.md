@@ -3,6 +3,15 @@
 Mirror of `plugin.xml` `<change-notes>`: every released version gets one section here, and the
 Marketplace entry is copied from it. Core, Shell and VS Code Shell share the numbered release.
 
+## 3.3.2
+
+修复任务清单进度不回写与「回到底部」按钮点击无效；新增任务级诊断日志（`~/.agent/logs/tasks`）。
+
+- **任务清单回写**：状态栏每轮重复当前清单快照，并附一句命令式回写要求；连续 3 轮没有 `todo_write` 升级为「已经 N 轮没有回写清单」的直接催促，新一轮开始时提示「沿用上一轮清单」。`todo_write` 描述改为「整表覆盖、每完成一项立刻重写」，空数组由报错改为「清空成功」并广播；缺参 / 非数组 / 条目全部不可用分别给精确报错，不再静默清空。
+- **回到底部**：悬浮胶囊由自绘 `JComponent` + `mouseClicked` 改为 `JButton` + `ActionListener`；点击时先 `validate()` 再量底部，动画每帧重算终点，并关闭重叠子组件的绘制优化，避免点击吞掉、滚回原地与残影。
+- **诊断日志**：新增任务级 JSONL trace（`~/.agent/logs/tasks/*.jsonl`，含派发、工具批次、LLM 轮次、失败摘要与 `dispatchErrors`），同时镜像到主日志；`AGENT_TRACE=0` 或 `--no-trace` 可关闭。
+- **版本号收口**：`pom.xml`、`plugin.xml` 与内置 Core 可执行文件同步 3.3.2（`agent-core --version` 与 `core/hello.coreVersion` 都应是 3.3.2）。
+
 ## 3.3.1
 
 3.3.0 的维护构建：功能与 3.3.0 完全一致，仅递增版本号，用于在 Marketplace 上承载新的构建。
