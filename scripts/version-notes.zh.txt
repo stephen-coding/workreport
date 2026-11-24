@@ -1,0 +1,8 @@
+{0} 的维护构建：功能与 {0} 完全一致，仅递增版本号，用于在 Marketplace 上重新发布。
+- **版本号收口**：`pom.xml`、`plugin.xml` 与内置 Core 可执行文件同步 {0}（`agent-core --version` 与 `core/hello.coreVersion` 都应是 {0}）。
+| v{0} | {1} 之后 | 维护构建：功能与 {1} 一致，仅版本号递增（`pom.xml` / `plugin.xml` / 内置 Core 同步 {0}） |
+| 插件版本 | {0} |
+### 版本演进（v2.0 → v{0}）
+> 适用版本：**{0}**
+需重新安装 `{0}` 的 zip
+`agent-core --version` 应为 {0}
