@@ -17,7 +17,7 @@ import hashlib
 import json
 import os
 from collections import Counter
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from agent_core.protocol import ToolCall
 
@@ -87,37 +87,53 @@ class TurnStats:
         self.failures[call.name] += 1
         self.last_error[call.name] = _clip(error or "未知错误", MAX_ERROR)
 
-    def render(self, max_rounds: int) -> str:
-        """Build the status block, or ``""`` when there is nothing to report."""
-        if not self.calls:
+    def render(self, max_rounds: int, todos: Optional[List[Dict[str, Any]]] = None,
+               todo_inherited: bool = False, stale_rounds: int = 0) -> str:
+        """Build the status block, or ``""`` when there is nothing to report.
+
+        ``todos`` repeats the Core-owned checklist so the model can see what is still
+        open; ``stale_rounds`` counts rounds since it last wrote one.
+        """
+        # Imported here: the checklist module owns its vocabulary, and the loop imports
+        # both, so a module-level import would make the dependency order fragile.
+        # 清单词汇表在 todos 里；放在函数内导入，避免模块级依赖顺序问题。
+        from agent_core.agent.todos import render_status
+
+        checklist = render_status(todos or [], inherited=todo_inherited,
+                                  stale_rounds=stale_rounds)
+        if not self.calls and not checklist:
             return ""
 
         lines = ["<agent_status>", "轮次: %d/%d" % (self.rounds, max(1, max_rounds))]
 
-        tools = " · ".join("%s %d" % (name, count)
-                           for name, count in self.calls.most_common(MAX_TOOLS))
-        lines.append("工具: " + tools)
+        if self.calls:
+            tools = " · ".join("%s %d" % (name, count)
+                               for name, count in self.calls.most_common(MAX_TOOLS))
+            lines.append("工具: " + tools)
 
-        # Filter first, then truncate: the top-N list may be full of one-off calls.
-        # 先过滤再截断：按次数取前几名可能全是一次性调用。
-        repeats = [(self.repeat_labels[key], count)
-                   for key, count in self.call_counts.items()
-                   if count >= REPEAT_MIN]
-        repeats.sort(key=lambda item: item[1], reverse=True)
-        if repeats:
-            lines.append("重复: " + " · ".join("%s ×%d" % (label, count)
-                                              for label, count in repeats[:MAX_REPEATS]))
+            # Filter first, then truncate: the top-N list may be full of one-off calls.
+            # 先过滤再截断：按次数取前几名可能全是一次性调用。
+            repeats = [(self.repeat_labels[key], count)
+                       for key, count in self.call_counts.items()
+                       if count >= REPEAT_MIN]
+            repeats.sort(key=lambda item: item[1], reverse=True)
+            if repeats:
+                lines.append("重复: " + " · ".join("%s ×%d" % (label, count)
+                                                  for label, count in repeats[:MAX_REPEATS]))
 
-        if self.failures:
-            parts = []
-            for name, count in self.failures.most_common(2):
-                detail = self.last_error.get(name, "")
-                parts.append("%s ×%d — %s" % (name, count, detail) if detail
-                             else "%s ×%d" % (name, count))
-            lines.append("失败: " + " · ".join(parts))
+            if self.failures:
+                parts = []
+                for name, count in self.failures.most_common(2):
+                    detail = self.last_error.get(name, "")
+                    parts.append("%s ×%d — %s" % (name, count, detail) if detail
+                                 else "%s ×%d" % (name, count))
+                lines.append("失败: " + " · ".join(parts))
 
-        if self.edited:
-            lines.append("已改: " + "、".join(self.edited[:MAX_EDITED]))
+            if self.edited:
+                lines.append("已改: " + "、".join(self.edited[:MAX_EDITED]))
+
+        if checklist:
+            lines.append(checklist)
 
         lines.append("</agent_status>")
         return "\n".join(lines)

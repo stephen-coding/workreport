@@ -87,6 +87,22 @@ class TestTurnStats(unittest.TestCase):
         self.assertIn("已改: A.java、B.java", text)
         self.assertEqual(text.count("A.java"), 1)
 
+    def test_checklist_is_repeated_next_to_the_counters(self):
+        stats = TurnStats()
+        stats.begin_round()
+        text = stats.render(5, todos=[{"id": "1", "content": "跑测试",
+                                       "status": "in_progress"}])
+        self.assertIn("轮次: 1/5", text)
+        self.assertIn("清单: 0/1 完成", text)
+        self.assertIn("[>] 1. 跑测试", text)
+
+    def test_stale_rounds_escalate_inside_the_same_block(self):
+        stats = TurnStats()
+        stats.begin_round()
+        text = stats.render(5, todos=[{"id": "1", "content": "跑测试",
+                                       "status": "in_progress"}], stale_rounds=4)
+        self.assertIn("4 轮没有回写清单", text)
+
 
 class FakeProvider:
     """Answers with one tool call, then with plain text."""
@@ -107,14 +123,14 @@ class FakeProvider:
 
 class TestLoopInjection(unittest.TestCase):
 
-    def _run(self):
+    def _run(self, session=None):
         registry = ToolRegistry()
 
         async def handler(call):
             return ToolResult(tool_call_id=call.id, ok=True, content="file body")
 
         registry.register(ToolDef(name="read_file", description="read"), handler)
-        session = Session("s1")
+        session = session or Session("s1")
         provider = FakeProvider()
 
         async def noop(_token):
@@ -145,6 +161,16 @@ class TestLoopInjection(unittest.TestCase):
         self.assertNotIn("agent_status", first_system)
         # The status block is per-request only: it must never enter the transcript.
         self.assertFalse(any("agent_status" in (m.content or "") for m in session.messages))
+
+    def test_inherited_checklist_reaches_the_first_round(self):
+        session = Session("s1")
+        session.todos = [{"id": "1", "content": "跑测试", "status": "in_progress"}]
+        _, provider, _ = self._run(session=session)
+        first = provider.calls[0][-1]
+        self.assertEqual(first.role, Role.USER)
+        self.assertIn("<agent_status>", first.content)
+        self.assertIn("沿用上一轮", first.content)
+        self.assertIn("[>] 1. 跑测试", first.content)
 
 
 if __name__ == "__main__":

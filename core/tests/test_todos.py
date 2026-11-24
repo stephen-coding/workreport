@@ -83,12 +83,38 @@ class TestToolHandler(unittest.TestCase):
         self.assertEqual(self.published, [self.session.todos])
         self.assertIn("跑测试", result.content)
 
-    def test_empty_list_is_rejected(self):
+    def test_empty_list_clears_the_checklist(self):
+        self.session.todos = [{"id": "1", "content": "旧项", "status": "pending"}]
         result = self._run(_call([]))
 
-        self.assertFalse(result.ok)
-        self.assertIn("todos", result.error)
+        self.assertTrue(result.ok)
         self.assertEqual(self.session.todos, [])
+        # The Shell must be told, otherwise the strip keeps showing the old rows.
+        self.assertEqual(self.published, [[]])
+        self.assertIn("已清空", result.content)
+
+    def test_missing_or_non_list_payload_is_an_error(self):
+        missing = self._run(ToolCall(id="t1", name=todo_tools.TODO_TOOL, arguments={}))
+        self.assertFalse(missing.ok)
+        self.assertIn("缺少 todos", missing.error)
+
+        wrong = self._run(ToolCall(id="t2", name=todo_tools.TODO_TOOL,
+                                   arguments={"todos": "1,2"}))
+        self.assertFalse(wrong.ok)
+        self.assertIn("必须是数组", wrong.error)
+        self.assertEqual(self.session.todos, [])
+        self.assertEqual(self.published, [])
+
+    def test_all_unusable_entries_do_not_wipe_the_checklist(self):
+        kept = [{"id": "1", "content": "保留我", "status": "pending"}]
+        self.session.todos = list(kept)
+
+        # A status-only update (no content) must not silently truncate the list.
+        result = self._run(_call([{"id": "1", "status": "completed"}]))
+
+        self.assertFalse(result.ok)
+        self.assertIn("没有一条可用", result.error)
+        self.assertEqual(self.session.todos, kept)
         self.assertEqual(self.published, [])
 
     def test_without_a_bound_session_the_tool_refuses(self):
@@ -97,6 +123,49 @@ class TestToolHandler(unittest.TestCase):
         self.token = None
         result = self._run(_call([{"id": "1", "content": "x", "status": "pending"}]))
         self.assertFalse(result.ok)
+
+
+class TestStatusBlock(unittest.TestCase):
+    """The per-round repeat that keeps the model updating the list."""
+
+    def _todos(self):
+        return todo_tools.normalize_todos([
+            {"id": "1", "content": "甲", "status": "completed"},
+            {"id": "2", "content": "乙", "status": "in_progress"},
+        ])
+
+    def test_marks_and_progress_are_repeated(self):
+        text = todo_tools.render_status(self._todos())
+        self.assertIn("清单: 1/2 完成", text)
+        self.assertIn("[x] 1. 甲", text)
+        self.assertIn("[>] 2. 乙", text)
+        self.assertIn("todo_write", text)
+
+    def test_empty_checklist_renders_nothing(self):
+        self.assertEqual(todo_tools.render_status([]), "")
+
+    def test_inherited_list_says_so(self):
+        text = todo_tools.render_status(self._todos(), inherited=True)
+        self.assertIn("沿用上一轮", text)
+
+    def test_long_list_hides_finished_rows_first(self):
+        raw = [{"id": str(i), "content": "项%d" % i,
+                "status": "completed" if i <= 6 else "pending"} for i in range(1, 11)]
+        text = todo_tools.render_status(todo_tools.normalize_todos(raw))
+        # Unfinished work must survive the cap; the tail of finished rows is dropped.
+        self.assertIn("[ ] 10. 项10", text)
+        self.assertIn("另有", text)
+        self.assertLessEqual(text.count("\n"), todo_tools.MAX_STATUS_ITEMS + 3)
+
+    def test_stale_rounds_add_a_pointed_reminder(self):
+        text = todo_tools.render_status(self._todos(), stale_rounds=todo_tools.STALE_TODO_ROUNDS)
+        self.assertIn("轮没有回写清单", text)
+
+    def test_finished_list_is_not_nagged_about(self):
+        done = todo_tools.normalize_todos([{"id": "1", "content": "甲",
+                                            "status": "completed"}])
+        text = todo_tools.render_status(done, stale_rounds=9)
+        self.assertNotIn("轮没有回写清单", text)
 
 
 class TestPersistence(unittest.TestCase):
