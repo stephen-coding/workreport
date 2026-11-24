@@ -1,5 +1,6 @@
 package com.workreport.agent.ui.chat;
 
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.ui.components.JBScrollPane;
 import com.workreport.agent.AgentBundle;
 import com.workreport.agent.ui.design.UiAnim;
@@ -36,6 +37,9 @@ public final class ChatView extends JPanel implements TranscriptView {
     private static final int KEEP_ROWS = 120;
     private static final int REVEAL_BATCH = 40;
     private static final int PIN_SLACK = 48;
+    private static final int SMOOTH_SCROLL_MS = 160;
+
+    private static final Logger LOG = Logger.getInstance(ChatView.class);
 
     private final JPanel content = new JPanel();
     private final JBScrollPane scrollPane;
@@ -517,20 +521,32 @@ public final class ChatView extends JPanel implements TranscriptView {
                 scrollScheduled = false;
             }
             JScrollBar bar = scrollPane.getVerticalScrollBar();
-            int target = bar.getMaximum() - bar.getVisibleAmount();
-            if (target <= bar.getValue()) {
+            int end = bottomOf(bar);
+            if (end <= bar.getValue()) {
+                LOG.debug("scrollToBottom skipped: already at " + end);
                 return;
             }
+            LOG.debug("scrollToBottom " + bar.getValue() + " -> " + end
+                    + (smooth ? " (smooth)" : ""));
             if (!smooth) {
-                bar.setValue(target);
+                bar.setValue(end);
                 return;
             }
             int from = bar.getValue();
-            UiAnim.animate(120, progress -> {
-                int value = Math.round(from + (target - from) * progress);
-                bar.setValue(value);
+            // The list can keep growing while the tween runs, so the end is re-read on every
+            // frame and the last frame always lands on the newest bottom.
+            // 动画期间内容可能还在增长：每帧重新读取终点，最后一帧一定落在最新的底部。
+            UiAnim.animate(SMOOTH_SCROLL_MS, progress -> {
+                bar.setValue(Math.round(from + (bottomOf(bar) - from) * progress));
             });
         });
+    }
+
+    // Largest legal value for this bar: the maximum is the content height, so the bottom is the
+    // maximum minus the visible extent.
+    // 滚动条能取到的最大值：maximum 是内容高度，底部即 maximum 减去可视范围。
+    private static int bottomOf(JScrollBar bar) {
+        return Math.max(bar.getMinimum(), bar.getMaximum() - bar.getVisibleAmount());
     }
 
     private void updatePill() {
@@ -598,6 +614,14 @@ public final class ChatView extends JPanel implements TranscriptView {
             setOpaque(false);
         }
 
+        // The pill deliberately overlaps the scroll pane, so the opaque-child repaint shortcut
+        // has to stay off; otherwise the area under the pill may be skipped when it repaints.
+        // 胶囊与滚动面板刻意重叠，因此关闭“不透明子组件可跳过”的重绘优化。
+        @Override
+        public boolean isOptimizedDrawingEnabled() {
+            return false;
+        }
+
         @Override
         public void doLayout() {
             scrollPane.setBounds(0, 0, getWidth(), getHeight());
@@ -608,30 +632,30 @@ public final class ChatView extends JPanel implements TranscriptView {
         }
     }
 
-    private final class BackToBottom extends JComponent {
-
-        private boolean hovered;
+    private final class BackToBottom extends JButton {
 
         BackToBottom() {
             setVisible(false);
+            // A real button instead of a JComponent with a mouse listener: press/release pairs,
+            // keyboard activation and hover rollover all come from the button model, which is
+            // what a hand-rolled mouseClicked never guaranteed.
+            // 用真正的 JButton 而不是自带鼠标监听的 JComponent：按下/释放配对、键盘触发、
+            // 悬停状态都由按钮模型维护，自绘 JComponent 的 mouseClicked 并不能保证触发。
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setFocusPainted(false);
+            setFocusable(false);
+            setOpaque(false);
+            setBorder(BorderFactory.createEmptyBorder());
+            setRolloverEnabled(true);
             setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            addMouseListener(new MouseAdapter() {
-                @Override
-                public void mouseEntered(MouseEvent e) {
-                    hovered = true;
-                    repaint();
-                }
-
-                @Override
-                public void mouseExited(MouseEvent e) {
-                    hovered = false;
-                    repaint();
-                }
-
-                @Override
-                public void mouseClicked(MouseEvent e) {
-                    scrollToBottom(true);
-                }
+            addActionListener(event -> {
+                LOG.debug("back-to-bottom clicked");
+                // Lay out whatever changed since the last pass before measuring: reading the
+                // bottom of a stale layout is how a click ends up scrolling nowhere.
+                // 先强制布局再量底部：用过期布局量出的底部就是“滚到原地”。
+                scrollPane.validate();
+                scrollToBottom(true);
             });
         }
 
@@ -648,6 +672,7 @@ public final class ChatView extends JPanel implements TranscriptView {
 
         @Override
         protected void paintComponent(Graphics g) {
+            boolean hovered = getModel().isRollover();
             Graphics2D g2 = (Graphics2D) g.create();
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             int arc = getHeight();
