@@ -68,6 +68,11 @@ public final class ToolDispatcher {
         boolean writeOp = WRITE_TOOLS.contains(toolName);
         boolean needsApproval = !"auto".equals(permission) && !(writeOp && autoAccept);
         String label = sessionLabel == null || sessionLabel.isBlank() ? "会话" : sessionLabel;
+        // Idea log side of the tool round trip: the Core writes the other half, so a call that
+        // never returns can be traced to the side that dropped it.
+        // 工具往返的 IDE 侧日志：Core 记另一半，调用没回来时能判断断在哪一侧。
+        LOG.info("tool/invoke " + toolName + " id=" + toolCallId + " permission=" + permission
+                + " approval=" + needsApproval + " session=" + label);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             if (writeOp) {
                 String waitedFor = writeGate.acquire(label);
@@ -77,6 +82,7 @@ public final class ToolDispatcher {
                     notice.accept("queued · waiting for session " + waitedFor + " · " + toolName);
                 }
             }
+            long startedAt = System.currentTimeMillis();
             ToolResult result;
             try {
                 result = dispatch(toolName, args, needsApproval);
@@ -88,12 +94,25 @@ public final class ToolDispatcher {
                     writeGate.release();
                 }
             }
+            long elapsed = System.currentTimeMillis() - startedAt;
+            if (result.ok()) {
+                LOG.info("tool/result " + toolName + " id=" + toolCallId + " ok in " + elapsed + "ms");
+            } else {
+                LOG.warn("tool/result " + toolName + " id=" + toolCallId + " failed in "
+                        + elapsed + "ms: " + result.error());
+            }
             Map<String, Object> payload = new HashMap<>();
             payload.put("toolCallId", toolCallId);
             payload.put("ok", result.ok());
             payload.put("result", result.content());
             payload.put("error", result.error());
-            connection.request("tool/result", payload);
+            try {
+                connection.request("tool/result", payload);
+            } catch (RuntimeException e) {
+                // A dead connection silently turned every tool call into a Core-side timeout.
+                // 连接已断时结果回不去，Core 只会超时：至少把它写进日志。
+                LOG.warn("cannot send tool/result for " + toolName + " (" + toolCallId + ")", e);
+            }
         });
     }
 
@@ -122,6 +141,7 @@ public final class ToolDispatcher {
             case "diagnostics":
                 return diagnosticsTools.diagnostics(args);
             default:
+                LOG.warn("unknown tool requested by core: " + toolName);
                 return ToolResult.fail("未知工具: " + toolName);
         }
     }

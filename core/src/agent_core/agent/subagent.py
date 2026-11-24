@@ -34,6 +34,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from agent_core import diagnostics
 from agent_core.agent.loop import run_chat
 from agent_core.agent.session import Session
 from agent_core.native import truncate_to_budget
@@ -438,19 +439,32 @@ class SubagentService:
         args: Dict[str, Any] = call.arguments or {}
         requests = self._normalise_requests(args)
         if not requests:
+            LOGGER.warning("subagent_dispatch called without tasks/goals")
+            diagnostics.emit("dispatch_error", tool="subagent_dispatch",
+                             reason="missing tasks/goals",
+                             args=diagnostics.brief(args))
             return ToolResult(tool_call_id=call.id, ok=False,
                               error="缺少参数：请用 tasks 列表，或 type + goals")
 
         shared = str(args.get("context") or "").strip()
         tasks = self._build_tasks(requests, shared)
         if not tasks:
+            LOGGER.warning("subagent_dispatch produced no task (every goal was empty)")
+            diagnostics.emit("dispatch_error", tool="subagent_dispatch",
+                             reason="empty goals", args=diagnostics.brief(args))
             return ToolResult(tool_call_id=call.id, ok=False,
                               error="缺少参数：每个子任务都要有 goal")
 
+        diagnostics.emit("dispatch", tool="subagent_dispatch",
+                         roles=[task.role for task in tasks],
+                         tools=[len(task.allowed_tools) for task in tasks],
+                         goals=diagnostics.brief([task.goal for task in tasks]))
         reports = await self.run_tasks(tasks, self._on_event)
 
         ok_count = sum(1 for report in reports if report.ok)
         roles = "+".join(dict.fromkeys(task.role for task in tasks))
+        diagnostics.emit("dispatch_end", tool="subagent_dispatch", roles=roles,
+                         okCount=ok_count, total=len(reports), ok=ok_count > 0)
         blocks = ["## 子代理结果（%s，成功 %d/%d）" % (roles, ok_count, len(reports))]
         for report in reports:
             blocks.append("### %s %s（%.1fs%s）\n%s" % (
@@ -466,6 +480,9 @@ class SubagentService:
             report = await asyncio.wait_for(self._execute(task), timeout=task.timeout_sec)
         except asyncio.TimeoutError:
             LOGGER.warning("subagent %s timed out after %.0fs", task.id, task.timeout_sec)
+            diagnostics.emit("dispatch_timeout", task=task.id, role=task.role,
+                             timeoutSec=task.timeout_sec,
+                             tools=task.allowed_tools)
             report = SubagentReport(
                 task_id=task.id, ok=False, role=task.role, model=task.model,
                 summary="子代理超时：%.0f 秒内没有给出结论，已跳过。" % task.timeout_sec)
@@ -488,6 +505,16 @@ class SubagentService:
         })
         session = Session("subagent-%s" % task.id)
         registry = self._filtered_registry(task.allowed_tools, task.capability)
+        if not registry.names():
+            # An empty registry means the role can only talk: every tool call it makes
+            # comes back as "未知工具", which looks like a broken dispatch channel.
+            # 工具集为空时子代理只能空谈，所有调用都会变成“未知工具”，看起来像派发通道坏了。
+            LOGGER.warning("subagent %s has no usable tool after capability filter "
+                           "(capability=%s, declared=%s)",
+                           task.id, task.capability, task.allowed_tools)
+            diagnostics.emit("dispatch_error", task=task.id, role=task.role,
+                             reason="empty tool set", capability=task.capability,
+                             declared=task.allowed_tools)
 
         async def emit_token(_delta: str) -> None:
             return None
@@ -525,6 +552,15 @@ class SubagentService:
             if not goal:
                 continue
             definition = self.loader.get(role)
+            if definition is None:
+                # A model that invents a role name still gets a general subagent, but the
+                # log must say so: otherwise the role looks dispatched yet ignores its brief.
+                # 模型自己编造角色名时仍用通用子代理兜底，但日志必须记下来，否则看着派发了却没按角色干。
+                LOGGER.warning("subagent role %r is not defined, falling back to general "
+                               "(known roles: %s)", role,
+                               ", ".join(sorted(self.loader.load_all())) or "none")
+                diagnostics.emit("dispatch_error", role=role, reason="unknown role",
+                                 knownRoles=sorted(self.loader.load_all()))
             counters[role] = counters.get(role, 0) + 1
             context = "\n".join(part for part in (
                 shared, str(item.get("context") or "").strip()) if part)

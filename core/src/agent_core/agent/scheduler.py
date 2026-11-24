@@ -7,8 +7,10 @@ branches produce error results instead of propagating exceptions.
 
 import asyncio
 import logging
+import time
 from typing import Awaitable, Callable, List, Optional
 
+from agent_core import diagnostics
 from agent_core.protocol import ToolCall, ToolResult
 from agent_core.tools.registry import ToolRegistry
 
@@ -55,29 +57,56 @@ class ToolScheduler:
         on_end: Optional[EndCallback] = None,
     ) -> List[ToolResult]:
         semaphore = asyncio.Semaphore(self.max_concurrency)
+        diagnostics.emit("tools_batch", count=len(calls),
+                         names=diagnostics.brief([call.name for call in calls]))
 
         async def run_one(call: ToolCall) -> ToolResult:
             tool_def = self.registry.get(call.name)
             if tool_def is None:
-                return ToolResult(tool_call_id=call.id, ok=False,
-                                  error=unknown_tool_error(self.registry, call.name))
+                error = unknown_tool_error(self.registry, call.name)
+                LOGGER.warning("unknown tool %r requested; available: %s", call.name,
+                               ", ".join(self.registry.names()[:MAX_NAME_HINTS]) or "none")
+                self._record(call.name, False, None, 0, "unknown tool")
+                return ToolResult(tool_call_id=call.id, ok=False, error=error)
             handler = self.registry.handler(call.name)
             if handler is None:
+                LOGGER.warning("tool %s has no handler", call.name)
+                self._record(call.name, False, None, 0, "no handler")
                 return ToolResult(tool_call_id=call.id, ok=False, error="工具未实现: " + call.name)
 
             async with semaphore:
                 if on_start is not None:
                     await on_start(call)
+                started = time.monotonic()
+                # One INFO line per call so a broken round is visible in core-*.log
+                # even when nobody opens the JSONL trace.
+                # 每次调用打一行 INFO：不翻 JSONL 也能看出哪一步断了。
+                LOGGER.info("tool %s start (call=%s remote=%s timeout=%gs)", call.name,
+                            call.id, getattr(tool_def, "remote", False), tool_def.timeout_sec)
+                diagnostics.emit("tool_start", tool=call.name, call=call.id,
+                                 remote=getattr(tool_def, "remote", False),
+                                 args=diagnostics.brief(call.arguments))
+                error_text = ""
                 try:
                     result = await asyncio.wait_for(handler(call), timeout=tool_def.timeout_sec)
                 except asyncio.TimeoutError:
-                    result = ToolResult(tool_call_id=call.id, ok=False, error="工具执行超时")
+                    error_text = "工具执行超时（%g 秒）" % tool_def.timeout_sec
+                    LOGGER.warning("tool %s timed out after %gs (remote=%s)",
+                                   call.name, tool_def.timeout_sec,
+                                   getattr(tool_def, "remote", False))
+                    diagnostics.emit("tool_timeout", tool=call.name, call=call.id,
+                                     timeoutSec=tool_def.timeout_sec,
+                                     remote=getattr(tool_def, "remote", False))
+                    result = ToolResult(tool_call_id=call.id, ok=False, error=error_text)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # pragma: no cover - defensive
+                    error_text = str(exc)
                     LOGGER.exception("tool %s failed", call.name)
-                    result = ToolResult(tool_call_id=call.id, ok=False, error=str(exc))
+                    result = ToolResult(tool_call_id=call.id, ok=False, error=error_text)
+                elapsed_ms = int((time.monotonic() - started) * 1000)
 
+            self._record(call.name, result.ok, result.content, elapsed_ms, result.error)
             if on_end is not None:
                 await on_end(call, result)
             return result
@@ -106,3 +135,21 @@ class ToolScheduler:
         return [results[call.id] if call.id in results
                 else ToolResult(tool_call_id=call.id, ok=False, error="工具未执行")
                 for call in calls]
+
+    @staticmethod
+    def _record(tool: str, ok: bool, content: Optional[str], elapsed_ms: int,
+                error: Optional[str]) -> None:
+        """Count the call on the task trace and log the outcome once."""
+        trace = diagnostics.current()
+        if trace is not None:
+            trace.count("toolCalls")
+            if not ok:
+                trace.fail(tool)
+        if ok:
+            LOGGER.info("tool %s ok in %dms", tool, elapsed_ms)
+        else:
+            LOGGER.warning("tool %s failed in %dms: %s", tool, elapsed_ms,
+                           diagnostics.brief(error))
+        diagnostics.emit("tool_end", tool=tool, ok=ok, ms=elapsed_ms,
+                         out=diagnostics.brief(content) if ok else None,
+                         error=None if ok else diagnostics.brief(error))

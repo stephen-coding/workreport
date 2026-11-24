@@ -21,6 +21,7 @@ from agent_core.agent import subagent as subagent_tools
 from agent_core.agent import team as team_tools
 from agent_core.agent import todos as todo_tools
 from agent_core.agent.commands import decide as decide_command
+from agent_core import diagnostics
 from agent_core.agent.loop import SYSTEM_PROMPT, run_chat
 from agent_core.agent.search import SessionSearch
 from agent_core.agent.session import Session, SessionManager, make_title
@@ -254,7 +255,15 @@ class RpcServer:
             return
 
         try:
+            started = time.monotonic()
             result = await self._handle_request(method, params)
+            elapsed = time.monotonic() - started
+            # A slow request parks the stdin loop for everything else; name it in the log.
+            # 慢请求会堵住 stdin 循环，其余请求（含 tool/result）都等着：记下方法名与耗时。
+            if elapsed > 2.0:
+                LOGGER.warning("slow request %s took %.1fs", method, elapsed)
+            else:
+                LOGGER.debug("request %s ok in %.0fms", method, elapsed * 1000)
             self._send(make_response(req_id, result))
         except RpcError as exc:
             self._send(make_error(req_id, exc.code, _error_text(exc)))
@@ -380,7 +389,19 @@ class RpcServer:
             error=params.get("error"),
         )
         future = self._pending_tools.pop(tool_call_id, None)
-        if future is not None and not future.done():
+        if future is None:
+            # Late, duplicated or a wrong id: the Core already timed the call out, so the
+            # result is dropped and the user sees a timeout with no explanation.
+            # 迟到/重复/错 id：Core 已经判超时，结果被丢弃，界面只看到超时。
+            LOGGER.warning("tool/result dropped: unknown call id %r (ok=%s)",
+                           tool_call_id, result.ok)
+            diagnostics.emit("remote_orphan", call=tool_call_id, ok=result.ok,
+                             error=diagnostics.brief(result.error))
+        elif future.done():
+            LOGGER.warning("tool/result arrived after call %r was already settled", tool_call_id)
+            diagnostics.emit("remote_orphan", call=tool_call_id, ok=result.ok, late=True)
+        else:
+            LOGGER.debug("tool/result %s ok=%s", tool_call_id, result.ok)
             future.set_result(result)
         return {"received": True}
 
@@ -572,6 +593,17 @@ class RpcServer:
         tool_calls = 0
         usage_total: Dict[str, Any] = {}
         ok = False
+        error_text = ""
+        # One JSONL trace per task: tool calls, shell round trips, dispatch failures.
+        # 每个任务一份 JSONL：工具调用、Shell 往返、派发失败；完成后打印摘要与文件路径。
+        trace = diagnostics.start(task_id, session.session_id)
+        trace_token = diagnostics.bind(trace)
+        if trace is not None:
+            trace.event("task_start", model=self.config.model,
+                        provider=self.config.provider,
+                        team=(team.name if team is not None else None),
+                        skill=(skill_name or None), tools=len(self.tools.names()),
+                        message=diagnostics.brief(user_input, 300))
 
         async def emit_token(delta: str) -> None:
             self._send_notification("chat/token", {"taskId": task_id, "delta": delta})
@@ -636,31 +668,40 @@ class RpcServer:
             # 只有正常结束的一轮才可能漏出可沉淀的记忆；取消的那轮可能只说了一半。
             self._spawn(self._capture_memories(session))
         except asyncio.CancelledError:
+            error_text = "cancelled"
             self._send_notification("chat/error", {
                 "taskId": task_id,
                 "error": {"code": ErrorCode.CANCELLED, "message": "已取消"},
             })
         except RpcError as exc:
+            error_text = _error_text(exc)
             self._send_notification("chat/error", {
                 "taskId": task_id,
-                "error": {"code": exc.code, "message": _error_text(exc)},
+                "error": {"code": exc.code, "message": error_text},
             })
         except Exception as exc:  # pragma: no cover - defensive
+            error_text = _error_text(exc)
             LOGGER.exception("chat task %s failed", task_id)
             self._send_notification("chat/error", {
                 "taskId": task_id,
-                "error": {"code": ErrorCode.LLM_ERROR, "message": _error_text(exc)},
+                "error": {"code": ErrorCode.LLM_ERROR, "message": error_text},
             })
         finally:
             todo_tools.reset_session(todo_token)
             team_tools.reset_session(team_token)
             team_tools.reset_run(run_token)
             self.teams.clear_run(task_id)
+            duration_ms = int((time.monotonic() - started) * 1000)
             if team_record is not None:
                 team_record["ok"] = ok
                 team_record["toolCalls"] = tool_calls
-                team_record["durationMs"] = int((time.monotonic() - started) * 1000)
+                team_record["durationMs"] = duration_ms
             _current_task.reset(task_token)
+            if trace is not None:
+                trace.finish(ok and not session.deleted, error=error_text,
+                             durationMs=duration_ms, tokens=usage_total or None,
+                             team=(team.name if team is not None else None))
+            diagnostics.reset(trace_token)
             self.sessions.save(session)
             self._record_usage(task_id, usage_total, started, tool_calls,
                                ok and not session.deleted)
@@ -742,6 +783,15 @@ class RpcServer:
             payload["summary"] = report.summary[:300]
             payload["durationMs"] = getattr(report, "duration_ms", 0)
         self._send_notification("chat/subagent", payload)
+        trace = diagnostics.current()
+        if trace is not None:
+            if kind == "start":
+                trace.count("subagents")
+        diagnostics.emit("subagent", kind=kind, id=task.id, role=role,
+                         capability=capability or None,
+                         ms=(getattr(report, "duration_ms", 0) if report is not None else None),
+                         ok=(report.ok if report is not None else None),
+                         summary=(report.summary if report is not None else None))
 
     async def _invoke_shell_tool(self, call: ToolCall) -> ToolResult:
         tool_def = self.tools.get(call.name)
@@ -774,6 +824,7 @@ class RpcServer:
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._pending_tools[call.id] = future
+        started = time.monotonic()
         payload = {
             "taskId": _current_task.get(),
             "toolCallId": call.id,
@@ -789,10 +840,29 @@ class RpcServer:
             found = team.member(member) if team is not None else None
             payload["member"] = found.display_name() if found is not None else member
         self._send_notification("tool/invoke", payload)
+        diagnostics.emit("remote_invoke", tool=call.name, call=call.id,
+                         permission=permission, member=member or None,
+                         args=diagnostics.brief(call.arguments),
+                         pending=len(self._pending_tools))
         try:
             return await future
         finally:
             self._pending_tools.pop(call.id, None)
+            # A cancelled future means the scheduler hit the tool timeout (or the task was
+            # cancelled) while the Shell never answered: the usual cause of "the tool never
+            # runs" is a dialog nobody saw, a dead connection or a busy IDE.
+            # future 被取消 = 到超时也没等到 Shell 回答：常见于无人查看的确认卡、连接已断或 IDE 正忙。
+            if not future.done() or future.cancelled():
+                waited = time.monotonic() - started
+                LOGGER.warning(
+                    "tool/invoke %s (%s) got no reply in %.1fs (cancelled=%s, pending=%d); "
+                    "check the IDE dialog, the core connection and the shell capabilities %s",
+                    call.id, call.name, waited, future.cancelled(), len(self._pending_tools),
+                    sorted(self._shell_capabilities))
+                diagnostics.emit("remote_timeout", tool=call.name, call=call.id,
+                                 waitedSec=round(waited, 1), cancelled=future.cancelled(),
+                                 pending=len(self._pending_tools),
+                                 shellCapabilities=sorted(self._shell_capabilities))
 
     # Ask the shell to confirm a sensitive local action (e.g. an MCP tool call).
     # 请求 Shell 确认敏感操作（例如 MCP 工具调用），超时视为拒绝。
@@ -812,6 +882,13 @@ class RpcServer:
         try:
             return bool(await asyncio.wait_for(future, timeout=CONFIRM_TIMEOUT))
         except asyncio.TimeoutError:
+            # Nobody answered the card: the tool call fails for a reason the user cannot
+            # see in the transcript, so put it in the log instead of failing silently.
+            # 确认卡无人应答：工具会因为看不到的原因失败，这里把它写进日志。
+            LOGGER.warning("MCP confirm timed out after %.0fs: %s.%s",
+                           CONFIRM_TIMEOUT, server, tool)
+            diagnostics.emit("confirm_timeout", kind="mcp", server=server, tool=tool,
+                             timeoutSec=CONFIRM_TIMEOUT)
             return False
         finally:
             self._pending_confirms.pop(confirm_id, None)
@@ -844,6 +921,9 @@ class RpcServer:
         try:
             return bool(await asyncio.wait_for(future, timeout=CONFIRM_TIMEOUT))
         except asyncio.TimeoutError:
+            LOGGER.warning("preapprove card timed out after %.0fs", CONFIRM_TIMEOUT)
+            diagnostics.emit("confirm_timeout", kind="preapprove",
+                             timeoutSec=CONFIRM_TIMEOUT)
             return False
         finally:
             self._pending_confirms.pop(preapprove_id, None)
@@ -871,6 +951,10 @@ class RpcServer:
             answered = True
             return reply
         except asyncio.TimeoutError:
+            LOGGER.warning("ask_user timed out after %.0fs (%d question(s))",
+                           ASK_TIMEOUT, len(questions))
+            diagnostics.emit("ask_timeout", questions=len(questions),
+                             timeoutSec=ASK_TIMEOUT)
             return None
         finally:
             self._pending_asks.pop(ask_id, None)

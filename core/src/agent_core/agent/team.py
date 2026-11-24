@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from agent_core import diagnostics
 from agent_core.agent.blackboard import (
     append_artifact,
     make_artifact,
@@ -496,16 +497,31 @@ class TeamService:
     async def _dispatch_handler(self, call: ToolCall) -> ToolResult:
         team = self.active_team()
         if team is None:
+            # The model asked for a team run although no team is enabled: say so in the log,
+            # because the transcript only shows a failed tool call.
+            # 未启用团队却派发：对话区只显示工具失败，日志里写清原因。
+            LOGGER.warning("team_dispatch refused: no active team "
+                           "(active_team=%r)", getattr(self._get_config(), "active_team", ""))
+            diagnostics.emit("dispatch_error", tool="team_dispatch", reason="no active team",
+                             activeTeam=(getattr(self._get_config(), "active_team", "") or None))
             return ToolResult(tool_call_id=call.id, ok=False,
                               error="未启用团队：请先在设置中选择 active_team")
         args: Dict[str, Any] = call.arguments or {}
         raw_tasks = self._normalise_requests(args)
         if not raw_tasks:
+            LOGGER.warning("team_dispatch called without tasks")
+            diagnostics.emit("dispatch_error", tool="team_dispatch",
+                             reason="missing tasks", team=team.name,
+                             args=diagnostics.brief(args))
             return ToolResult(tool_call_id=call.id, ok=False,
                               error="缺少参数：需要 tasks 列表（每项含 role 与 goal）")
 
         shared = str(args.get("context") or "").strip()
         tasks, errors = self._build_tasks(team, raw_tasks, shared)
+        for issue in errors:
+            LOGGER.warning("team %s dispatch: %s", team.name, issue)
+            diagnostics.emit("dispatch_error", tool="team_dispatch", team=team.name,
+                             reason=issue)
         cap = max(1, int(getattr(self._get_config(), "team_max_members", 4) or 4))
         if len(tasks) > cap:
             errors.append("超过 team_max_members=%d，本次只派发前 %d 个成员" % (cap, cap))
@@ -515,6 +531,10 @@ class TeamService:
         # team_turn_cap 限制整轮运行（不只单次派发），防止反复派发打转。
         left = self._budget_left(_current_run.get())
         if left <= 0:
+            LOGGER.warning("team %s dispatch refused: team_turn_cap=%d reached",
+                           team.name, self._turn_cap())
+            diagnostics.emit("dispatch_error", tool="team_dispatch", team=team.name,
+                             reason="turn cap reached", cap=self._turn_cap())
             return ToolResult(tool_call_id=call.id, ok=False,
                               error="本团队运行已达到 team_turn_cap=%d 个成员任务；"
                                     "请先收尾或新建会话再继续。" % self._turn_cap())
@@ -529,6 +549,9 @@ class TeamService:
         self._dispatched[_current_run.get()] = (
             self._dispatched.get(_current_run.get(), 0) + len(tasks))
         ok_count = sum(1 for report in reports if report.ok)
+        diagnostics.emit("dispatch_end", tool="team_dispatch", team=team.name,
+                         roles=[task.role for task in tasks], okCount=ok_count,
+                         total=len(reports), ok=ok_count > 0)
         blocks = ["## 团队执行结果（%s，成功 %d/%d）" % (team.name, ok_count, len(reports))]
         for report in reports:
             blocks.append("### %s %s（%.1fs%s）\n%s" % (

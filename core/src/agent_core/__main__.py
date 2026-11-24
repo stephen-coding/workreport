@@ -10,7 +10,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from typing import List
 
-from agent_core import __version__
+from agent_core import __version__, diagnostics
 from agent_core.rpc.server import RpcServer
 from agent_core.usage import default_log_dir
 
@@ -71,6 +71,11 @@ def main() -> None:
         help="do not write a log file",
     )
     parser.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="do not write per-task JSONL traces (default: on, ~/.agent/logs/tasks)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version="agent-core %s" % __version__,
@@ -92,6 +97,12 @@ def main() -> None:
     _configure_streams()
     log_file = "" if args.no_log_file else (args.log_file or _default_log_file())
     _configure_logging(args.log_level, log_file)
+    if args.no_trace:
+        os.environ["AGENT_TRACE"] = "0"
+    if diagnostics.enabled():
+        # Name the directory once at startup so a bug report can point at the files.
+        # 启动时把 trace 目录写进日志，反馈问题可以直接给出文件。
+        logging.getLogger("agent_core").info("task traces -> %s", diagnostics.trace_dir())
 
     server = RpcServer(project_id=args.project_id, data_dir=args.data_dir)
     try:
